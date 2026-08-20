@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#291a0a">
+    <meta name="description" content="ASCII Looper - High-performance browser-based 20-track loop station with effects and sequencing.">
+    <title>ASCII Looper v0.75.99</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="styles.css">
+    <link rel="dns-prefetch" href="//www.google.com">
+
+    <!-- ============================================= -->
+    <!-- MODULE IMPORTS (Prepared for Extraction)      -->
+    <!-- ============================================= -->
+    <script type="module">
+        import {SoundTouch, SimpleFilter} from "https://cdn.jsdelivr.net/npm/soundtouchjs@0.1.30/dist/soundtouch.min.js";
+        window.SoundTouch = SoundTouch;
+        window.SimpleFilter = SimpleFilter;
+    </script>
+
+
+    <style>
+        body {
+            background: #291a0a !important;
+            color: #00ff00 !important;
+        transition: background 0.3s ease;
+    }
+    body.is-recording { background: #4a0000 !important; }
+    body.is-overdubbing, body.mode-overdub { background: #2a004a !important; }
+    body.is-substituting, body.mode-substitute { background: #004a4a !important; }
+</style>
+</head>
+<body>
+
+<main id="main">
+        
+        <header id="part0">
+            <div id="header" role="banner">
+                <pre>
+<span class="rainbow-text"> <!-- THIS IS THE LOGO (DO NOT CHANGE IT) --->
+        ███             ███         ██                              ███                           █           █████           █    ██     ███<!-- THIS IS THE LOGO (DO NOT CHANGE IT) --->     
+      █████          ██████       █████     ██████ ██████         ███████       █████████   ███  █████       ████ ███████  █████████    ██████████<!-- THIS IS THE LOGO (DO NOT CHANGE IT) --->
+     ██ ███    ██ ███           ██  ██       ███     ██          ███          █████   ███████       ███    █████      ███   ███        ████  ███<!-- THIS IS THE LOGO (DO NOT CHANGE IT) --->  
+    ██  ████ █████████████    ██   ██        ██     ███          ███         ████       ████         ███      ████████      ██████       ████<!-- THIS IS THE LOGO (DO NOT CHANGE IT) --->     
+ ██████   ██            ████ ███       ████  ██     ███          ██          ████        ████        ███      ███           ██          ██████<!-- THIS IS THE LOGO (DO NOT CHANGE IT) --->    
+███       ███            ██  ███      ███    ██     ███          ██          ████        █████      ███       ██           ██     ███   ██ ████<!-- THIS IS THE LOGO (DO NOT CHANGE IT) --->   
+██        ███  ███  ██████   █████████     █████  ██████     ██████████████   █████    ███████████████       ██         █████████████  ██     ████<!-- THIS IS THE LOGO (DO NOT CHANGE IT) --->
+█         █      ███                                           ████████         █████████    ███████        ██          ██████████     ██<!-- THIS IS THE LOGO (DO NOT CHANGE IT) --->         
+                                                                                                          ███                        ███<!-- THIS IS THE LOGO (DO NOT CHANGE IT) --->          
+</span> 
+
+               <a id="versionHeader" href="mailto:jorge.salgueiro@gmail.com" style="color: #464; text-decoration: none; font-size: 11px; font-weight: bold; cursor: pointer;">ASCII LOOPER © jorge salgueiro</a> <a href="https://www.paypal.com/donate/?business=jorge.salgueiro@gmail.com&amount=5&currency_code=EUR" target="_blank" style="color: #ffaa00; text-decoration: none; font-size: 11px; margin-left: 10px;">[ PLEASE DONATE ]</a>
+
+<span id="odModeIndicator" style="display:none; color: #f0f; font-weight:bold; position:absolute; bottom:2px; left:50%; transform:translateX(-50%); pointer-events: none; z-index: 50;" class="blink-text">[ OVERDUB MODE ACTIVE ]</span>
+<span id="subModeIndicator" style="display:none; color: #00cccc; font-weight:bold; position:absolute; bottom:2px; left:50%; transform:translateX(-50%); pointer-events: none; z-index: 50;" class="blink-text">[ SUBSTITUTE MODE ACTIVE ]</span>
+<span id="susModeIndicator" style="display:none; color: #ff0; font-weight:bold; position:absolute; bottom:2px; left:50%; transform:translateX(-50%); pointer-events: none; z-index: 50;" class="blink-text">[ SUS (SUSTAIN) MODE ACTIVE ]</span>
+				</pre>
+            </div>
+        </header>
+
+        <div class="module-grid">
+            
+            <div class="retro-module" id="mod-menu">
+                <div class="module-header"><span data-i18n="PROJ_MENU">PROJECT MENU</span><span data-i18n="SYSTEM">[SYSTEM]</span></div>
+                <div class="module-content">
+                    <div style="display:flex; gap:5px; margin-bottom:5px;">
+                        <input type="text" id="projectName" placeholder="My Project" style="width:100%;" aria-label="Project Name" data-i18n-title="TIP_PROJECT_NAME">
+                    </div>
+					<div class="std-btn-grid">
+                        <button onclick="saveProject()" class="std-btn btn-blue" data-i18n="SAVE_PROJ" data-i18n-title="TIP_SAVE_PROJ" id="btnSaveProj">SAVE PROJ</button>
+                        <button onclick="document.getElementById('loadFile').click()" class="std-btn btn-orange" data-i18n="LOAD_PROJ" data-i18n-title="TIP_LOAD_PROJ" id="btnLoadProj">LOAD PROJ</button>
+                        <input type="file" id="loadFile" accept=".json,.alp" style="display:none;" onchange="ProjectManager.load(event)">
+                    </div>
+                    <div class="std-btn-grid" style="grid-template-columns: 1fr 1fr 1fr 1fr;">
+                        <button onclick="stopAll()" class="std-btn btn-yellow" data-i18n="STOP_ALL" data-i18n-title="TIP_STOP_ALL">Sto[P] ALL</button>
+                        <button onclick="clearAll()" class="std-btn btn-red" data-i18n="CLEAR_ALL" data-i18n-title="TIP_CLEAR_ALL">DEL ALL</button>
+                        <button onclick="globalUndo()" class="std-btn btn-blue" id="btnGlobalUndo" disabled title="Undo Last Action">UNDO</button>
+                        <button onclick="globalRedo()" class="std-btn btn-purple" id="btnGlobalRedo" disabled title="Redo Last Action">REDO</button>
+                    </div>
+                    <button onclick="panic()" class="std-btn btn-red" style="width:100%; border-style:dashed; margin-bottom:5px;" data-i18n-title="TIP_PANIC">[!!!] PANIC / RESET [!!!]</button>
+                    <div class="std-btn-grid">
+                        <button onclick="if(window.App) App.requestMIDIAccess()" class="std-btn btn-cyan" id="enableMidiBtn" data-i18n-title="TIP_ENABLE_MIDI" data-i18n="ENABLE_MIDI">Enable Midi</button>
+                    </div>
+                    <div class="std-btn-grid" style="grid-template-columns: 1fr 1fr 1fr;">
+                        <button onclick="ProjectManager.exportInputOnly()" id="exportInputBtn" class="std-btn btn-purple" disabled data-i18n="EXP_INPUT" data-i18n-title="TIP_EXP_INPUT">EXP INPUT</button>
+                         <button onclick="ProjectManager.exportMasterOnly()" id="exportMasterBtn" class="std-btn btn-purple" disabled data-i18n="EXP_MASTER" data-i18n-title="TIP_EXP_MASTER">EXP MASTER</button>
+                        <button onclick="exportAllTracks()" id="exportAllBtn" class="std-btn btn-purple" disabled data-i18n="EXP_ALL" data-i18n-title="TIP_EXP_ALL">[E]XP ALL</button>
+                    </div>
+                    <button onclick="toggleMasterRecording()" id="masterRecBtn" class="std-btn btn-red" style="width:100%;" data-i18n="MASTER_REC" data-i18n-title="TIP_MASTER_REC">[M]ASTER REC</button>
+                    <div id="masterRecTimeDisplay" style="text-align: center; color: #f00; font-size: 12px; display: none; margin-top: 5px; font-family: monospace;">00:00</div>
+                </div>
+            </div>
+            <div class="retro-module" id="mod-sync">
+                <div class="module-header"><span data-i18n="SYNC_SETTINGS">SYNC & SETTINGS</span><span data-i18n="TIMING">[TIMING]</span></div>
+                <div class="module-content">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <label for="syncLoops"><input type="checkbox" id="syncLoops" checked aria-label="Enable Sync"><span style="color:#0f0; font-weight:bold;" data-i18n="ENABLE_SYNC">ENABLE SYNC</span></label>
+                        <span id="loopLength" style="color:#888;">0.0s</span>
+                        <span id="latencyDisplay" style="color:#666; font-size:9px;" title="System Latency Compensation">0ms</span>
+                    </div>
+                    <div style="display:flex; gap:5px; align-items:center;">
+                        <label for="bpmInput">BPM:</label><input type="number" id="bpmInput" value="120" style="width:40px;" aria-label="Beats Per Minute">
+                        <label for="numBars">BARS:</label><input type="number" id="numBars" value="2" style="width:30px;" aria-label="Number of Bars">
+                    </div>
+                    <div style="display:flex; gap:5px; align-items:center; margin-top:2px; border-top: 1px dashed #444; padding-top:2px;">
+                        <label style="font-size:9px;" for="latencyCorrection">LATENCY COMP:</label>
+                        <input type="range" id="latencyCorrection" min="-200" max="500" step="1" value="0" style="flex:1;" oninput="SyncManager.updateSettings()" title="Manual Input Latency Compensation (ms)" aria-label="Latency Compensation">
+                        <span id="manualLatencyDisplay" style="font-size:9px; width:35px; text-align:right;">0ms</span>
+                    </div>
+                    <div style="margin-top:2px; text-align:center;">
+                        <button id="pingTestBtn" onclick="SyncManager.runPingTest()" class="std-btn btn-purple small" style="width:100%;" title="Measure physical roundtrip latency (Mic must hear Speakers)">PING TEST (AUTO-CALIBRATE)</button>
+                    </div>
+                    <div style="display:flex; gap:5px; align-items:center; margin-bottom: 2px;">
+                         <label>SIG:</label>
+                         <input type="number" id="timeSigNum" value="4" style="width:25px;" aria-label="Time Signature Numerator">/
+                         <input type="number" id="timeSigDen" value="4" style="width:25px;" aria-label="Time Signature Denominator">
+                    </div>
+                    <div style="display:flex; gap:5px; align-items:center;">
+                         <label style="font-size:9px;" data-i18n="SYNC_SRC" for="syncSource">SYNC SRC:</label>
+                         <select id="syncSource" style="width:80px; font-size:9px;" onchange="SyncManager.updateSettings()" aria-label="Sync Source">
+                             <option value="master">Master BPM</option>
+                         </select>
+                         <label style="font-size:9px; margin-left:5px;" for="fxMixTimeSel">FX MIX:</label>
+                         <select id="fxMixTimeSel" style="width:50px; font-size:9px;" onchange="SyncManager.updateSettings()" aria-label="FX Mix Time">
+                             <option value="0s">0s</option>
+                             <option value="2s" selected>2s</option>
+                             <option value="5s">5s</option>
+                             <option value="10s">10s</option>
+                             <option value="0.25t">1/4t</option>
+                             <option value="0.5t">1/2t</option>
+                             <option value="1t">1t</option>
+                         </select>
+                    </div>
+                    
+                    <div style="display:flex; align-items:center; justify-content: space-between; margin-top: 5px; background: #001100; padding: 3px; border: 1px solid #004400;">
+                        <button id="metronomeBtn" onclick="MetronomeScheduler.toggle()" class="std-btn btn-cyan" style="margin-right:5px; width:auto; padding:2px 6px;" data-i18n="METRONOME">Metro[N]ome</button>
+                        <input type="range" id="metronomeVol" min="0" max="2" step="0.05" value="0.5" style="flex:1;" oninput="document.getElementById('metroVolDisplay').textContent = parseFloat(this.value).toFixed(2)" aria-label="Metronome Volume">
+                        <span id="metroVolDisplay" style="font-size:10px; width:30px; text-align:right;">0.50</span>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; margin-top:2px; font-size:10px; color:#888;">
+                        <span style="font-size:9px; padding-top:3px;">REC CUE:</span>
+                        <label for="countInVisual"><input type="checkbox" id="countInVisual" checked aria-label="Visual Count-In"> VISUAL</label>
+                        <label for="countInAudio"><input type="checkbox" id="countInAudio" aria-label="Audio Count-In"> SOUND</label>
+                    </div>
+                <hr style="width:100%; border:0; border-bottom:1px dashed #444;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 2px;">
+                    <label for="autoPlayAfterRecord"><input type="checkbox" id="autoPlayAfterRecord" checked aria-label="Auto Play After Record"> <span data-i18n="AUTO_PLAY">Auto-play after Rec</span></label>
+                    <label for="autoRecordNext"><input type="checkbox" id="autoRecordNext" aria-label="Cascade Record Next"> Cascade Rec</label>
+                </div>
+                <div style="display:flex; justify-content:space-between; font-size:10px; color:#888; margin-top:auto;">
+                        <span>Loops: <strong id="activeCount" style="color:#fff">0/10</strong></span>
+                        <span id="recStatus">READY</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="retro-module" id="mod-lab">
+                <div class="module-header"><span data-i18n="SAMPLE_LAB">SAMPLE LAB</span><span data-i18n="OFFLINE">[OFFLINE DSP]</span></div>
+                <div class="module-content">
+                    <div style="display:flex; gap:5px; margin-bottom:5px;">
+                        <button onclick="document.getElementById('labFile').click()" class="std-btn btn-orange" style="flex:1" data-i18n="LOAD_SAMPLER">LOAD SAMPLER</button>
+                        <button onclick="SampleLab.toggleRecord()" id="labRecBtn" class="std-btn btn-red" style="flex:1" data-i18n="REC_SAMPLER">REC SAMPLER</button>
+                        <input type="file" id="labFile" accept="audio/*" style="display:none;" onchange="SampleLab.load(event)">
+                    </div>
+                    <div style="display:flex; gap:5px; margin-bottom:5px; align-items:center;">
+                        <label style="font-size:9px;" for="labLoopTarget">TRACK:</label>
+                        <select id="labLoopTarget" style="width:80px; height:24px; font-size:10px;" aria-label="Target Track"></select>
+                        <button onclick="if(window.SampleLab) SampleLab.loadFromLoop()" class="std-btn btn-cyan" style="flex:1;" title="Import from selected loop">GET</button>
+                        <button onclick="if(window.SampleLab) SampleLab.sendToLoop()" class="std-btn btn-cyan" style="flex:1;" title="Export to selected loop">PUT</button>
+                    </div>
+                    <canvas id="labCanvas" class="lab-canvas" width="300" height="40"></canvas>
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-bottom:5px;">
+                        <div>
+                            <label for="labStart" style="font-size:9px; display:flex; justify-content:space-between;">START <span id="labStartDisplay">0.00s</span></label>
+                            <input type="range" id="labStart" min="0" max="1" step="0.001" value="0.0" oninput="SampleLab.updateDisplays()" ondblclick="this.value=0.0; SampleLab.updateDisplays()" aria-label="Sample Start Position" name="labStart">
+                        </div>
+                        <div>
+                            <label for="labEnd" style="font-size:9px; display:flex; justify-content:space-between;">END <span id="labEndDisplay">End</span></label>
+                            <input type="range" id="labEnd" min="0" max="1" step="0.001" value="1.0" oninput="SampleLab.updateDisplays()" ondblclick="this.value=1.0; SampleLab.updateDisplays()" aria-label="Sample End Position">
+                        </div>
+                    </div>
+                    <div style="display:flex; gap:10px; align-items:center; margin-bottom:5px; flex-wrap:wrap;">
+                         <label style="font-size:10px;" for="labStretch">Ratio:</label>
+                         <input type="number" id="labStretch" value="1.0" step="0.1" style="width:50px" ondblclick="this.value=1.0" aria-label="Time Stretch Ratio">
+                         <input type="number" id="labTargetBars" value="1" min="0.25" step="0.25" style="width:35px" title="Target Bars for Sync" aria-label="Target Bars for Sync">
+                         <button onclick="SampleLab.calcSyncRatio()" class="small btn-yellow" title="Calc Ratio to match Target Bars">SyncR</button>
+                         <label style="font-size:10px;" for="labPitch">Pitch:</label>
+                         <input type="range" id="labPitch" min="-12" max="12" step="1" value="0" style="flex:1" oninput="document.getElementById('labPitchDisp').textContent=(this.value>0?'+':'')+this.value" ondblclick="this.value=0; document.getElementById('labPitchDisp').textContent='0'" aria-label="Pitch Shift">
+                         <span id="labPitchDisp" style="font-size:10px; width:25px; text-align:right;">0</span>
+                    </div>
+                    <div class="std-btn-grid">
+                        <button onclick="SampleLab.preview()" class="std-btn btn-green" data-i18n="PREVIEW">PREVIEW</button>
+                        <button onclick="SampleLab.process()" class="std-btn btn-green" data-i18n="PROCESS">PROCESS</button>
+                        <button onclick="SampleLab.reverse()" class="std-btn btn-yellow">REV</button>
+                        <button onclick="SampleLab.normalize()" class="std-btn btn-yellow">NORM</button>
+                    </div>
+                    <div style="display:flex; gap:5px; margin-top:5px; align-items:center;">
+                        <button onclick="SampleLab.save()" class="std-btn btn-blue" style="flex:1;" data-i18n="SAVE_WAV">SAVE WAV</button>
+                    </div>
+                    <div id="labStatus" style="font-size:9px; color:#888; margin-top:2px;">READY.</div>
+                </div>
+            </div>
+
+            <div class="retro-module" id="mod-input">
+				<div class="module-header"><span data-i18n="INPUT_MIXER">INPUT MIXER</span><span data-i18n="AUDIO_IN">[AUDIO IN]</span></div>
+                <div class="module-content">
+                    <div id="inputTracksContainer" style="display:flex; flex-direction:column; gap:10px; margin-bottom:10px;">
+                    </div>
+                </div>
+			</div>
+            
+</main>
+		<hr style="border: 1px dashed var(--term-dim); margin: 20px 0;">
+
+		<div class="retro-module" id="mod-master" style="margin-bottom: 20px; width: 100%;">
+            <div class="module-header"><span data-i18n="MASTER_OUTPUT">MASTER OUTPUT</span><span data-i18n="MIX_REC">[MIX & REC]</span></div>
+            <div class="module-content" style="display: flex; flex-direction: column; gap: 5px;">
+                
+                <div style="position: relative; width: 100%; margin-bottom: 5px;">
+                    <div id="timeline" style="height: 60px; background: repeating-linear-gradient(90deg, #000, #000 19px, #111 20px); border: 1px solid var(--col-4); position: relative;"></div>
+                    <div style="position:absolute; right:2px; top:2px; font-size:9px;" id="timeDisplay">0.0s</div>
+                    <div id="markers"></div>
+                    <div id="playhead"></div>
+                </div>
+
+                <div style="width: 100%;">
+                     <pre id="master-ascii-vu" class="ascii-vu-meter" style="color:#0ff; border-color:#0ff; width: 100%; box-sizing: border-box; font-size: 20px; line-height: 20px; height: 40px; padding-top: 10px;">MST : [░░░░░░░░░░░░░░░░░░░]</pre>
+                </div>
+             </div>
+        </div>
+
+        <div class="main-tabs">
+            <button class="main-tab-btn" onclick="UIManager.switchWorkspaceTab('loops')" data-i18n="LOOP_TRACKS">LOOP TRACKS</button>
+            <button class="main-tab-btn" onclick="UIManager.switchWorkspaceTab('drone')">DRONE SYNTH</button>
+            <button class="main-tab-btn" onclick="UIManager.switchWorkspaceTab('tracker'); MasterMixManager.render();" data-i18n="SONG_TRACKER">SONG TRACKER</button>
+            <button class="main-tab-btn active" onclick="UIManager.switchWorkspaceTab('live')">LIVE PERFORMANCE</button>
+        </div>
+
+        <div id="ws-tracker" class="workspace-panel">
+            <div class="section-title" style="background: linear-gradient(90deg, #222, transparent); color:#ccc; margin-bottom:10px; border-left: 4px solid #ccc; padding:4px;" data-i18n="SONG_TRACKER">SONG TRACKER</div>
+            <div class="retro-module" id="mod-tracker" style="border:none; box-shadow:none; padding-top: 5px;">
+                <div class="module-header"><span>SEQUENCER CONTROL</span><span data-i18n="SEQUENCER">[SEQUENCER]</span></div>
+                <div class="module-content">
+                    <div class="std-btn-grid" style="grid-template-columns: 1fr 1fr 1fr 1fr; margin-bottom: 5px; width: 50%;">
+                        <button onclick="TrackerManager.togglePlay()" id="trackerPlayBtn" class="std-btn btn-green" data-i18n="PLAY_SONG">[P]LAY</button>
+                        <button onclick="TrackerManager.stop()" class="std-btn btn-yellow" data-i18n="STOP_SONG">ST[O]P</button>
+                        <button onclick="TrackerManager.saveSong()" class="std-btn btn-blue">SAVE</button>
+                        <button onclick="document.getElementById('loadSongFile').click()" class="std-btn btn-orange">LOAD</button>
+                        <input type="file" id="loadSongFile" accept=".trk,.json" style="display:none;" onchange="TrackerManager.loadSong(event)">
+                    </div>
+                    <div style="display:flex; justify-content: space-between; margin-bottom: 5px; align-items:center;">
+                         <div style="display:flex; gap:5px; align-items:center;">
+                            <span style="font-size:10px; color:#888;" id="patSelLabel">PATTERN:</span>
+                            <select id="patternSelect" onchange="TrackerManager.selectPattern(this.value)" style="height:25px; width:60px;" aria-labelledby="patSelLabel">
+                                <option value="0">00</option>
+                            </select>
+                            <button onclick="TrackerManager.addPattern()" class="std-btn small btn-cyan" title="Add Pattern" style="font-size:9px; padding:2px 6px;">[+] ADD</button>
+                            <button onclick="TrackerManager.clonePattern()" class="std-btn small btn-yellow" title="Clone Current" style="font-size:9px; padding:2px 6px;">[C]LONE</button>
+                            <button onclick="TrackerManager.deletePattern()" class="std-btn small btn-red" title="Delete Pattern" style="font-size:9px; padding:2px 6px;">[-] DEL</button>
+                         </div>
+                         <div style="display:flex; gap:5px; align-items:center; font-size:10px; color:#888;">
+                            <label for="trackerFollow"><input type="checkbox" id="trackerFollow" checked aria-label="Follow Pattern"> FOLLOW</label>
+                            <label><input type="radio" name="trkMode" value="song" checked onchange="TrackerManager.setMode('song')" aria-label="Song Mode"> SONG</label>
+                            <label><input type="radio" name="trkMode" value="pattern" onchange="TrackerManager.setMode('pattern')" aria-label="Pattern Mode"> PATTERN</label>
+                         </div>
+                    </div>
+                    
+                    <div style="margin-bottom:5px;">
+                        <label for="trackerSequenceInput" style="color:#666; font-size:9px;">SONG SEQ (e.g. 00, 00, 01, 02):</label>
+                        <input type="text" id="trackerSequenceInput" value="0" oninput="this.value = this.value.replace(/[^0-9, ]/g, '')" onchange="TrackerManager.updateSequence(this.value)" style="width:100%; font-family:monospace; font-size:10px;" aria-label="Song Sequence">
+                    </div>
+
+                    <div id="trackerGrid" class="tracker-grid">
+                        <canvas id="trackerCanvas"></canvas>
+                    </div>
+                    <div style="margin-top:5px; display:flex; justify-content:space-between; font-size:9px; color:#666;">
+                         <span>COMMANDS: Click to cycle (---, ON, OFF, MUT, UNM, LOP)</span>
+                         <button onclick="TrackerManager.addRow()" class="std-btn small btn-cyan">ADD ROW</button>
+                 </div>
+                </div>
+            </div>
+            <div class="retro-module" id="mod-samplers" style="margin-top:15px;">
+                <div class="module-header">SAMPLER TRACKS [S1-S10]</div>
+                <div class="module-content" id="samplers-content" style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:5px;"></div>
+            </div>
+            <div class="retro-module" id="mod-mastermix" style="margin-top:15px;">
+                <div class="module-header">MASTERMIX [CONSOLE]</div>
+                <div class="module-content" id="mastermix-content"></div>
+            </div>
+        </div>
+
+        <div id="ws-drone" class="workspace-panel">
+            <div class="section-title" style="background: linear-gradient(90deg, #002222, transparent); color:#0ff; margin-bottom:10px; border-left: 4px solid #0ff; padding:4px;">DARK WAVE SYNTH</div>
+            <div class="retro-module" id="mod-drone" style="border:none; box-shadow:none;">
+                <div class="module-header">SYNTH RACK <span>[ANALOG+]</span></div> 
+                <div class="module-content">
+                    <div class="std-btn-grid" style="margin-bottom:5px;">
+                        <button class="std-btn btn-red" onclick="DroneSynth.stopAll()">[X] SILENCE ALL SYNTHS</button>
+                    </div>
+                    <div id="drone-instances-container" style="display:flex; flex-direction:column; gap:10px;"></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="ws-loops" class="workspace-panel">
+            <div class="section-title" style="background: linear-gradient(90deg, #002200, transparent); color:#0f0; margin-bottom:10px; border-left: 4px solid #0f0; padding:4px;" data-i18n="LOOP_TRACKS">LOOP TRACKS</div>
+              <div id="loopContainer"></div>
+        </div>
+
+        <div id="ws-live" class="workspace-panel active">
+            <div class="section-title" style="background: linear-gradient(90deg, #550000, transparent); color:#f55; margin-bottom:10px; border-left: 4px solid #f55; padding:4px;">LIVE PERFORMANCE</div>
+            <div class="retro-module" style="margin-bottom:10px; border-color: #888;">
+                <div class="module-header" style="background: #888; color:#000;">LIVE MIX MASTER</div>
+                <div class="module-content" id="live-mastermix-container"></div>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px;">
+                <div class="retro-module" style="border-color: #0f0;">
+                    <div class="module-header" style="background: #0f0; color:#000;">LIVE LOOPS</div>
+                    <div class="module-content" id="live-loops-container" style="display:flex; flex-direction:column; gap:5px;"></div>
+                </div>
+                <div class="retro-module" style="border-color: #f0f;">
+                    <div class="module-header" style="background: #f0f; color:#000;">LIVE DRONES</div>
+                    <div class="module-content" id="live-drones-container" style="display:flex; flex-direction:column; gap:5px;"></div>
+                </div>
+                <div class="retro-module" style="border-color: #08f;">
+                    <div class="module-header" style="background: #08f; color:#000;">LIVE SAMPLERS</div>
+                    <div class="module-content" id="live-samplers-container" style="display:flex; flex-direction:column; gap:5px;"></div>
+                </div>
+            </div>
+        </div>
+
+        <hr style="border: 1px dashed var(--term-dim); margin: 20px 0;">
+ 
+		<div id="part3" style="border:none; background:transparent; padding:0; margin-bottom: 40px;">
+            <div class="section-title" style="background: linear-gradient(90deg, #222200, transparent); color:#ff0; margin-bottom:10px; margin-top: 20px; border-left: 4px solid yellow; padding:4px;" data-i18n="EFFECTS_CTRL">EFFECTS CONTROLS</div>
+            
+            <div id="fx-tabs-container" class="fx-tabs"></div>
+            <div id="fx-controls-container" class="effects-grid"></div>
+        </div>
+        <hr style="border: 1px dashed var(--term-dim); margin: 20px 0;">
+
+        <div class="section-title" style="background: linear-gradient(90deg, #000033, transparent); color:#aaf; margin-bottom:10px; border-left: 4px solid #55f; padding:4px;">EDITORS & SETUP</div>
+        <div class="module-grid" style="grid-template-columns: 1fr 1fr 1fr; gap: 15px; margin-bottom: 20px;">
+            <div class="retro-module" id="mod-chain">
+                <div class="module-header"><span data-i18n="FX_CHAIN">FX CHAIN EDITOR</span><span data-i18n="PRESETS">[PRESETS]</span></div>
+                <div class="module-content">
+                    <div class="preset-row">
+                        <select id="editorPresetSelect" style="flex:1; margin-right:2px; height: 25px;" onchange="EffectManager.loadPresetToEditor(this.value)" aria-label="Load FX Chain Preset">
+                            <option value="">Load Existing...</option>
+                        </select>
+                    </div>
+                    <div class="preset-row">
+                        <input type="text" id="presetNameInput" placeholder="Preset Name" style="flex:1; height: 30px;" aria-label="New Preset Name">
+                        <button onclick="EffectManager.saveCurrentChainAsPreset()" class="std-btn btn-blue" style="flex:1;">SAVE PRESET</button>
+                    </div>
+                    <hr style="border:0; border-bottom:1px dashed #444; margin:5px 0;">
+                <div class="std-btn-grid" style="grid-template-columns: 1fr 1fr;">
+                    <button onclick="document.getElementById('loadPresetFile').click()" class="std-btn btn-orange" title="Import Chain Presets (.acp)">LOAD .ACP</button>
+                    <input type="file" id="loadPresetFile" accept=".acp,.json" style="display:none;" onchange="EffectManager.importPresets(this)">
+                    <button onclick="EffectManager.savePresetsOnly()" class="std-btn btn-blue" title="Export Chain Presets (.acp)">SAVE .ACP</button>
+                </div>
+                <div class="std-btn-grid" style="grid-template-columns: 1fr 1fr;">
+                    <button onclick="document.getElementById('loadFxFile').click()" class="std-btn btn-cyan" title="Load Bundle or Custom Effect (.afx)">LOAD BUNDLE</button>
+                        <input type="file" id="loadFxFile" accept=".afx,.json" multiple style="display:none;" onchange="EffectManager.loadCustomEffect(this)">
+                        <button onclick="EffectManager.exportBundle()" class="std-btn btn-purple" title="Export Everything as Bundle (.afx)">SAVE BUNDLE</button>
+                    </div>
+                    <hr style="border:0; border-bottom:1px dashed #444; margin:5px 0;">
+                    <div class="preset-row">
+                        <input type="text" id="effectSignalChain" value="QCATFODBVKZG" style="flex:2;" placeholder="Order (e.g. TF)" oninput="this.value = this.value.toUpperCase(); EffectManager.updateChainVisual(this.value)" aria-label="Effects Chain Order">
+                        <span style="font-size: 9px; color: #666;">(B,M,D,T,F,O,C,K,Q,A,Z,G)</span>
+                    </div>
+                    <div id="chainVisualDisplay" class="chain-visual">eQ > Comp > Dist > Fuzz > Odrv > Dly > RevB > reVm > dusK > ArpD > ZigZ > Griz</div>
+                    <div id="fxChainLegend" class="chain-legend" style="max-width: 100%;"></div>
+                </div>
+            </div>
+
+            <div class="retro-module" id="mod-global-presets">
+                <div class="module-header">GLOBAL PRESET EDITOR</div>
+                <div class="module-content">
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:5px; margin-bottom:5px;">
+                        <div><label style="font-size:9px;" for="presetSourceSelect">Source</label><select id="presetSourceSelect" style="width:100%; height:24px; font-size:10px;" aria-label="Preset Source"></select></div>
+                        <div><label style="font-size:9px;" for="newGlobalPresetName">Name</label><input type="text" id="newGlobalPresetName" style="width:70%; height:24px; font-size:10px;" aria-label="New Preset Name"></div>
+                    </div>
+                    <div class="std-btn-grid">
+                        <button class="std-btn btn-blue" onclick="EffectManager.saveGlobalPreset()">SAVE</button>
+                        <button class="std-btn btn-red" onclick="EffectManager.deleteGlobalPreset()">DEL</button>
+                    </div>
+                    <div class="std-btn-grid" style="margin-top:2px;">
+                        <button class="std-btn btn-orange" onclick="document.getElementById('loadGlobalFile').click()">LOAD .AGP</button>
+                        <input type="file" id="loadGlobalFile" accept=".agp,.json" style="display:none;" onchange="EffectManager.importGlobalPresetsFromFile(this)">
+                        <button class="std-btn btn-blue" onclick="EffectManager.saveGlobalPresetsToFile()">SAVE .AGP</button>
+                    </div>
+                    <hr style="border:0; border-bottom:1px dashed #444; margin:5px 0;">
+                    <select id="editorDeleteSelect" style="width:100%; height:120px; font-size:10px; background:#000; color:#0f0; border:1px solid #444; font-family:monospace; scrollbar-width: thin; scrollbar-color: var(--term-green) #111;" size="8" aria-label="Stored Global Presets"></select>
+                </div>
+            </div>
+
+            <div class="retro-module" id="mod-mapping">
+            <div class="module-header"><span data-i18n="INPUT_MAP">INPUT MAPPING & CONTROLS</span><span data-i18n="CONFIG">[CONFIG]</span></div>
+            <div class="module-content">
+                 <div id="keyMappingUI" class="key-mapping"></div>
+                 <div id="midiStatus" style="font-size:10px; color:#888; margin-top:5px;">Checking MIDI...</div>
+            </div>
+            </div>
+        </div>
+
+
+    <hr style="border: 1px dashed var(--term-dim); margin: 20px 0;">
+    <div class="layout-section user-manual" id="part5">
+      <div class="section-title" style="background: linear-gradient(90deg, #222, transparent); color:#ccc; margin-bottom:10px; border-left: 4px solid #fff; padding:4px;">User Manual / Manual de Usuario / Manual do Utilizador</div>
+
+      <div class="manual-tabs">
+          <button class="manual-tab-btn active" onclick="UIManager.switchManualTab('en')">[EN] English</button>
+          <button class="manual-tab-btn" onclick="UIManager.switchManualTab('es')">[ES] Español</button>
+          <button class="manual-tab-btn" onclick="UIManager.switchManualTab('pt')">[PT] Português</button>
+      </div>
+
+      <div id="manual-en" class="manual-content active">
+          <h3>ASCII Looper - Comprehensive Manual</h3>
+          
+          <h4>1. Workflow & Loop Controls</h4>
+          <ul>
+              <li><strong>Setup:</strong> Ensure [ENABLE SYNC] is checked. Set BPM (e.g., 120) and Bars (e.g., 2). Press <strong>[T]</strong> to hear the metronome.</li>
+              <li><strong>Record:</strong> Press any number <strong>[1-0]</strong>. The loop arms (Yellow). Recording starts automatically at the next bar (Red).</li>
+              <li><strong>Play/Stop/Clear:</strong> Short press <strong>[1-0]</strong> to Play/Stop. <strong>Long Press</strong> on a Stopped loop to CLEAR it. Long Press on Playing loop to STOP immediately.</li>
+              <li><strong>Overdub [+]:</strong> Press <strong>[+]</strong> to toggle Overdub Mode (Magenta). Press loop number to add audio. Feedback slider controls decay.</li>
+              <li><strong>Substitute [-]:</strong> Press <strong>[-]</strong> to toggle Substitute Mode (Teal). Replaces old audio in real-time instead of adding to it.</li>
+              <li><strong>Sustain [*]:</strong> Press <strong>[*]</strong> to toggle Momentary mode. Actions (Play/Record) only happen while the key is held down.</li>
+              <li><strong>Loop Modifiers:</strong> Use UI buttons to <strong>RTRG</strong> (Retrigger on-beat), <strong>MULT</strong> (Double length), <strong>1/2</strong> (Half speed), or <strong>NORM</strong> (Normalize volume).</li>
+          </ul>
+
+          <h4>2. Modules & Workspaces</h4>
+          <ul>
+              <li><strong>Input & Master Mix:</strong> Manage Mic or System Audio. Use the Console tab to mix loops, drones, and inputs. Apply global Master EQ/Comp here.</li>
+              <li><strong>FX Chain:</strong> Type letters (e.g., <code>QCATG</code>) to reorder effects natively per loop. Import <code>.afx</code> bundles to load Custom AudioWorklet effects.</li>
+              <li><strong>Drone Synth:</strong> 10 polyphonic synths. Features dual oscillators, Sub, FM, Filters, ADSR, and algorithmic rhythm generation (Euclidean/Chaos). Supports MIDI pitch-bend and mod-wheel.</li>
+              <li><strong>Song Tracker:</strong> Sequence loops and drones. Create Patterns, arrange them in Song Mode. Commands: <strong>ON</strong> (Play), <strong>OFF</strong> (Stop), <strong>MUT</strong> (Mute), <strong>UNM</strong> (Unmute), <strong>LOP</strong> (Restart pattern).</li>
+              <li><strong>Sample Lab:</strong> Offline DSP editor. Extract audio from loops, apply high-quality SoundTouch time-stretching (sync to bars) or pitch shifting, and send it back.</li>
+          </ul>
+
+          <h4>3. MIDI & Key Mapping</h4>
+          <ul>
+              <li><strong>MIDI Learn:</strong> Right-click almost any slider/knob to enter "MIDI Learn" mode, then move a knob on your MIDI controller to assign it. Press [ESC] to cancel.</li>
+              <li><strong>Mappings:</strong> Use the [CONFIG] tab to manually assign Keyboard, MIDI Notes, and Gamepad buttons.</li>
+              <li><strong>Transport:</strong> Standard MIDI Play/Stop/Continue messages map automatically to the Tracker.</li>
+          </ul>
+
+          <h4>4. Global Hotkeys</h4>
+          <table style="width:100%; border-collapse: collapse; font-size: 11px; margin-top: 5px;">
+              <tr style="border-top: 1px dashed #333;">
+                  <td style="padding: 4px; color: #0f0;">[1]-[0]</td>
+                  <td style="padding: 4px;">Loops 1-10</td>
+                  <td style="padding: 4px; color: #0f0;">[Space]</td>
+                  <td style="padding: 4px;">Stop All</td>
+              </tr>
+              <tr>
+                  <td style="padding: 4px; color: #0f0;">[Q]-[P]</td>
+                  <td style="padding: 4px;">Drones 1-10</td>
+                  <td style="padding: 4px; color: #0f0;">[R]</td>
+                  <td style="padding: 4px;">Record Master</td>
+              </tr>
+              <tr style="border-top: 1px dashed #333;">
+                  <td style="padding: 4px; color: #0f0;">[+] / [-] / [*]</td>
+                  <td style="padding: 4px;">Overdub / Sub / Sus</td>
+                  <td style="padding: 4px; color: #0f0;">[H]</td>
+                  <td style="padding: 4px;">Half Speed</td>
+              </tr>
+              <tr>
+                  <td style="padding: 4px; color: #0f0;">[Z] / [Sh]+[Z]</td>
+                  <td style="padding: 4px;">Undo / Redo</td>
+                  <td style="padding: 4px; color: #0f0;">[M] / [N]</td>
+                  <td style="padding: 4px;">Master Rec / Metronome</td>
+              </tr>
+          </table>
+
+          <h4>5. File Types</h4>
+          <ul>
+              <li><strong>.alp</strong>: Project File (Contains settings & audio).</li>
+              <li><strong>.wav</strong>: Exported Audio (Loops, Mixes, Samples).</li>
+              <li><strong>.trk</strong>: Tracker Song Sequence.</li>
+              <li><strong>.afx</strong>: Custom AudioWorklet & Preset Bundle.</li>
+              <li><strong>.acp / .agp / .ald</strong>: FX Chain, Global, and Drone Presets.</li>
+          </ul>
+
+          <h4>6. Credits & License</h4>
+          <ul>
+              <li>Licensed under <a href="https://www.gnu.org/licenses/old-licenses/gpl-2.0.html" target="_blank" style="color: #464;">GPL 2.0</a>.</li>
+              <li>Inspired by <a href="https://github.com/free-wheeling/freewheeling" target="_blank" style="color: #464;">Freewheeling Looper</a>.</li>
+              <li>SoundTouchJS by Olli Parviainen.</li>
+          </ul>
+
+          <h4>7. Pro Tips</h4>
+          <ul>
+              <li><strong>Latency Calibration:</strong> Always run the PING TEST in the [TIMING] tab with your speakers on to auto-calibrate roundtrip latency.</li>
+              <li><strong>Effect Reordering:</strong> Type letters directly into the FX Chain box (e.g., "D" before "T" for delay into distortion) to radically change the sound.</li>
+          </ul>
+      </div>
+
+      <div id="manual-es" class="manual-content">
+          <h3>ASCII Looper - Manual Completo</h3>
+          
+          <h4>1. Flujo de Trabajo y Controles de Loop</h4>
+          <ul>
+              <li><strong>Configuración:</strong> Active [ENABLE SYNC]. Ajuste los BPM y Compases (Bars). Pulse [T] o el Metrónomo para escuchar la claqueta.</li>
+              <li><strong>Grabar:</strong> Pulse un número <strong>[1-0]</strong>. El loop se arma (Amarillo) y graba al inicio del compás (Rojo).</li>
+              <li><strong>Play/Parar/Borrar:</strong> Pulsación corta para Play/Stop. <strong>Pulsación Larga</strong> en loop Parado borra la pista. Pulsación Larga en loop sonando hace un corte de inmediato.</li>
+              <li><strong>Overdub [+]:</strong> Pulse <strong>[+]</strong> (Magenta). Añade audio sobre la capa existente. El nivel de decaimiento se controla con el slider "Fbk".</li>
+              <li><strong>Sustituir [-]:</strong> Pulse <strong>[-]</strong> (Turquesa). Reemplaza el audio antiguo en tiempo real en lugar de sumar (Punch-in destructivo).</li>
+              <li><strong>Sustain [*]:</strong> Pulse <strong>[*]</strong>. Las acciones de Grabar/Play solo ocurren mientras mantenga la tecla presionada (Momentary).</li>
+              <li><strong>Modificadores:</strong> Use los botones de la interfaz para <strong>RTRG</strong> (Reiniciar a tiempo), <strong>MULT</strong> (Doblar duración), <strong>1/2</strong> (Media velocidad), o <strong>NORM</strong> (Normalizar volumen).</li>
+          </ul>
+
+          <h4>2. Módulos y Espacios de Trabajo</h4>
+          <ul>
+              <li><strong>Input & Master Mix:</strong> Administre entradas de Micrófono o Sistema. Use la consola maestra para mezclar pistas, drones y ecualizar globalmente.</li>
+              <li><strong>FX Chain:</strong> Escriba letras (ej. <code>QCATG</code>) para reordenar efectos. Importe paquetes <code>.afx</code> para cargar efectos personalizados basados en AudioWorklets.</li>
+              <li><strong>Drone Synth:</strong> 10 Sintetizadores polifónicos. Incluye osciladores duales, Sub, FM, ADSR y generación rítmica Euclidiana/Caos. Soporta rueda de modulación y Pitch Bend MIDI.</li>
+              <li><strong>Song Tracker:</strong> Secuencie loops y drones de forma automática. Comandos de celda: <strong>ON</strong> (Tocar), <strong>OFF</strong> (Parar), <strong>MUT</strong> (Mutear), <strong>UNM</strong> (Desmutear), <strong>LOP</strong> (Reiniciar patrón).</li>
+              <li><strong>Sample Lab:</strong> Editor DSP Offline. Extraiga audio de un loop, aplique Time-Stretch de alta calidad (SoundTouch) sincronizado a compases o cambie el tono, y envíelo de vuelta.</li>
+          </ul>
+
+          <h4>3. MIDI y Mapeo</h4>
+          <ul>
+              <li><strong>MIDI Learn:</strong> Haga clic derecho en casi cualquier control deslizante para entrar en modo "MIDI Learn", luego mueva una perilla en su controlador MIDI para asignarla. Pulse [ESC] para cancelar.</li>
+              <li><strong>Mapeo:</strong> Use la pestaña [CONFIG] para asignar Teclado, Notas MIDI o botones de Gamepad manualmente.</li>
+              <li><strong>Transporte:</strong> Mensajes estándar MIDI de Play/Stop/Continuar mapean automáticamente al Secuenciador (Tracker).</li>
+          </ul>
+
+          <h4>4. Teclas Rápidas Globales</h4>
+          <table style="width:100%; border-collapse: collapse; font-size: 11px; margin-top: 5px;">
+              <tr style="border-top: 1px dashed #333;">
+                  <td style="padding: 4px; color: #0f0;">[1]-[0]</td>
+                  <td style="padding: 4px;">Loops 1-10</td>
+                  <td style="padding: 4px; color: #0f0;">[Space]</td>
+                  <td style="padding: 4px;">Parar Todo</td>
+              </tr>
+              <tr>
+                  <td style="padding: 4px; color: #0f0;">[Q]-[P]</td>
+                  <td style="padding: 4px;">Drones 1-10</td>
+                  <td style="padding: 4px; color: #0f0;">[R]</td>
+                  <td style="padding: 4px;">Grabar Master</td>
+              </tr>
+              <tr style="border-top: 1px dashed #333;">
+                  <td style="padding: 4px; color: #0f0;">[+] / [-] / [*]</td>
+                  <td style="padding: 4px;">Overdub / Sub / Sus</td>
+                  <td style="padding: 4px; color: #0f0;">[H]</td>
+                  <td style="padding: 4px;">Media Velocidad</td>
+              </tr>
+              <tr>
+                  <td style="padding: 4px; color: #0f0;">[Z] / [Sh]+[Z]</td>
+                  <td style="padding: 4px;">Deshacer / Rehacer</td>
+                  <td style="padding: 4px; color: #0f0;">[M] / [N]</td>
+                  <td style="padding: 4px;">Grab Master / Metrónomo</td>
+              </tr>
+          </table>
+
+          <h4>5. Tipos de Archivo</h4>
+          <ul>
+              <li><strong>.alp</strong>: Proyecto (Guarda configuración y audio codificado).</li>
+              <li><strong>.wav</strong>: Exportación (Pistas individuales o Master Mix).</li>
+              <li><strong>.trk</strong>: Secuencia de Canción (Tracker).</li>
+              <li><strong>.afx</strong>: Efecto Personalizado / Paquete de Presets.</li>
+              <li><strong>.acp / .agp / .ald</strong>: Presets de FX Chain, Globales y Drones.</li>
+          </ul>
+
+          <h4>6. Créditos y Licencia</h4>
+          <ul>
+              <li>Licencia <a href="https://www.gnu.org/licenses/old-licenses/gpl-2.0.html" target="_blank" style="color: #464;">GPL 2.0</a>.</li>
+              <li>Inspirado en <a href="https://github.com/free-wheeling/freewheeling" target="_blank" style="color: #464;">Freewheeling Looper</a>.</li>
+              <li>SoundTouchJS por Olli Parviainen.</li>
+          </ul>
+
+          <h4>7. Atajos Avanzados</h4>
+          <ul>
+              <li><strong>Calibración de Latencia:</strong> Ejecute siempre el PING TEST en la pestaña [SYNC] con los altavoces encendidos para autocalibrar la latencia.</li>
+              <li><strong>Reordenar Efectos:</strong> Escriba las letras en la caja FX Chain (ej. "D" antes de "T") para alterar radicalmente el procesamiento de la señal.</li>
+          </ul>
+      </div>
+
+      <div id="manual-pt" class="manual-content">
+          <h3>ASCII Looper - Manual Completo</h3>
+          
+          <h4>1. Fluxo de Trabalho e Controlos de Loop</h4>
+          <ul>
+              <li><strong>Configuração:</strong> Ative [ENABLE SYNC]. Ajuste o BPM e os Compassos (Bars). Prima [T] ou o Metrónomo para ouvir a marcação de tempo.</li>
+              <li><strong>Gravar:</strong> Prima um número <strong>[1-0]</strong>. O loop é armado (Amarelo) e começa a gravar no compasso seguinte (Vermelho).</li>
+              <li><strong>Tocar/Parar/Limpar:</strong> Pressão curta para Play/Stop. <strong>Pressão Longa</strong> num loop parado limpa-o. Pressão Longa num loop a tocar para-o imediatamente.</li>
+              <li><strong>Overdub [+]:</strong> Prima <strong>[+]</strong> (Magenta). Adiciona áudio por cima da gravação existente. O decay é controlado pelo slider "Fbk".</li>
+              <li><strong>Substituir [-]:</strong> Prima <strong>[-]</strong> (Ciano). Substitui o áudio antigo em tempo real em vez de o somar (Punch-in destrutivo).</li>
+              <li><strong>Sustain [*]:</strong> Prima <strong>[*]</strong>. As ações de gravação/reprodução apenas ocorrem enquanto a tecla estiver premida (Momentary).</li>
+              <li><strong>Modificadores:</strong> Use os botões da interface para <strong>RTRG</strong> (Reiniciar no tempo), <strong>MULT</strong> (Dobrar duração), <strong>1/2</strong> (Meia velocidade), ou <strong>NORM</strong> (Normalizar volume).</li>
+          </ul>
+
+          <h4>2. Módulos e Espaços de Trabalho</h4>
+          <ul>
+              <li><strong>Input & Master Mix:</strong> Gira as entradas de Microfone ou Sistema. Use a aba "Console" para misturar loops, drones e equalizar a saída master globalmente.</li>
+              <li><strong>FX Chain:</strong> Escreva letras (ex: <code>QCATG</code>) para reordenar efeitos. Importe pacotes <code>.afx</code> para carregar efeitos personalizados baseados em AudioWorklets.</li>
+              <li><strong>Drone Synth:</strong> 10 Sintetizadores polifónicos. Inclui Osciladores duplos, Sub, FM, ADSR e geração de ritmo Euclidiana/Caos. Suporta Pitch Bend e Mod Wheel via MIDI.</li>
+              <li><strong>Song Tracker:</strong> Sequencie loops e drones automaticamente. Comandos: <strong>ON</strong> (Tocar), <strong>OFF</strong> (Parar), <strong>MUT</strong> (Mute), <strong>UNM</strong> (Unmute), <strong>LOP</strong> (Reiniciar padrão).</li>
+              <li><strong>Sample Lab:</strong> Editor DSP Offline. Extraia áudio de um loop, aplique Time-Stretch de alta qualidade (SoundTouch) sincronizado com os compassos ou Pitch Shift, e envie-o de volta.</li>
+          </ul>
+
+          <h4>3. MIDI e Mapeamento</h4>
+          <ul>
+              <li><strong>MIDI Learn:</strong> Clique com o botão direito em quase qualquer controlo deslizante, depois mova um botão no seu comando MIDI para o atribuir. Prima [ESC] para cancelar.</li>
+              <li><strong>Mapeamento:</strong> Use a aba [CONFIG] para atribuir manualmente botões do Teclado, Notas MIDI ou Gamepad.</li>
+              <li><strong>Transporte:</strong> Mensagens padrão MIDI de Play/Stop/Continuar mapeiam automaticamente para o Sequenciador (Tracker).</li>
+          </ul>
+
+          <h4>4. Teclas de Atalho Globais</h4>
+          <table style="width:100%; border-collapse: collapse; font-size: 11px; margin-top: 5px;">
+              <tr style="border-top: 1px dashed #333;">
+                  <td style="padding: 4px; color: #0f0;">[1]-[0]</td>
+                  <td style="padding: 4px;">Loops 1-10</td>
+                  <td style="padding: 4px; color: #0f0;">[Space]</td>
+                  <td style="padding: 4px;">Parar Tudo</td>
+              </tr>
+              <tr>
+                  <td style="padding: 4px; color: #0f0;">[Q]-[P]</td>
+                  <td style="padding: 4px;">Drones 1-10</td>
+                  <td style="padding: 4px; color: #0f0;">[R]</td>
+                  <td style="padding: 4px;">Gravar Master</td>
+              </tr>
+              <tr style="border-top: 1px dashed #333;">
+                  <td style="padding: 4px; color: #0f0;">[+] / [-] / [*]</td>
+                  <td style="padding: 4px;">Overdub / Sub / Sus</td>
+                  <td style="padding: 4px; color: #0f0;">[H]</td>
+                  <td style="padding: 4px;">Meia Velocidade</td>
+              </tr>
+              <tr>
+                  <td style="padding: 4px; color: #0f0;">[Z] / [Sh]+[Z]</td>
+                  <td style="padding: 4px;">Desfazer / Refazer</td>
+                  <td style="padding: 4px; color: #0f0;">[M] / [N]</td>
+                  <td style="padding: 4px;">Grav Master / Metrónomo</td>
+              </tr>
+          </table>
+
+          <h4>5. Tipos de Ficheiro</h4>
+          <ul>
+              <li><strong>.alp</strong>: Ficheiro de Projeto (Definições e áudio).</li>
+              <li><strong>.wav</strong>: Áudio Exportado (Loops, Misturas).</li>
+              <li><strong>.trk</strong>: Sequência de Música (Tracker).</li>
+              <li><strong>.afx</strong>: Efeito Personalizado / Pacote de Presets.</li>
+              <li><strong>.acp / .agp / .ald</strong>: Presets de FX Chain, Globais e Drones.</li>
+          </ul>
+
+          <h4>6. Créditos e Licença</h4>
+          <ul>
+              <li>Licenciado sob <a href="https://www.gnu.org/licenses/old-licenses/gpl-2.0.html" target="_blank" style="color: #464;">GPL 2.0</a>.</li>
+              <li>Inspirado em <a href="https://github.com/free-wheeling/freewheeling" target="_blank" style="color: #464;">Freewheeling Looper</a>.</li>
+              <li>SoundTouchJS por Olli Parviainen.</li>
+          </ul>
+
+          <h4>7. Dicas Pro</h4>
+          <ul>
+              <li><strong>Calibração de Latência:</strong> Execute sempre o PING TEST no painel [SYNC] com os monitores ligados para calibrar a latência do sistema.</li>
+              <li><strong>Reordenar Efeitos:</strong> Digite as letras na caixa FX Chain (ex. "D" antes de "T") para modificar drasticamente a cadeia de sinal.</li>
+          </ul>
+      </div>
+    </div>
+    
+</div>
+
+    <!-- 
+      =============================================
+      NEW: START OVERLAY
+      =============================================
+      This overlay forces a user interaction (click)
+      before initializing audio, which is required by
+      modern browsers.
+    -->
+    <div id="startOverlay">
+        <pre style="line-height: 1.2em; margin: 0 auto;">
+<span class="rainbow-text" style="font-size: 10px;"> <!-- THIS IS THE OVERLAY LOGO (DO NOT CHANGE IT) --->
+              ███                       ███                                                                                                                ████                █████                                         ██<!-- THIS IS THE LOGO (DO NOT CHANGE IT) --->          
+             ████                    ███████             ██████            ████████    ████████              ████████           ████████████             ███  ██             ███████████████     ██████████████████       ████████████<!-- THIS IS THE LOGO (DO NOT CHANGE IT) --->  
+           ███████                 █████████           ███ ████         █████████   █████████               ██████████        ████████████████      ███    ██████          ████     ██████████  ██████████████        ███████████████<!-- THIS IS THE LOGO (DO NOT CHANGE IT) --->  
+          ██  ████              ███    ███           ███   ███          █ ████      █ ████                 ████   █         ████████    ████████ ███     █████████      ███████          ████      ████              ██████     ████<!-- THIS IS THE LOGO (DO NOT CHANGE IT) --->  
+         █    ████       ██  ███                    ██    ████            ████        ███                  ███             ██████          ████████            █████  ███  ████         ████       ███     █         █ ███   ████<!-- THIS IS THE LOGO (DO NOT CHANGE IT) --->     
+       ██      █████████████████████              ██     ████            ████         ███                  ███             █████            ██████              ████        ███     ████          ███████████          ██ ███<!-- THIS IS THE LOGO (DO NOT CHANGE IT) --->         
+      ██  ███████████       ███████ ███████      ██                       ███         ███                 ███             █████              █████               ████       ████████              ███                  ███████ <!-- THIS IS THE LOGO (DO NOT CHANGE IT) --->       
+  █████████     ████                    █████   ███             █████    ███          ██                  ███             █████              █████               ████      ███                    ███                 ██  ████ <!-- THIS IS THE LOGO (DO NOT CHANGE IT) --->       
+ █████          ████                     ████   ███             ███      ███         ███                 ███               █████             ██████             ████       ███                    ██                  ██  ██ ████<!-- THIS IS THE LOGO (DO NOT CHANGE IT) --->      
+  ███           ████                    ████   ████           ███        ███         ███                 ███               █████            ████████           █████       ██                    ███         ███     ███     ████ <!-- THIS IS THE LOGO (DO NOT CHANGE IT) --->    
+████            █████     ████       █████      █████ ████████         ████████    ████████        ████████          █████  ███████       █████ ███████      ██████        ██               ████████        █████    ██         ██████<!-- THIS IS THE LOGO (DO NOT CHANGE IT) --->
+██              ████      ███████████             ███████            ███████     ███████           █████████████████████      ███████████████    ████████████████         ██               ████████████████████     ███            ███<!-- THIS IS THE LOGO (DO NOT CHANGE IT) --->
+                 █                                                                                    █                         ███████████         ███████████          ███                   ████                 ██                <!-- THIS IS THE LOGO (DO NOT CHANGE IT) --->
+                                                                                                                                                                      █████                    ███                ████<!-- THIS IS THE LOGO (DO NOT CHANGE IT) --->
+                                                                                                                                                                    ███                                         ███ <!-- THIS IS THE LOGO (DO NOT CHANGE IT) --->                 
+</span> <!-- END OF THE OVERLAY LOGO (DO NOT CHANGE IT) --->
+
+
+
+<div style="text-align:center; width:100%; margin-bottom:15px; opacity: 0.8; content-visibility: auto;">
+    <a id="overlayVersion" href="mailto:jorge.salgueiro@gmail.com" style="color: #464; text-decoration: none; font-size: 11px; font-weight: bold;">ASCII LOOPER © jorge salgueiro</a>
+</div>
+
+</pre>
+        <p>Click below to initialize the Audio Engine:</p>
+        <select id="langSelect" style="background:#000; color:#0f0; border:1px solid #0f0; padding:5px; margin-bottom:15px; font-family:'Courier New'; text-transform:uppercase;" onchange="I18n.lang = this.value;" aria-label="Language Selection">
+            <option value="en">English</option>
+            <option value="es">Español</option>
+            <option value="pt">Português</option>
+        </select>
+
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; width:100%; max-width:400px; margin-bottom:10px;">
+            <label style="color:#0f0; font-size:10px;">LATENCY HINT:
+                <select id="latencySelect" style="width:100%; background:#000; color:#0f0; border:1px solid #444;">
+                    <option value="interactive" selected>Interactive (Default)</option>
+                    <option value="0">0 (Lowest)</option>
+                    <option value="balanced">Balanced</option>
+                    <option value="playback">Playback</option>
+                </select>
+            </label>
+            <label style="color:#0f0; font-size:10px;">SAMPLE RATE:
+                <select id="sampleRateSelect" style="width:100%; background:#000; color:#0f0; border:1px solid #444;">
+                    <option value="44100" selected>44100 Hz</option>
+                    <option value="48000">48000 Hz</option>
+                    <option value="96000">96000 Hz</option>
+                    <option value="192000">192000 Hz</option>
+                </select>
+            </label>
+        </div>
+
+        <div id="driverSelection" style="width: 100%; max-width: 400px; margin-bottom: 20px;">
+            <button id="btn-start" class="full-width" style="font-size: 1.2em; padding: 15px; border-color: #0f0; color: #0f0;">[ START ASCII LOOPER ]</button>
+        </div>
+
+        <div id="driverInfo" style="font-size: 10px; color: #888; max-width: 400px; text-align: center; margin-bottom: 10px;">
+            NOTE: 
+            <br>To use <strong>ASIO (FlexASIO/ASIO4ALL)</strong> or <strong>JACK</strong>, configure your Browser or OS default audio device before starting.
+            <br>The app will automatically use the active system driver with optimized latency settings.
+        </div>
+
+    <div id="startupError" style="color: #f00; font-weight: bold; display: none; margin-top: 10px; border: 1px solid #f00; padding: 10px;"></div>
+    <p id="loadingText" style="display:none; color: #0f0;">Initializing Audio Subsystem...</p>
+</div>
+<!-- MODULARIZATION: prepared script slots (keep commented while app is monolithic).
+     Load order matters: data modules first, then engines, then managers, then main. -->
+<script src="modules/i18n.js" defer></script>
+<script src="modules/effects.js" defer></script>
+<script src="modules/scales.js" defer></script>
+<script src="modules/droneSynth.js" defer></script>
+<script src="modules/audioEngine.js" defer></script>
+<script src="modules/loopTracks.js" defer></script>
+<script src="modules/tracker.js" defer></script>
+<script src="modules/projectManager.js" defer></script>
+<script src="main.js" defer></script>
+</body>
+</html>
