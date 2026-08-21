@@ -1,7 +1,7 @@
 # Ascii-Looper
 ASCII Looper is a browser-based multi-track looper, drone synth and tracker for live experimental music powered by the Web Audio API.
 
-Created by **Jorge Salgueiro**, **ASCII Looper v0.75.99** is an all-in-one web application designed for live performance, sound design, multi-track looping, and algorithmic synth composition—all running natively in modern web browsers without external plugins.
+Created by **Jorge Salgueiro**, **ASCII Looper** is an all-in-one web application designed for live performance, sound design, multi-track looping, and algorithmic synth composition—all running natively in modern web browsers.
 
 ---
 
