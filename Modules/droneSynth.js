@@ -261,7 +261,7 @@ class DroneSynth {
             stepsHtml += `
             <div class="drone-step ${mutedClass}" 
                  id="ds-${id}-${i}"
-                 title="Step ${i+1}: ${noteName}"
+                 title="Step ${i+1}: ${noteName} | Shift+Wheel: semitone | Shift+Ctrl+Wheel: quarter-tone"
                  style="cursor: pointer; position: relative;"
                  onwheel="DroneSynth.handleStepWheel(event, ${id}, ${i})">
                 <span id="ds-lbl-${id}-${i}" style="pointer-events:none; position: relative; z-index: 10; text-shadow: 0 0 2px #000;">${noteName}</span>
@@ -556,9 +556,21 @@ class DroneSynth {
         const rng = document.getElementById(`ds-rng-${id}-${idx}`);
         if (!rng) return;
         let val = parseFloat(rng.value);
-        // Plain wheel = 1 semitone, Shift+wheel = 1 quarter-tone (microtonal)
-        const inc = e.shiftKey ? 0.0104166 : 0.041666;
-        val += (e.deltaY < 0 ? inc : -inc);
+        const SEMI = 1 / 24;    // 1 semitone
+        const QUARTER = 1 / 96; // 1 quarter-tone (microtonal)
+        // Browsers report Shift+wheel as horizontal scroll (deltaX, deltaY=0)
+        const delta = e.deltaY || e.deltaX;
+        if (e.shiftKey && e.ctrlKey) {
+            // Shift+Ctrl+wheel = 1 quarter-tone (microtonal)
+            val += (delta < 0 ? QUARTER : -QUARTER);
+        } else if (e.shiftKey) {
+            // Shift+wheel = 1 semitone (normal notes); snap to the semitone
+            // grid first so previous microtonal offsets resolve back to 12-TET
+            val = Math.round(val / SEMI) * SEMI + (delta < 0 ? SEMI : -SEMI);
+        } else {
+            // Plain wheel = 1 semitone
+            val += (delta < 0 ? SEMI : -SEMI);
+        }
         val = Math.max(0, Math.min(1, val));
         rng.value = val;
         this.updateStep(id, idx, val);
