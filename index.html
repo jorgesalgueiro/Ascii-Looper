@@ -230,6 +230,10 @@
                 <div style="width: 100%;">
                      <pre id="master-ascii-vu" class="ascii-vu-meter" style="color:#0ff; border-color:#0ff; width: 100%; box-sizing: border-box; font-size: 20px; line-height: 20px; height: 40px; padding-top: 10px;">MST : [░░░░░░░░░░░░░░░░░░░]</pre>
                 </div>
+
+                <div style="text-align:right;">
+                    <a href="#part6-debug" title="Open the Debug Console" style="color:#888; text-decoration:none; font-size:9px;">[&raquo;&raquo; DEBUG CONSOLE]</a>
+                </div>
              </div>
         </div>
 
@@ -665,6 +669,35 @@
     
 </div>
 
+    <hr style="border: 1px dashed var(--term-dim); margin: 20px 0;">
+
+    <!-- 
+      =============================================
+      DEBUG CONSOLE (user-toggleable verbose log)
+      =============================================
+    -->
+    <div class="layout-section" id="part6-debug">
+      <div class="section-title" style="background: linear-gradient(90deg, #220022, transparent); color:#f6f; margin-bottom:10px; border-left: 4px solid #f6f; padding:4px;">
+        DEBUG CONSOLE
+        <a href="#main" title="Back to top of page" style="float:right; color:#888; text-decoration:none; font-size:10px;">[^^^ BACK TO TOP]</a>
+      </div>
+      <div class="retro-module" id="mod-debug">
+        <div class="module-header"><span>VERBOSE DIAGNOSTICS</span><span id="debug-status" style="color:#666;">[OFF]</span></div>
+        <div class="module-content">
+          <div class="std-btn-grid" style="grid-template-columns: 1fr 1fr 1fr 1fr; margin-bottom:5px;">
+            <button onclick="DebugManager.toggle()" id="debug-toggle-btn" class="std-btn btn-green">[ ENABLE VERBOSE DEBUG ]</button>
+            <button onclick="DebugManager.snapshot()" class="std-btn btn-cyan">SNAPSHOT</button>
+            <button onclick="DebugManager.clear()" class="std-btn btn-yellow">CLEAR LOG</button>
+            <button onclick="DebugManager.save()" class="std-btn btn-blue">SAVE LOG</button>
+          </div>
+          <div style="font-size:9px; color:#888; margin-bottom:4px;">
+            When ON: mirrors console output, AudioContext state changes and all AudioWorklet traffic (main thread &lt;-&gt; audio thread). Toggle is remembered between sessions.
+          </div>
+          <div id="debug-log" class="debug-log" aria-label="Debug Log Output" aria-live="polite"></div>
+        </div>
+      </div>
+    </div>
+
     <!-- 
       =============================================
       NEW: START OVERLAY
@@ -749,6 +782,7 @@
 <script src="./Modules/loopTracks.js" defer></script>
 <script src="./Modules/tracker.js" defer></script>
 <script src="./Modules/projectManager.js" defer></script>
+<script src="./Modules/debug.js" defer></script>
 <script src="main.js" defer></script>
 </body>
 </html>

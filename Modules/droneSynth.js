@@ -28,8 +28,8 @@ class SynthInstance {
         this.activePresets = {};
         this.fxState = { reverb: false, machineReverb: false, delay: false, distortion: false, fuzz: false, overdrive: false, compressor: false, dusk: false, arpDelay: false, eq: false, zigZ: false, griz: false };
         this.params = {
-            volume: 0.25, detune: 10, subMix: 0.5, noiseMix: 0.1,
-            osc1Type: 'triangle', osc2Type: 'sawtooth', subType: 'triangle', noiseType: 'white',
+            volume: 0.25, detune: 10, subMix: 0.5, noiseMix: 0.1, unison: 0.35,
+            osc1Type: 'triangle', osc2Type: 'sawtooth', subType: 'triangle', noiseType: 'pink',
             cutoff: 800, res: 10, envMod: 1000, drive: 0,
             attack: 0.1, decay: 0.2, sustain: 0.8, release: 0.5,
             punch: 0, fmAmt: 0, // Percussion parameters
@@ -395,6 +395,7 @@ class DroneSynth {
                 <div class="control-group"><label for="d_volume_input_${id}" data-i18n-title="TIP_DRONE_VOL">Level <span id="d_volume_val_${id}">${synth.params.volume}</span></label><input type="range" id="d_volume_input_${id}" min="0" max="1.0" step="0.01" value="${synth.params.volume}" oninput="DroneSynth.setParam(${id}, 'volume', this.value)" aria-label="Drone Volume"></div>
                 <div class="control-group"><label for="d_pan_input_${id}" data-i18n-title="TIP_DRONE_PAN">Pan <span id="d_pan_val_${id}">${synth.params.pan}</span></label><input type="range" id="d_pan_input_${id}" min="-1" max="1" step="0.1" value="${synth.params.pan}" oninput="DroneSynth.setParam(${id}, 'pan', this.value)" aria-label="Drone Pan"></div>
                 <div class="control-group"><label for="d_detune_input_${id}" data-i18n-title="TIP_DRONE_DETUNE">Detune <span id="d_detune_val_${id}">${synth.params.detune}</span></label><input type="range" id="d_detune_input_${id}" min="0" max="50" value="${synth.params.detune}" oninput="DroneSynth.setParam(${id}, 'detune', this.value)" aria-label="Drone Detune"></div>
+                <div class="control-group"><label for="d_unison_input_${id}">Unisn <span id="d_unison_val_${id}">${synth.params.unison ?? 0.35}</span></label><input type="range" id="d_unison_input_${id}" min="0" max="1" step="0.01" value="${synth.params.unison ?? 0.35}" oninput="DroneSynth.setParam(${id}, 'unison', this.value)" aria-label="Unison Detune Layer"></div>
                 <div class="control-group"><label for="d_subMix_input_${id}" data-i18n-title="TIP_DRONE_SUB">Sub Osc <span id="d_subMix_val_${id}">${synth.params.subMix}</span></label><input type="range" id="d_subMix_input_${id}" min="0" max="1" step="0.01" value="${synth.params.subMix}" oninput="DroneSynth.setParam(${id}, 'subMix', this.value)" aria-label="Sub Oscillator Mix"></div>
                 <div class="control-group"><label for="d_fmAmt_input_${id}" data-i18n-title="TIP_DRONE_FM">FM <span id="d_fmAmt_val_${id}">${synth.params.fmAmt}</span></label><input type="range" id="d_fmAmt_input_${id}" min="0" max="5000" step="10" value="${synth.params.fmAmt || 0}" oninput="DroneSynth.setParam(${id}, 'fmAmt', this.value)" aria-label="Frequency Modulation"></div>
 
@@ -926,34 +927,44 @@ class DroneSynth {
         v.osc1.type = synth.params.osc1Type || 'sawtooth';
         v.osc2.type = synth.params.osc2Type || 'sawtooth';
         v.sub.type = synth.params.subType || 'triangle';
-        
+        v.uni.type = synth.params.osc2Type || 'sawtooth';
+
         const drift1 = (Math.random() - 0.5) * 15.0;
         const drift2 = (Math.random() - 0.5) * 15.0;
+        const drift3 = (Math.random() - 0.5) * 15.0;
+        const uniSpread = 8 + (synth.params.unison || 0) * 14; // cents, wider with more unison
         const startOffset = 0.004;
-        
+
         // Glide Logic (Polyphonic Portamento)
         if (synth.params.glide > 0 && synth.lastFreq) {
             v.osc1.frequency.cancelScheduledValues(now);
             v.osc1.frequency.setValueAtTime(Math.max(1, synth.lastFreq), now + startOffset);
             v.osc1.frequency.exponentialRampToValueAtTime(Math.max(1, freq), now + startOffset + (synth.params.glide * duration));
-            
+
             v.osc2.frequency.cancelScheduledValues(now);
             v.osc2.frequency.setValueAtTime(Math.max(1, synth.lastFreq), now + startOffset);
             v.osc2.frequency.exponentialRampToValueAtTime(Math.max(1, freq), now + startOffset + (synth.params.glide * duration));
-            
+
+            v.uni.frequency.cancelScheduledValues(now);
+            v.uni.frequency.setValueAtTime(Math.max(1, synth.lastFreq), now + startOffset);
+            v.uni.frequency.exponentialRampToValueAtTime(Math.max(1, freq), now + startOffset + (synth.params.glide * duration));
+
             v.sub.frequency.cancelScheduledValues(now);
             v.sub.frequency.setValueAtTime(Math.max(1, synth.lastFreq * 0.5), now + startOffset);
             v.sub.frequency.exponentialRampToValueAtTime(Math.max(1, freq * 0.5), now + startOffset + (synth.params.glide * duration));
         } else {
             const startFreq = synth.params.punch > 0 ? Math.min(22000, freq + synth.params.punch) : freq;
             const subStartFreq = synth.params.punch > 0 ? Math.min(22000, (freq + synth.params.punch) * 0.5) : freq * 0.5;
-            
+
             v.osc1.frequency.cancelScheduledValues(now);
             v.osc1.frequency.setTargetAtTime(Math.max(1, startFreq), now, 0.005);
-            
+
             v.osc2.frequency.cancelScheduledValues(now);
             v.osc2.frequency.setTargetAtTime(Math.max(1, startFreq), now, 0.005);
-            
+
+            v.uni.frequency.cancelScheduledValues(now);
+            v.uni.frequency.setTargetAtTime(Math.max(1, startFreq), now, 0.005);
+
             v.sub.frequency.cancelScheduledValues(now);
             v.sub.frequency.setTargetAtTime(Math.max(1, subStartFreq), now, 0.005);
 
@@ -961,6 +972,7 @@ class DroneSynth {
                 const dropTime = 0.05;
                 v.osc1.frequency.setTargetAtTime(Math.max(1, freq), now + startOffset, dropTime / 5);
                 v.osc2.frequency.setTargetAtTime(Math.max(1, freq), now + startOffset, dropTime / 5);
+                v.uni.frequency.setTargetAtTime(Math.max(1, freq), now + startOffset, dropTime / 5);
                 v.sub.frequency.setTargetAtTime(Math.max(1, freq * 0.5), now + startOffset, dropTime / 5);
             }
         }
@@ -969,36 +981,51 @@ class DroneSynth {
         // Detune & Mix
         v.osc1.detune.cancelScheduledValues(now);
         v.osc1.detune.setValueAtTime(drift1, now + startOffset);
-        
+
         v.osc2.detune.cancelScheduledValues(now);
         v.osc2.detune.setValueAtTime(synth.params.detune + drift2, now + startOffset);
-        
+
+        // Unison osc mirrors osc2's detune on the opposite side of osc1 (symmetric supersaw spread)
+        v.uni.detune.cancelScheduledValues(now);
+        v.uni.detune.setValueAtTime(-(synth.params.detune + uniSpread) + drift3, now + startOffset);
+
         v.sub.detune.cancelScheduledValues(now);
         v.sub.detune.setValueAtTime(0, now + startOffset);
-        
+
         v.subMix.gain.cancelScheduledValues(now);
         v.subMix.gain.setValueAtTime(synth.params.subMix, now + startOffset);
-        
+
+        v.uniGain.gain.cancelScheduledValues(now);
+        v.uniGain.gain.setValueAtTime((synth.params.unison || 0) * 0.4, now + startOffset);
+
         v.noiseGain.gain.cancelScheduledValues(now);
         v.noiseGain.gain.setValueAtTime(synth.params.noiseMix, now + startOffset);
-        
+
         v.fmGain.gain.cancelScheduledValues(now);
         v.fmGain.gain.setValueAtTime(synth.params.fmAmt || 0, now + startOffset);
 
-        // Filter
+        // Filter (cascaded 24dB/oct)
         v.filter.type = synth.params.filterType || 'lowpass';
         v.filter.Q.value = synth.params.res;
+        v.filter2.type = v.filter.type;
+        v.filter2.Q.value = synth.params.res * 0.4; // scaled to avoid stacked resonance blowup
         const baseCutoff = synth.params.cutoff;
         const peakCutoff = Math.min(22000, Math.max(20, baseCutoff + synth.params.envMod));
         const atkDur = synth.params.attack || 0.05;
         const atkEnd = now + startOffset + atkDur;
         const releaseTime = synth.params.release || 0.1;
-        
+
         v.filter.frequency.cancelScheduledValues(now);
         try { v.filter.frequency.setValueAtTime(v.filter.frequency.value, now); } catch(e){}
         v.filter.frequency.linearRampToValueAtTime(Math.max(15, baseCutoff), now + startOffset);
         if (Math.abs(peakCutoff - baseCutoff) > 0.1) {
             v.filter.frequency.exponentialRampToValueAtTime(Math.max(15, peakCutoff), atkEnd + 0.001);
+        }
+        v.filter2.frequency.cancelScheduledValues(now);
+        try { v.filter2.frequency.setValueAtTime(v.filter2.frequency.value, now); } catch(e){}
+        v.filter2.frequency.linearRampToValueAtTime(Math.max(15, baseCutoff), now + startOffset);
+        if (Math.abs(peakCutoff - baseCutoff) > 0.1) {
+            v.filter2.frequency.exponentialRampToValueAtTime(Math.max(15, peakCutoff), atkEnd + 0.001);
         }
 
         // Drive, Vibrato & LFO
@@ -1039,6 +1066,8 @@ class DroneSynth {
         v.panner.pan.cancelScheduledValues(now);
         v.panner.pan.setValueAtTime(Math.max(-1, Math.min(1, (synth.params.pan || 0) + panSpread)), now + startOffset);
         v.panSpread = panSpread;
+        v.drift3 = drift3;
+        v.uniSpread = uniSpread;
 
         // Connect & Noise
         if (!synth.fxInput) { synth.fxInput = ctx.createGain(); this.rebuildFxChain(synth.id); }
@@ -1128,6 +1157,34 @@ class DroneSynth {
         node.loop = true;
         return node;
     }
+
+    // Slow random-walk buffer (< ~1.5Hz content) used as analog pitch drift.
+    // Voices share the buffer but start at random offsets, so each wanders independently.
+    static getDriftBuffer(ctx) {
+        if (this.driftBuffer && this.driftCtx === ctx) return this.driftBuffer;
+        const dur = 16; // seconds, loops seamlessly (last point equals first)
+        const len = Math.floor(ctx.sampleRate * dur);
+        const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+        const d = buf.getChannelData(0);
+        const pts = Math.max(8, Math.round(dur / 0.35)); // one waypoint per ~0.35s
+        const vals = new Float32Array(pts);
+        vals[0] = Math.random() * 2 - 1;
+        for (let i = 1; i < pts - 1; i++) {
+            // Bounded random walk keeps the wander smooth and centered
+            vals[i] = Math.max(-1, Math.min(1, vals[i-1] + (Math.random() * 2 - 1) * 0.8));
+        }
+        vals[pts - 1] = vals[0]; // seamless loop point
+        const seg = (pts - 1);
+        for (let i = 0; i < len; i++) {
+            const p = (i / len) * seg;
+            const i0 = Math.floor(p);
+            const frac = p - i0;
+            d[i] = vals[i0] * (1 - frac) + vals[i0 + 1] * frac;
+        }
+        this.driftBuffer = buf;
+        this.driftCtx = ctx;
+        return buf;
+    }
     
     static getVoiceFromPool(ctx) {
         if (this.voicePool.length > 0) {
@@ -1136,10 +1193,15 @@ class DroneSynth {
             v.osc1.frequency.cancelScheduledValues(t);
             v.osc2.frequency.cancelScheduledValues(t);
             v.sub.frequency.cancelScheduledValues(t);
+            v.uni.frequency.cancelScheduledValues(t);
             v.osc1.detune.cancelScheduledValues(t);
             v.osc2.detune.cancelScheduledValues(t);
             v.sub.detune.cancelScheduledValues(t);
+            v.uni.detune.cancelScheduledValues(t);
             v.filter.frequency.cancelScheduledValues(t);
+            v.filter2.frequency.cancelScheduledValues(t);
+            v.uniGain.gain.cancelScheduledValues(t);
+            v.uniGain.gain.setValueAtTime(0, t);
             
             v.vca.gain.cancelScheduledValues(t);
             try { v.vca.gain.setValueAtTime(v.vca.gain.value || 0, t); } catch(e){}
@@ -1155,16 +1217,32 @@ class DroneSynth {
         const osc1 = ctx.createOscillator();
         const osc2 = ctx.createOscillator();
         const sub = ctx.createOscillator(); sub.type = 'triangle';
+        const uni = ctx.createOscillator(); uni.type = 'sawtooth'; // Unison detune layer
         const noiseGain = ctx.createGain(); noiseGain.gain.value = 0;
         const fmGain = ctx.createGain(); fmGain.gain.value = 0; // FM Modulator Gain
-        
+
         const oscMix = ctx.createGain(); oscMix.gain.value = 0.6;
         const subMix = ctx.createGain(); subMix.gain.value = 0;
-        
+        const uniGain = ctx.createGain(); uniGain.gain.value = 0;
+
         const filter = ctx.createBiquadFilter();
+        const filter2 = ctx.createBiquadFilter(); // Cascaded stage -> 24dB/oct "ladder" fatness
         const vca = ctx.createGain(); vca.gain.value = 0;
         const panner = ctx.createStereoPanner();
-        
+
+        // Analog oscillator drift: slow random wander (cents) on every oscillator pitch
+        const driftGain = ctx.createGain(); driftGain.gain.value = 3.0;
+        const driftSrc = ctx.createBufferSource();
+        driftSrc.buffer = this.getDriftBuffer(ctx);
+        driftSrc.loop = true;
+        driftSrc.playbackRate.value = 0.7 + Math.random() * 0.6;
+        driftSrc.connect(driftGain);
+        driftGain.connect(osc1.detune);
+        driftGain.connect(osc2.detune);
+        driftGain.connect(sub.detune);
+        driftGain.connect(uni.detune);
+        driftSrc.start(0, Math.random() * (driftSrc.buffer.duration - 1));
+
         // FX & Vibrato
         const drive = ctx.createWaveShaper(); drive.oversample = '2x';
         const vib = ctx.createOscillator();
@@ -1172,29 +1250,44 @@ class DroneSynth {
         vib.connect(vibGain);
         vibGain.connect(osc1.detune);
         vibGain.connect(osc2.detune);
+        vibGain.connect(uni.detune);
         vib.start();
-        
-        const shaper = ctx.createWaveShaper();
-        
+
+        const shaper = ctx.createWaveShaper(); shaper.oversample = '2x';
+
         // LFO
         const lfo = ctx.createOscillator(); lfo.type = 'sine';
         const lfoGain = ctx.createGain(); lfoGain.gain.value = 0;
         lfo.connect(lfoGain);
         lfoGain.connect(filter.frequency);
+        lfoGain.connect(filter2.frequency);
         lfo.start();
 
-        // Saturation Curve
+        // Saturation Curve (asymmetric tube-style soft clip, DC-balanced)
         if (!this.satCurve) {
-            const n = 256; this.satCurve = new Float32Array(n);
-            for(let i=0; i<n; i++) { let x = i*2/n - 1; this.satCurve[i] = Math.tanh(x * 2.5); }
+            const n = 1024; this.satCurve = new Float32Array(n);
+            for(let i=0;i<n;i++){
+                const x = i*2/n - 1;
+                // Fatter negative half => even harmonics => analog warmth
+                this.satCurve[i] = x >= 0 ? Math.tanh(x * 1.7) : 1.12 * Math.tanh(x * 2.3);
+            }
+            // Remove DC offset introduced by the asymmetry, normalize to +/-1
+            let mean = 0;
+            for(let i=0;i<n;i++) mean += this.satCurve[i];
+            mean /= n;
+            let peak = 0;
+            for(let i=0;i<n;i++){ this.satCurve[i] -= mean; const a = Math.abs(this.satCurve[i]); if(a > peak) peak = a; }
+            if (peak > 0) for(let i=0;i<n;i++) this.satCurve[i] /= peak;
         }
         shaper.curve = this.satCurve;
 
         // Connections
         osc1.connect(oscMix);
         osc2.connect(oscMix);
+        uni.connect(uniGain);
+        uniGain.connect(oscMix);
         sub.connect(subMix);
-        
+
         osc1.connect(fmGain);
         fmGain.connect(osc2.frequency); // Cross-Mod: Osc1 modulates Osc2 Freq
 
@@ -1202,26 +1295,27 @@ class DroneSynth {
         oscMix.connect(drive);
         subMix.connect(drive);
         noiseGain.connect(drive);
-        
+
         drive.connect(filter);
-        
-        filter.connect(vca);
+
+        filter.connect(filter2);
+        filter2.connect(vca);
         vca.connect(shaper);
         shaper.connect(panner);
 
         // Start oscillators once and keep them running
-        osc1.start(); osc2.start(); sub.start();
-        
+        osc1.start(); osc2.start(); sub.start(); uni.start();
+
         // Initialize drive curve to identity to avoid silence if parameter unset
         if (!this.identityCurve) {
             const n = 256; this.identityCurve = new Float32Array(n);
-            for(let i=0; i<n; i++) this.identityCurve[i] = (i*2/n - 1);
+            for(let i=0;i<n;i++) this.identityCurve[i] = (i*2/n - 1);
         }
         drive.curve = this.identityCurve;
 
         return {
-            nodes: [osc1, osc2, sub, oscMix, subMix, filter, vca, null, noiseGain, lfo, lfoGain, panner, shaper, fmGain, drive, vib, vibGain],
-            osc1, osc2, sub, oscMix, subMix, filter, vca, noiseGain, lfo, lfoGain, panner, fmGain, drive, vib, vibGain,
+            nodes: [osc1, osc2, sub, oscMix, subMix, filter, vca, null, noiseGain, lfo, lfoGain, panner, shaper, fmGain, drive, vib, vibGain, uni, uniGain, filter2, driftGain],
+            osc1, osc2, sub, uni, oscMix, subMix, uniGain, filter, filter2, vca, noiseGain, lfo, lfoGain, panner, fmGain, drive, vib, vibGain, driftGain, driftSrc,
             isPooled: false
         };
     }
@@ -1243,6 +1337,7 @@ class DroneSynth {
             AudioEngine.scheduledFade(v.vca, 0, t, 10);
             setTimeout(() => {
                 v.nodes.forEach(n => { try{ n.disconnect(); }catch(e){} });
+                try { if (v.driftSrc) v.driftSrc.disconnect(); } catch(e){}
             }, 50);
         }
     }
@@ -1273,14 +1368,17 @@ class DroneSynth {
         // 1. Configure Oscillators
         v.osc1.type = synth.params.osc1Type || 'sawtooth';
         v.osc2.type = synth.params.osc2Type || 'sawtooth';
-    
+        v.uni.type = synth.params.osc2Type || 'sawtooth';
+
         v.sub.type = synth.params.subType || 'triangle';
         const drift1 = (Math.random() - 0.5) * 15.0;
         const drift2 = (Math.random() - 0.5) * 15.0;
-        
+        const drift3 = (Math.random() - 0.5) * 15.0;
+        const uniSpread = 8 + (synth.params.unison || 0) * 14; // cents, wider with more unison
+
         const activeMidiVoices = Object.keys(synth.voices).filter(k => k !== 'drone' && !synth.voices[k].releasing).length;
         const startOffset = 0.004; // Increased slightly to ensure VCA opens after phase reset
-        
+
         // Glide Logic (Legato Portamento for MIDI)
         if (synth.params.glide > 0 && synth.lastFreq && (isDrone || activeMidiVoices > 0)) {
             v.osc1.frequency.cancelScheduledValues(now);
@@ -1289,17 +1387,22 @@ class DroneSynth {
             v.osc2.frequency.cancelScheduledValues(now);
             v.osc2.frequency.setValueAtTime(Math.max(1, synth.lastFreq), now + startOffset);
             v.osc2.frequency.exponentialRampToValueAtTime(Math.max(1, freq), now + startOffset + synth.params.glide);
+            v.uni.frequency.cancelScheduledValues(now);
+            v.uni.frequency.setValueAtTime(Math.max(1, synth.lastFreq), now + startOffset);
+            v.uni.frequency.exponentialRampToValueAtTime(Math.max(1, freq), now + startOffset + synth.params.glide);
             v.sub.frequency.cancelScheduledValues(now);
             v.sub.frequency.setValueAtTime(Math.max(1, synth.lastFreq * 0.5), now + startOffset);
             v.sub.frequency.exponentialRampToValueAtTime(Math.max(1, freq * 0.5), now + startOffset + synth.params.glide);
         } else {
             const startFreq = synth.params.punch > 0 ? Math.min(22000, freq + synth.params.punch) : freq;
             const subStartFreq = synth.params.punch > 0 ? Math.min(22000, (freq + synth.params.punch) * 0.5) : freq * 0.5;
-            
+
             v.osc1.frequency.cancelScheduledValues(now);
             v.osc1.frequency.setTargetAtTime(Math.max(1, startFreq), now, 0.005);
             v.osc2.frequency.cancelScheduledValues(now);
             v.osc2.frequency.setTargetAtTime(Math.max(1, startFreq), now, 0.005);
+            v.uni.frequency.cancelScheduledValues(now);
+            v.uni.frequency.setTargetAtTime(Math.max(1, startFreq), now, 0.005);
             v.sub.frequency.cancelScheduledValues(now);
             v.sub.frequency.setTargetAtTime(Math.max(1, subStartFreq), now, 0.005);
 
@@ -1307,30 +1410,36 @@ class DroneSynth {
                 const dropTime = 0.05;
                 v.osc1.frequency.exponentialRampToValueAtTime(Math.max(1, freq), now + startOffset + dropTime);
                 v.osc2.frequency.exponentialRampToValueAtTime(Math.max(1, freq), now + startOffset + dropTime);
+                v.uni.frequency.exponentialRampToValueAtTime(Math.max(1, freq), now + startOffset + dropTime);
                 v.sub.frequency.exponentialRampToValueAtTime(Math.max(1, freq * 0.5), now + startOffset + dropTime);
             }
         }
         synth.lastFreq = freq;
-        
+
         v.osc1.detune.cancelScheduledValues(now); v.osc1.detune.setValueAtTime(drift1, now + startOffset);
         v.osc2.detune.cancelScheduledValues(now); v.osc2.detune.setValueAtTime(synth.params.detune + drift2, now + startOffset);
+        // Unison osc mirrors osc2's detune on the opposite side of osc1 (symmetric supersaw spread)
+        v.uni.detune.cancelScheduledValues(now); v.uni.detune.setValueAtTime(-(synth.params.detune + uniSpread) + drift3, now + startOffset);
         v.sub.detune.cancelScheduledValues(now); v.sub.detune.setValueAtTime(0, now + startOffset);
 
         v.subMix.gain.cancelScheduledValues(now); v.subMix.gain.setValueAtTime(synth.params.subMix, now + startOffset);
-        
+        v.uniGain.gain.cancelScheduledValues(now); v.uniGain.gain.setValueAtTime((synth.params.unison || 0) * 0.4, now + startOffset);
+
         // Noise: Create fresh source as buffer sources stop()
         const noise = this.createNoise(ctx, synth.params.noiseType || 'white');
         v.noiseGain.gain.cancelScheduledValues(now); v.noiseGain.gain.setValueAtTime(synth.params.noiseMix, now + startOffset);
         noise.connect(v.noiseGain);
-        noise.start(now);
+        noise.start(now, Math.random() * 1.8); // Random phase, avoids identical hiss on every note
         v.nodes[7] = noise; // Store for stop
 
         // FM Amount
         v.fmGain.gain.cancelScheduledValues(now); v.fmGain.gain.setValueAtTime(synth.params.fmAmt || 0, now + startOffset);
 
-        // 3. Filter (Lowpass)
-        v.filter.type = synth.params.filterType || 'lowpass'; 
+        // 3. Filter (cascaded 24dB/oct)
+        v.filter.type = synth.params.filterType || 'lowpass';
         v.filter.Q.value = synth.params.res * 1.15;
+        v.filter2.type = v.filter.type;
+        v.filter2.Q.value = synth.params.res * 1.15 * 0.4; // scaled to avoid stacked resonance blowup
 
         // Drive (Pre-Filter Saturation) - Use Cached Curve
         const driveAmount = synth.params.drive || 0;
@@ -1355,6 +1464,12 @@ class DroneSynth {
         v.filter.frequency.linearRampToValueAtTime(Math.max(15, baseFreq), now + startOffset);
         if (Math.abs(peakFreq - baseFreq) > 0.1) {
             v.filter.frequency.exponentialRampToValueAtTime(Math.max(15, peakFreq), atkEnd + 0.001);
+        }
+        v.filter2.frequency.cancelScheduledValues(now);
+        try { v.filter2.frequency.setValueAtTime(v.filter2.frequency.value, now); } catch(e){}
+        v.filter2.frequency.linearRampToValueAtTime(Math.max(15, baseFreq), now + startOffset);
+        if (Math.abs(peakFreq - baseFreq) > 0.1) {
+            v.filter2.frequency.exponentialRampToValueAtTime(Math.max(15, peakFreq), atkEnd + 0.001);
         }
 
         // LFO
@@ -1388,6 +1503,8 @@ class DroneSynth {
         v.note = note;
         v.drift1 = drift1; // Store drift to preserve analog feel on updates
         v.drift2 = drift2;
+        v.drift3 = drift3;
+        v.uniSpread = uniSpread;
         v.peakGain = peakGain;
         v.releasing = false; // Track envelope state
         v.panSpread = panSpread; // Store spread to preserve it during updates
@@ -1418,6 +1535,7 @@ class DroneSynth {
         // Smooth Filter Release
         const baseFreq = Math.max(20, synth.params.cutoff);
         v.filter.frequency.setTargetAtTime(baseFreq, now, relTime / 4);
+        if (v.filter2) v.filter2.frequency.setTargetAtTime(baseFreq, now, relTime / 4);
         
         // Schedule Stop (Cleanup)
         const stopTime = now + (immediate ? 0.1 : (relTime + 0.2));
@@ -1465,6 +1583,7 @@ class DroneSynth {
                 if (v.releasing || !v.osc1) return;
                 this.smoothParamUpdate(v.osc1.detune, (v.drift1 || 0) + bendCents, now, 0.05);
                 this.smoothParamUpdate(v.osc2.detune, synth.params.detune + (v.drift2 || 0) + bendCents, now, 0.05);
+                if (v.uni) this.smoothParamUpdate(v.uni.detune, -(synth.params.detune + (v.uniSpread || 10)) + (v.drift3 || 0) + bendCents, now, 0.05);
                 if (v.sub) this.smoothParamUpdate(v.sub.detune, bendCents, now, 0.05);
             });
         });
@@ -1500,6 +1619,7 @@ class DroneSynth {
         if (key === 'filterType') {
             Object.values(synth.voices).forEach(v => {
                 if(v && v.filter) v.filter.type = val;
+                if(v && v.filter2) v.filter2.type = val;
             });
             return;
         }
@@ -1508,7 +1628,10 @@ class DroneSynth {
             return;
         }
         if (key === 'osc2Type') {
-            Object.values(synth.voices).forEach(v => { if(v.nodes && v.nodes[1]) v.nodes[1].type = val; });
+            Object.values(synth.voices).forEach(v => {
+                if(v.nodes && v.nodes[1]) v.nodes[1].type = val;
+                if(v.uni) v.uni.type = val; // Unison layer follows osc2 waveform
+            });
             return;
         }
         if (key === 'subType') {
@@ -1534,11 +1657,21 @@ class DroneSynth {
         Object.values(synth.voices).forEach(v => {
              if (!v.nodes || v.nodes.length < 12) return;
 
-             if(key === 'detune') DroneSynth.smoothParamUpdate(v.nodes[1].detune, synth.params.detune + (v.drift2||0), now, 0.1);
+             if(key === 'detune') {
+                 DroneSynth.smoothParamUpdate(v.nodes[1].detune, synth.params.detune + (v.drift2||0), now, 0.1);
+                 if (v.uni) DroneSynth.smoothParamUpdate(v.uni.detune, -(synth.params.detune + (v.uniSpread||10)) + (v.drift3||0), now, 0.1);
+             }
+             if(key === 'unison' && v.uniGain) DroneSynth.smoothParamUpdate(v.uniGain.gain, (synth.params.unison || 0) * 0.4, now, 0.1);
              if(key === 'subMix') DroneSynth.smoothParamUpdate(v.nodes[4].gain, synth.params.subMix, now, 0.1);
              if(key === 'noiseMix') DroneSynth.smoothParamUpdate(v.nodes[8].gain, synth.params.noiseMix, now, 0.1);
-             if(key === 'res' && v.filter) DroneSynth.smoothParamUpdate(v.filter.Q, synth.params.res, now, 0.05);
-             if(key === 'cutoff' && v.filter) DroneSynth.smoothParamUpdate(v.filter.frequency, Math.max(15, synth.params.cutoff), now, 0.05);
+             if(key === 'res') {
+                 if (v.filter) DroneSynth.smoothParamUpdate(v.filter.Q, synth.params.res, now, 0.05);
+                 if (v.filter2) DroneSynth.smoothParamUpdate(v.filter2.Q, synth.params.res * 0.4, now, 0.05);
+             }
+             if(key === 'cutoff') {
+                 if (v.filter) DroneSynth.smoothParamUpdate(v.filter.frequency, Math.max(15, synth.params.cutoff), now, 0.05);
+                 if (v.filter2) DroneSynth.smoothParamUpdate(v.filter2.frequency, Math.max(15, synth.params.cutoff), now, 0.05);
+             }
              if(key === 'drive' && v.drive) v.drive.curve = DroneSynth.getDriveCurve(synth.params.drive || 0);
              if(key === 'fmAmt') DroneSynth.smoothParamUpdate(v.nodes[13].gain, synth.params.fmAmt, now, 0.05);
              if(key === 'lfoRate') DroneSynth.smoothParamUpdate(v.nodes[9].frequency, synth.params.lfoRate, now, 0.1);

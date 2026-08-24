@@ -634,4 +634,27 @@ label, .val-display, span {
         animation: fadein 0.2s;
     }
     @keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
+
+    /* ===== DEBUG CONSOLE ===== */
+    .debug-log {
+        background: #000;
+        border: 1px solid #444;
+        font-family: 'Courier New', monospace;
+        font-size: 10px;
+        line-height: 1.5;
+        color: #0f0;
+        height: 300px;
+        overflow-y: auto;
+        padding: 5px;
+        white-space: pre-wrap;
+        word-break: break-all;
+        scrollbar-width: thin;
+        scrollbar-color: #f6f #111;
+    }
+    .debug-log .dbg-time { color: #666; }
+    .debug-log .dbg-info { color: #0f0; }
+    .debug-log .dbg-warn { color: #ff0; }
+    .debug-log .dbg-error { color: #f00; font-weight: bold; }
+    .debug-log .dbg-worklet { color: #0ff; }
+    .debug-log .dbg-sys { color: #f6f; }
     body.flash-cue { background-color: #555 !important; transition: background-color 0.05s; }
