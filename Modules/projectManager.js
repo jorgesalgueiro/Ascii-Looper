@@ -225,8 +225,15 @@ class ProjectManager {
             state.bpm = data.bpm || 120;
             state.timeSig = data.timeSig || { num: 4, den: 4 };
             state.bars = data.bars || 2;
-            state.syncEnabled = data.syncEnabled || false;
+            state.syncEnabled = data.syncEnabled !== undefined ? !!data.syncEnabled : true;
             state.autoPlayAfterRecord = data.autoPlayAfterRecord !== false;
+            // Reflect into the checkboxes: SyncManager.updateSettings() reads them
+            // back into state at the end of load and would otherwise restore
+            // the stale on-screen values instead of the saved ones.
+            const syncCb = document.getElementById('syncLoops');
+            if (syncCb) syncCb.checked = state.syncEnabled;
+            const autoPlayCb = document.getElementById('autoPlayAfterRecord');
+            if (autoPlayCb) autoPlayCb.checked = state.autoPlayAfterRecord;
             state.autoRecordNext = data.autoRecordNext || false;
             if (document.getElementById('autoRecordNext')) document.getElementById('autoRecordNext').checked = state.autoRecordNext;
             if (data.metronomeVolume !== undefined) MetronomeScheduler.updateVolume(data.metronomeVolume);
@@ -384,7 +391,9 @@ class ProjectManager {
 
             if (data.inputTracks && Array.isArray(data.inputTracks)) {
                 for(const trackData of data.inputTracks) {
+                    const countBefore = state.inputs.length;
                     await InputManager.addInputTrack(trackData.deviceId, trackData.type || 'mic');
+                    if (state.inputs.length <= countBefore) continue; // Track creation failed (e.g. permission denied)
                     const id = state.inputs.length - 1;
                     InputManager.setVolume(id, trackData.volume ?? 1.0);
                     InputManager.setPan(id, trackData.pan ?? 5);

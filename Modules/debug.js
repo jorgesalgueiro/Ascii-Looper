@@ -15,6 +15,8 @@ class DebugManager {
     static _origConsole = null;
     static _logBuffer = [];
     static _renderedCount = 0;
+    static _clickDetectors = [];       // active click-detector taps
+    static _origAWN = null;            // unpatched AudioWorkletNode ctor
 
     // ---------- Worklet-side bridge ----------
     // Injected as a text/worklet-script element: AudioEngine.initialize()
@@ -38,6 +40,62 @@ class DebugManager {
         return origRegister(name, Wrapped);
     };
 })();
+
+// Transient/click detector: flags sudden sample-to-sample jumps (pops) and
+// reports them to the main thread so the debug console can show WHERE they
+// come from (which bus the detector is attached to).
+class ClickDetectorProcessor extends AudioWorkletProcessor {
+    static get parameterDescriptors() {
+        return [ { name: 'threshold', defaultValue: 0.3, minValue: 0.01, maxValue: 1 } ];
+    }
+    constructor() {
+        super();
+        this.prev = 0;
+        this.env = 0;       // running smoothed level, to judge if a jump is anomalous
+        this.lastReport = -1;
+    }
+    process(inputs, outputs, parameters) {
+        const input = inputs[0];
+        if (!input || !input[0] || input[0].length === 0) return true;
+        const th = parameters.threshold[0];
+        const data = input[0];
+        for (let i = 0; i < data.length; i++) {
+            const x = data[i];
+            // NaN / Infinity / out-of-range => definite corruption, report distinctly
+            if (!(x >= -2 && x <= 2)) {
+                if (this.lastReport < 0 || currentTime - this.lastReport > 0.06) {
+                    this.lastReport = currentTime;
+                    this.port.postMessage({ type: 'click', kind: 'NaN/CLIP', delta: 0, peak: x, level: this.env, t: currentTime });
+                }
+                this.prev = 0;
+                continue;
+            }
+            const d = Math.abs(x - this.prev);
+            this.prev = x;
+            this.env = this.env * 0.9995 + Math.abs(x) * 0.0005;
+            if (d > th) {
+                // Throttle to one report per ~60ms so a burst doesn't flood the log
+                if (this.lastReport < 0 || currentTime - this.lastReport > 0.06) {
+                    this.lastReport = currentTime;
+                    this.port.postMessage({ type: 'click', kind: 'pop', delta: d, peak: Math.abs(x), level: this.env, t: currentTime });
+                }
+            }
+        }
+        // Pass audio through unchanged so the monitored graph stays intact
+        const out = outputs[0];
+        if (out) {
+            for (let c = 0; c < out.length; c++) {
+                const src = input[c] || input[0];
+                if (src && out[c]) {
+                    const n = Math.min(src.length, out[c].length);
+                    for (let i = 0; i < n; i++) out[c][i] = src[i];
+                }
+            }
+        }
+        return true;
+    }
+}
+registerProcessor('click-detector-processor', ClickDetectorProcessor);
 `;
 
     static install() {
@@ -66,6 +124,7 @@ class DebugManager {
         localStorage.setItem('asciilooper.debug', '1');
         DebugManager._installPatches();
         DebugManager._tagKnownNodes();
+        DebugManager.attachClickDetectors();
         const st = DebugManager._state();
         DebugManager._push('sys', 'VERBOSE DEBUG ON — capturing console, AudioContext state and AudioWorklet traffic.');
         DebugManager._push('sys', `${st.VERSION} | ${navigator.userAgent}`);
@@ -76,8 +135,66 @@ class DebugManager {
     static disable() {
         DebugManager.enabled = false;
         localStorage.setItem('asciilooper.debug', '0');
+        DebugManager._detachClickDetectors();
         DebugManager._push('sys', 'VERBOSE DEBUG OFF.');
         DebugManager._updateUI();
+    }
+
+    // ---------- Click / pop detectors ----------
+    // Tap the master output, drone bus and input bus with a transient detector
+    // so the log shows WHICH source a click/pop is coming from.
+    static attachClickDetectors() {
+        if (!DebugManager.enabled) return;
+        const st = DebugManager._state();
+        const ctx = st.audioContext;
+        if (!ctx || ctx.state === 'closed') return;
+        DebugManager._detachClickDetectors();
+
+        const defs = [
+            { label: 'click:MASTER', node: st.masterGain || st.masterMixer, th: 0.3 },
+            { label: 'click:DRONE-BUS', node: (window.DroneSynth && DroneSynth.bus) ? DroneSynth.bus : null, th: 0.1 },
+            { label: 'click:INPUT-BUS', node: (window.InputManager && InputManager.masterGain) ? InputManager.masterGain : null, th: 0.3 },
+            { label: 'click:FINAL-OUTPUT', node: st.masterLimiter || null, th: 0.2 }
+        ];
+
+        const Ctor = DebugManager._origAWN || window.AudioWorkletNode;
+        if (!Ctor) return;
+
+        for (const d of defs) {
+            if (!d.node) continue;
+            try {
+                const det = new Ctor(ctx, 'click-detector-processor', { parameterData: { threshold: d.th } });
+                d.node.connect(det); // tap (fan-out), does not disturb the existing chain
+                const mute = ctx.createGain(); mute.gain.value = 0;
+                det.connect(mute); mute.connect(ctx.destination); // keep the worklet processing, silently
+                det.port.addEventListener('message', (e) => {
+                    if (!DebugManager.enabled) return;
+                    const m = e.data;
+                    if (m && m.type === 'click') {
+                        const lv = (m.level || 0);
+                        const near = lv > 0.85 ? ' [NEAR CLIP]' : '';
+                        const kind = m.kind || 'pop';
+                        DebugManager._push('click', `[${d.label}] ${kind} delta=${(+m.delta).toFixed(3)} peak=${(+m.peak).toFixed(3)} level=${lv.toFixed(3)}${near} @${(m.t || 0).toFixed(3)}s`);
+                    }
+                });
+                det.port.start();
+                DebugManager._clickDetectors.push({ det, mute, src: d.node });
+            } catch (err) {
+                DebugManager._push('sys', `Click detector attach failed for ${d.label}: ${err.message}`);
+            }
+        }
+        if (DebugManager._clickDetectors.length > 0) {
+            DebugManager._push('sys', `Click detectors armed on: ${DebugManager._clickDetectors.length} bus(es). Pops will be logged below.`);
+        }
+    }
+
+    static _detachClickDetectors() {
+        (DebugManager._clickDetectors || []).forEach((c) => {
+            try { c.src.disconnect(c.det); } catch (e) {}
+            try { c.det.disconnect(); } catch (e) {}
+            try { c.mute.disconnect(); } catch (e) {}
+        });
+        DebugManager._clickDetectors = [];
     }
 
     // ---------- Patches (installed once, gated by the enabled flag) ----------
@@ -104,6 +221,7 @@ class DebugManager {
         //    whatever onmessage handler the app assigns).
         const OrigAWN = window.AudioWorkletNode;
         if (OrigAWN) {
+            DebugManager._origAWN = OrigAWN; // raw ctor, used by click detectors
             const TaggedAWN = function (ctx, name, options) {
                 const node = new OrigAWN(ctx, name, options);
                 try { DebugManager._tagPort(node.port, name); } catch (e) {}

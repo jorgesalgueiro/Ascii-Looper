@@ -1,32 +1,34 @@
 html {
-    scroll-padding-top: 240px; /* Offset for sticky master vu meter + FX Tabs */
+    scroll-padding-top: 285px; /* Offset for sticky master vu meter + tabs bar */
     scroll-behavior: smooth;
 }
 
 /* ===== BASE STYLES (RETRO TERMINAL) ===== */
 :root {
         --term-green: #00ff00;
-        --term-bg: #291a0a;
-        --term-dim: #3d2612;
+        --term-bg: #050505;
+        --term-dim: #1c2a2a;
         --term-alert: #f00;
         --term-warn: #ff0;
-        /* Rainbow Section Colors */
-        --col-0: #ff5555; /* Red */
+        /* Neon Section Colors (CRT arcade) */
+        --col-0: #ff4444; /* Red */
         --col-1: #ffaa00; /* Orange */
-        --col-2: #ffff55; /* Yellow */
-        --col-3: #55ff55; /* Green */
-        --col-4: #5555ff; /* Blue */
-        --col-5: #ff55ff; /* Purple */
+        --col-2: #ffee44; /* Yellow */
+        --col-3: #44ff88; /* Green */
+        --col-4: #4488ff; /* Blue */
+        --col-5: #ff44ff; /* Purple */
         --btn-green-border: #0f0;
+        --neon-cyan: #0ff;
     }
 
     body { 
         margin: 0; 
         padding: 10px; 
-        background: #291a0a; 
+        background: #050505; 
         color: var(--term-green); 
         font-family: 'Courier New', monospace; 
         overflow-x: hidden; 
+        overflow-x: clip; /* clip (not hidden) so body is NOT a scroll container -> position:sticky works */
         font-size: 12px; 
         -webkit-user-select: none; /* Prevent text selection during interaction */
     user-select: none;
@@ -149,9 +151,19 @@ body::after {
         }
     }
 
+    /* 3-column variant (EDITORS & SETUP): follows the same responsive ladder
+       as the main grid so phone screens stack it to one column. */
+    .module-grid.grid-3 { grid-template-columns: repeat(3, 1fr); }
+    @media (max-width: 1400px) {
+        .module-grid.grid-3 { grid-template-columns: 1fr 1fr; }
+    }
+
     /* Smartphone: Stacked 1 column */
 	@media (max-width: 600px) {
         .module-grid {
+            grid-template-columns: 1fr;
+        }
+        .module-grid.grid-3 {
             grid-template-columns: 1fr;
         }
         /* Force single column for Loops, Effects, and Mapping on mobile */
@@ -402,35 +414,40 @@ label, .val-display, span {
         position: relative; transition: border-color 0.2s;
         min-height: 90px;
         border-radius: 3px;
+        cursor: pointer;
+        user-select: none; -webkit-user-select: none;
+        touch-action: none; /* drags must not scroll the page on touch */
     }
+    .drone-step:focus { outline: 1px solid #0ff; outline-offset: -2px; }
     .drone-step span {
         font-size: 9px; color: #0ff; margin-bottom: 4px; font-weight: bold; font-family: monospace;
     }
     .drone-step:hover {
         background: #002525; border-color: #0ff;
     }
-    .drone-step input[type=range] {
-        writing-mode: vertical-lr;
-        direction: rtl;
-        -webkit-appearance: none;
-        appearance: none;
-        width: 100%; height: 60px; margin: 0; cursor: ns-resize; touch-action: none;
-        background: transparent;
+    /* Step editor pad: drag up/down = note, drag left/right = volume, click = gate */
+    .drone-step .ds-pad {
+        position: relative;
+        flex: 1; width: 100%;
+        min-height: 46px;
+        background: #000d0d;
+        border: 1px solid #003a3a;
+        overflow: hidden;
     }
-    .drone-step input[type=range]::-webkit-slider-runnable-track {
-        width: 100%; height: 6px; 
-        background: #001818; 
-        border: 1px solid #004444;
+    .drone-step .ds-vel {
+        position: absolute; left: 0; right: 0; bottom: 0;
+        background: rgba(0, 255, 170, 0.16);
+        border-top: 1px solid rgba(0, 255, 170, 0.45);
+        pointer-events: none;
     }
-    .drone-step input[type=range]::-webkit-slider-thumb {
-        -webkit-appearance: none;
-        height: 14px; width: 14px;
+    .drone-step .ds-thumb {
+        position: absolute; left: 0; right: 0;
+        height: 3px;
         background: #0ff;
-        border: 1px solid #fff;
-        margin-top: -5px; /* Center on track (height 6px) */
-        box-shadow: 0 0 5px #0ff;
+        box-shadow: 0 0 6px #0ff;
+        transform: translateY(50%);
+        pointer-events: none;
     }
-    .drone-step input[type=checkbox] { margin: 2px 0 0 0; }
     .drone-step.muted { opacity: 0.5; border-color: #333; }
     .drone-step.active { 
         background: #004444; 
@@ -447,12 +464,12 @@ label, .val-display, span {
             padding: 4px;
         }
         .drone-step { min-height: 70px; padding: 4px 2px; }
-        .drone-step input[type=range] { height: 45px; }
+        .drone-step .ds-pad { min-height: 36px; }
     }
     
     @media (max-width: 800px) {
         .drone-grid { grid-template-columns: 1fr; }
-        .drone-step input[type=range] { height: 40px; }
+        .drone-step .ds-pad { min-height: 32px; }
     }
     
     .playlist-row { display: flex; gap: 5px; margin-bottom: 5px; align-items: center; }
@@ -543,7 +560,7 @@ label, .val-display, span {
     /* Overlays */
     #startOverlay {
          position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-         background: #291a0a; z-index: 10000; display: flex; flex-direction: column;
+         background: #050505; z-index: 10000; display: flex; flex-direction: column;
          justify-content: center; align-items: center;
     }
     
@@ -581,15 +598,20 @@ label, .val-display, span {
     hr { margin: 10px 0 !important; }
 
     /* ===== WORKSPACE TABS ===== */
+    /* Sticky header block: MASTER OUTPUT + workspace tabs pinned to the top.
+       position:sticky only works because body uses overflow-x:clip (see above). */
+    .sticky-top {
+        position: sticky;
+        top: 0;
+        z-index: 980;
+        background: #050505; /* match body so panels scrolling underneath don't show through */
+        padding-top: 2px;
+    }
     .main-tabs {
         display: flex;
         border-bottom: 2px solid var(--term-green);
         margin-bottom: 0;
-    background: #000;
-    margin-top: 20px;
-    position: sticky;
-    top: 154px;
-    z-index: 980;
+        background: #000;
 }
     .main-tab-btn {
         background: #111;
@@ -657,4 +679,387 @@ label, .val-display, span {
     .debug-log .dbg-error { color: #f00; font-weight: bold; }
     .debug-log .dbg-worklet { color: #0ff; }
     .debug-log .dbg-sys { color: #f6f; }
+    .debug-log .dbg-click { color: #f00; font-weight: bold; background: rgba(255,0,0,0.08); }
     body.flash-cue { background-color: #555 !important; transition: background-color 0.05s; }
+
+/* ═══════════════════════════════════════════════════════════════════ */
+/* ═══════════════ ASCII LOOPER — CRT ARCADE ART BIBLE ═══════════════ */
+/* ═══════════════════════════════════════════════════════════════════ */
+/* The art direction of the whole machine, written down so every new
+   panel, button and control stays coherent. If a change breaks one
+   of these rules, the cabinet starts looking like a generic web page. */
+
+/* ── RULE 1 · THE CABINET ──────────────────────────────────────────────
+   The screen is a CRT inside a black arcade cabinet, played at night.
+   1a. Base surface is always near-black (#000–#050505). Never gray,
+       never white. White is reserved for the pressed-flash and value
+       text — it is the hottest thing on screen.
+   1b. A module is a CABINET: black glass body, 1px neon frame in the
+       module's identity color, faint outer bloom (glow ~6px, low alpha).
+   1c. A module header is the MARQUEE (the lit sign above the screen):
+       dark plate (#001414), neon title in the module's own color,
+       glowing text + a 1px underline of the same color. */
+
+/* ── RULE 2 · COLOR IS LANGUAGE, NOT DECORATION ────────────────────────
+   The palette is the machine's control language. One color = one
+   meaning, everywhere, in every module:
+
+     RED     #f00 / --col-0     DANGER · RECORD · PANIC · DELETE · MUTE
+     ORANGE  #ffaa00 / --col-1  LOAD · IMPORT   (audio comes IN)
+     YELLOW  #ff0 / --col-2     STOP · SOLO · WARNING · TIMING/SYNC
+     GREEN   #0f0 / --col-3     PLAY · GO · ENABLE · LIVE SIGNAL
+     BLUE    #4488ff / --col-4  SAVE · EXPORT   (audio goes OUT)
+     PURPLE  #ff44ff / --col-5  PRESETS · GENERATIVE MAGIC
+     CYAN    #0ff               NAVIGATION · INFO · DRONE · FOCUS
+     MAGENTA #ff44ff (overdub)  LIVE LAYERING / OVERDUB MODE
+
+   2a. Never use a color outside its meaning.
+   2b. Hover/active may change BRIGHTNESS, never HUE — the meaning of
+       a control must not shift while you reach for it. */
+
+/* ── RULE 3 · GLOW = LIFE ──────────────────────────────────────────────
+   A control's glow is its heartbeat, in three levels:
+     IDLE   faint bloom (≤6px, low alpha) — machine is powered on
+     HOVER  bright glow (≈10px) — the hand is reaching for it
+     ARMED  hard glow + SOLID FILL — state is latched (REC, MUTE, SOLO).
+   Solid color fill is ONLY for armed states. Never for plain hover. */
+
+/* ── RULE 4 · LIVE PLAY (mouse, touch, dark stage) ─────────────────────
+   4a. Hit targets ≥30px tall with a mouse, ≥38px on coarse pointers
+       (phones/tablets). Dense editor grids may use .small (exempt).
+   4b. ≥4px breathing space between targets; no overlapping controls.
+   4c. No double-tap zoom (touch-action: manipulation), no hover-only
+       affordances — every state is visible without a pointer.
+   4d. Feedback must be readable on a dark stage: glow, flash or fill.
+       Never a subtle 1px change. */
+
+/* ── RULE 5 · TYPOGRAPHY ───────────────────────────────────────────────
+   One family: 'Courier New' (the whole machine speaks the same font).
+   Three jobs only:
+     LABEL  10px, dim color   — what the control IS
+     VALUE  11px, bright      — what it READS
+     ACTION 11px, bold caps, letter-spacing — what the button DOES */
+
+/* ── RULE 6 · TOOLTIPS ─────────────────────────────────────────────────
+   Every interactive element gets a tooltip. The engine in index.html
+   mirrors title → data-tip; CSS renders it as a black plate with a
+   cyan frame (cyan = info, RULE 2), appearing above the control. */
+
+/* ═══ PANELS (RULE 1b/1c) ═══ */
+.retro-module, .synth-instance-wrapper, .effect-module, .knob-group {
+    background: #000;
+    border: 1px solid var(--module-color, var(--neon-cyan));
+    box-shadow: 0 0 0 1px #000, 0 0 6px rgba(0,255,255,0.12), 2px 2px 0 #000;
+    border-radius: 3px;
+}
+.module-header, .effect-header {
+    background: #001414;
+    color: var(--fx-color, var(--module-color, var(--neon-cyan)));
+    border-bottom: 1px solid var(--fx-color, var(--module-color, var(--neon-cyan)));
+    text-shadow: 0 0 4px currentColor;
+    letter-spacing: 1px;
+}
+
+/* ═══ BUTTON SYSTEM (implements RULES 2/3/4) ═══
+   B1  A button is a neon outline over black glass. Its TEXT COLOR
+       carries its meaning (RULE 2): .btn-red=danger, .btn-orange=load,
+       .btn-yellow=solo/stop, .btn-green=play/enable, .btn-blue=save,
+       .btn-purple=preset, .btn-cyan=info/view.
+   B2  Hover = brighter glow + soft tint of its OWN color. Hue never
+       changes (RULE 2b). These selectors also retire the legacy
+       solid-fill hovers defined earlier in this file.
+   B3  Pressed = arcade flash: white-hot fill + glow ring + 1px drop.
+   B4  Solid single-color fill = ARMED state only (REC/MUTE/SOLO),
+       set by app logic — never by plain hover.
+   B5  Targets ≥30px (≥38px on touch). Dense grids use .small.
+   B6  Disabled = "unplugged": 40% opacity, zero glow. */
+button, .std-btn {
+    background: #000;
+    border: 1px solid currentColor;
+    border-radius: 3px;
+    text-shadow: 0 0 3px currentColor;
+    letter-spacing: 1px;
+    font-weight: bold;
+    box-shadow: 0 0 4px -2px currentColor; /* idle heartbeat (RULE 3) */
+    transition: box-shadow 0.12s, background 0.12s, transform 0.06s;
+}
+button:not(.small), .std-btn:not(.small) { min-height: 30px; } /* B5 */
+button:focus-visible, .std-btn:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: 1px;
+}
+
+/* B2 — hover keeps each meaning class's hue (legacy hovers filled solid + black text) */
+button:hover:not(:disabled), .std-btn:hover:not(:disabled) {
+    background: rgba(255,255,255,0.06);
+    box-shadow: 0 0 10px -2px currentColor, inset 0 0 12px -6px currentColor;
+    text-shadow: 0 0 6px currentColor;
+    color: inherit;
+}
+.btn-red:hover:not(:disabled)     { color: var(--col-0); }
+.btn-orange:hover:not(:disabled)  { color: var(--col-1); }
+.btn-yellow:hover:not(:disabled)  { color: var(--col-2); }
+.btn-green:hover:not(:disabled)   { color: var(--btn-green-border); }
+.btn-blue:hover:not(:disabled)    { color: var(--col-4); }
+.btn-purple:hover:not(:disabled)  { color: var(--col-5); }
+.btn-cyan:hover:not(:disabled)    { color: var(--neon-cyan); }
+button.danger:hover:not(:disabled){ color: #f00; }
+
+/* B3 — pressed flash */
+button:active:not(:disabled), .std-btn:active:not(:disabled) {
+    background: rgba(255,255,255,0.25);
+    box-shadow: 0 0 16px -2px currentColor, inset 0 0 0 2px currentColor;
+    text-shadow: none;
+    transform: translateY(1px);
+}
+
+/* B5 — touch devices get arcade-sized targets */
+@media (pointer: coarse) {
+    button:not(.small), .std-btn:not(.small) { min-height: 38px; }
+}
+
+/* B6 — unplugged */
+button:disabled, .std-btn:disabled { opacity: 0.4; text-shadow: none; box-shadow: none; }
+
+/* Text / number / select inputs: black with neon frame */
+input[type="text"], input[type="number"], select {
+    background: #000;
+    border: 1px solid var(--term-dim);
+    border-radius: 2px;
+    color: var(--term-green);
+}
+input[type="text"]:focus, input[type="number"]:focus, select:focus {
+    outline: 1px solid var(--neon-cyan);
+    border-color: var(--neon-cyan);
+    box-shadow: 0 0 6px rgba(0,255,255,0.3);
+}
+
+/* Checkboxes / radios: neon accent, bigger touch target */
+input[type="checkbox"], input[type="radio"] {
+    accent-color: var(--neon-cyan);
+    width: 16px; height: 16px;
+    cursor: pointer;
+}
+
+/* Sliders: dark track + glowing square thumb (matches ds-thumb) */
+input[type=range]::-webkit-slider-runnable-track { background: #001414; border: 1px solid var(--term-dim); }
+input[type=range]::-webkit-slider-thumb {
+    background: var(--neon-cyan);
+    border: 1px solid #fff;
+    box-shadow: 0 0 6px var(--neon-cyan);
+    border-radius: 1px;
+}
+input[type=range]::-moz-range-track { background: #001414; border: 1px solid var(--term-dim); }
+input[type=range]::-moz-range-thumb { background: var(--neon-cyan); border: 1px solid #fff; box-shadow: 0 0 6px var(--neon-cyan); border-radius: 1px; }
+.loop input[type=range]::-webkit-slider-thumb { background: var(--state-color); box-shadow: 0 0 6px var(--state-color); }
+.loop input[type=range]::-moz-range-thumb { background: var(--state-color); box-shadow: 0 0 6px var(--state-color); }
+
+/* Tabs: dark with neon active */
+.main-tab-btn, .fx-tab-btn, .manual-tab-btn, .tab-btn {
+    background: #000;
+    border-radius: 0;
+    letter-spacing: 1px;
+}
+.fx-tab-btn.active, .manual-tab-btn.active, .tab-btn.active {
+    text-shadow: 0 0 5px currentColor;
+    box-shadow: 0 0 8px currentColor;
+}
+
+/* Section titles: neon with glow */
+.section-title { text-shadow: 0 0 5px currentColor; letter-spacing: 2px; }
+
+/* Neon scrollbars */
+* { scrollbar-width: thin; scrollbar-color: var(--neon-cyan) #000; }
+*::-webkit-scrollbar { width: 8px; height: 8px; background: #000; }
+*::-webkit-scrollbar-thumb { background: var(--term-dim); border: 1px solid #000; }
+*::-webkit-scrollbar-thumb:hover { background: var(--neon-cyan); }
+
+/* Touch: never allow double-tap zoom on interactive controls */
+button, .std-btn, input, select, .drone-step, .loop, .fx-tab-btn, .main-tab-btn {
+    touch-action: manipulation;
+}
+
+/* ===== STYLED TOOLTIPS (data-tip) ===== */
+[data-tip] { position: relative; }
+[data-tip]::after {
+    content: attr(data-tip);
+    position: absolute; left: 50%; bottom: calc(100% + 6px);
+    transform: translateX(-50%);
+    background: #000; color: var(--neon-cyan);
+    border: 1px solid var(--neon-cyan);
+    box-shadow: 0 0 6px rgba(0,255,255,0.4);
+    padding: 4px 8px;
+    font-size: 10px; font-family: 'Courier New', monospace; font-weight: normal;
+    letter-spacing: 0; text-transform: none; text-shadow: none;
+    width: max-content; max-width: 220px; white-space: normal;
+    text-align: left;
+    border-radius: 2px;
+    z-index: 6000; pointer-events: none;
+    opacity: 0; visibility: hidden;
+    transition: opacity 0.12s ease;
+}
+[data-tip]:hover::after, [data-tip]:focus::after, [data-tip]:focus-within::after {
+    opacity: 1; visibility: visible;
+}
+
+/* ===== EFFECT-MODULE CONTROL TINTING ===== */
+/* Controls inherit the effect's own color so it's obvious which effect is
+   being edited. --fx-color is set inline on each .effect-module. */
+.effect-module .control-group label,
+.effect-module .control-group label span {
+    color: var(--fx-color, var(--term-green));
+    text-shadow: 0 0 3px currentColor;
+}
+.effect-module input[type=range]::-webkit-slider-thumb {
+    background: var(--fx-color, var(--neon-cyan));
+    box-shadow: 0 0 6px var(--fx-color, var(--neon-cyan));
+}
+.effect-module input[type=range]::-moz-range-thumb {
+    background: var(--fx-color, var(--neon-cyan));
+    box-shadow: 0 0 6px var(--fx-color, var(--neon-cyan));
+}
+.effect-module select, .effect-module input[type="number"], .effect-module input[type="text"] {
+    color: var(--fx-color, var(--term-green));
+    border-color: var(--fx-color, var(--term-dim));
+}
+
+/* ===== TOOLTIP Z-ORDER FIX ===== */
+/* Lift the hovered element above sibling sliders/controls so its tooltip is
+   never painted behind them. */
+[data-tip]:hover, [data-tip]:focus, [data-tip]:focus-within { z-index: 9999; }
+
+/* ===== TYPOGRAPHY COHERENCE ===== */
+/* Keep a single family and a tighter set of type treatments. */
+body, button, .std-btn, input, select, textarea, label, span, .module-header, .effect-header, .section-title {
+    font-family: 'Courier New', Courier, monospace;
+}
+.control-group label, .loop-row label, .mixer-label {
+    font-size: 10px;
+    letter-spacing: 0.5px;
+}
+button, .std-btn, .main-tab-btn, .fx-tab-btn, .manual-tab-btn { letter-spacing: 1px; }
+/* ═══ START OVERLAY — THE ATTRACT SCREEN (RULE 1) ═══
+   The first thing a player sees: the marquee logo, one glowing START
+   button (arcade "attract mode" pulse = green GO, RULE 2), and the
+   minimum options. Desktop shows the full audio config; phones get
+   the thumb-sized variant at the bottom of this file. */
+#startOverlay {
+    padding: 16px;
+    overflow-y: auto;
+    gap: 4px;
+    box-sizing: border-box; /* width:100% must include this padding */
+}
+/* Center when it fits, scroll from the top when it doesn't */
+#startOverlay > *:first-child { margin-top: auto; }
+#startOverlay > *:last-child  { margin-bottom: auto; }
+/* CRT scanlines on the attract screen too (same pattern as body) */
+#startOverlay::after {
+    content: " ";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.05) 50%);
+    background-size: 100% 3px;
+    pointer-events: none;
+}
+#startOverlay > p { margin: 6px 0; }
+#startOverlay select {
+    background: #000;
+    color: var(--term-green);
+    border: 1px solid var(--term-dim);
+    padding: 8px;
+    font-family: 'Courier New', monospace;
+    text-transform: uppercase;
+    border-radius: 2px;
+}
+#startOverlay select:focus {
+    border-color: var(--neon-cyan);
+    box-shadow: 0 0 8px rgba(0,255,255,0.35);
+    outline: none;
+}
+#startOverlay #langSelect { min-width: 180px; margin-bottom: 12px; }
+.ov-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    width: 100%;
+    max-width: 400px;
+    margin-bottom: 12px;
+}
+.ov-label {
+    color: var(--term-green);
+    font-size: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    letter-spacing: 0.5px;
+}
+.ov-label select { width: 100%; }
+#driverSelection { width: 100%; max-width: 400px; margin-bottom: 16px; }
+
+/* START = the coin slot: green GO meaning, breathing glow (attract mode) */
+.overlay-start {
+    font-size: 1.2em;
+    padding: 15px 24px;
+    border-color: var(--term-green);
+    color: var(--term-green);
+    width: 100%;
+    animation: ov-attract 2.2s ease-in-out infinite;
+}
+@keyframes ov-attract {
+    0%, 100% { box-shadow: 0 0 6px -2px currentColor; }
+    50%      { box-shadow: 0 0 18px -2px currentColor, inset 0 0 14px -8px currentColor; }
+}
+
+/* ═══ PHONE ATTRACT SCREEN (RULE 4) ═══
+   A phone is a handheld cabinet: every target thumb-sized (≥44px),
+   options collapsed behind ADVANCED, desktop driver notes hidden,
+   and the desktop scroll gutter removed — the whole screen scrolls. */
+#overlayMobile, #ovMobileNote { display: none; }
+@media (max-width: 600px), (pointer: coarse) and (max-height: 500px) {
+    #overlayDesktop { display: none; }
+    #overlayMobile { display: block; width: 100%; max-width: 400px; }
+    #driverInfo { display: none !important; }
+    #ovMobileNote {
+        display: block;
+        color: var(--term-dim);
+        font-size: 10px;
+        letter-spacing: 0.5px;
+        margin: 4px 0 0;
+    }
+    #startOverlay { padding: 12px; justify-content: flex-start; }
+    #startOverlay > *:first-child { margin-top: 0; }
+    #startOverlay select { font-size: 14px; padding: 12px; min-height: 44px; }
+    #startOverlay #langSelect { min-width: 0; width: 100%; max-width: 400px; }
+    .overlay-start { font-size: 1.25em; min-height: 56px; }
+    .ov-adv {
+        width: 100%;
+        margin: 8px 0 12px;
+        border: 1px solid var(--term-dim);
+        border-radius: 3px;
+        background: #000;
+        text-align: left;
+    }
+    .ov-adv summary {
+        cursor: pointer;
+        color: var(--neon-cyan); /* info color: reveals hidden options (RULE 2) */
+        letter-spacing: 1px;
+        font-size: 11px;
+        font-weight: bold;
+        padding: 12px;
+        min-height: 44px;
+        box-sizing: border-box;
+        list-style: none;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+    }
+    .ov-adv summary::-webkit-details-marker { display: none; }
+    .ov-adv summary::after { content: "+"; }
+    .ov-adv[open] summary::after { content: "−"; }
+    .ov-adv[open] summary { border-bottom: 1px solid var(--term-dim); }
+    .ov-adv .ov-label { padding: 10px 12px; }
+
+    /* Handheld cabinet: no desktop scroll gutter */
+    body { padding-right: 10px; }
+    body::after { display: none; }
+}

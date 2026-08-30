@@ -6,7 +6,7 @@
 // MODULE 1: CONSTANTS & GLOBALS
 // =============================================
 
-const VERSION = "v0.75.99"; // Version aligned with blueprint
+const VERSION = "v0.76.00"; // Version aligned with blueprint
 let MAX_LOOPS = 10;
 const SAMPLER_HOTKEYS = ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'ç']; // Specific to Sampler Tracks
 const AUDIO_FORMATS= {
@@ -586,7 +586,10 @@ class App {
                 }
                 resumeAttempts++;             
             }
-            
+
+            // Arm debug click detectors if verbose debug is on (no-op otherwise)
+            if (window.DebugManager) DebugManager.attachClickDetectors();
+
             // Final check and user notification
             if (state.audioContext && state.audioContext.state === 'suspended') {
                 console.warn('Audio context still suspended after initialization. User may need to interact with the page.');
@@ -1150,6 +1153,24 @@ class App {
         // Calc ID early to check for remapping conflicts
         const loopId = state.keyMapping.kbd.indexOf(event.key.toLowerCase());
 
+        // --- GLOBAL: UNDO/REDO (Ctrl+Z / Ctrl+Shift+Z) ---
+        // Must run before the generic modifier-key passthrough below.
+        if (event.code === 'KeyZ' && (event.ctrlKey || event.metaKey)) {
+             event.preventDefault();
+             if (event.shiftKey) {
+                 if (state.redoStack.length > 0) {
+                     const redoId = state.redoStack[state.redoStack.length - 1];
+                     state.loops[redoId].redo();
+                 }
+             } else {
+                 if (state.undoStack.length > 0) {
+                     const undoId = state.undoStack[state.undoStack.length - 1];
+                     state.loops[undoId].undo();
+                 }
+             }
+             return;
+        }
+
         // Allow browser shortcuts (Ctrl+R, Ctrl+S, etc) to pass through
         if (event.ctrlKey || event.metaKey || event.altKey) return;
 
@@ -1181,23 +1202,6 @@ class App {
                 state.loops[EffectManager.activeTab].toggleHalfSpeed();
             }
             return; 
-        }
-
-        // --- GLOBAL: UNDO/REDO (Z) ---
-        if (event.code === 'KeyZ' && (event.ctrlKey || event.metaKey)) {
-             event.preventDefault();
-             if (event.shiftKey) {
-                 if (state.redoStack.length > 0) {
-                     const loopId = state.redoStack[state.redoStack.length - 1];
-                     state.loops[loopId].redo();
-                 }
-             } else {
-                 if (state.undoStack.length > 0) {
-                     const loopId = state.undoStack[state.undoStack.length - 1];
-                     state.loops[loopId].undo();
-                 }
-             }
-             return;
         }
 
         if (event.repeat) return; // Ignore key repeats
@@ -1498,6 +1502,8 @@ class App {
             requestAnimationFrame(animate);
 
             if (!state.audioContext || state.audioContext.state !== 'running') return;
+            // Audio runs on the audio thread regardless; skip visual/DOM churn in background tabs
+            if (document.hidden) return;
             
             const now = AudioEngine.currentTime;
             const elapsed = now - state.masterStartTime;
@@ -1843,6 +1849,22 @@ class MasterMixManager {
         texts.forEach(text => { if (text) text.textContent = parseFloat(val).toFixed(2); });
     }
 
+    static applyMasterEQPreset(name) {
+        const p = (typeof EffectManager !== 'undefined') && EffectManager.MASTER_EQ_PRESETS && EffectManager.MASTER_EQ_PRESETS[name];
+        if (!p) return;
+        Object.keys(p).forEach(k => AudioEngine.updateMasterEQ(k, p[k]));
+        this.render();
+    }
+
+    static applyMasterCompPreset(name) {
+        const p = (typeof EffectManager !== 'undefined') && EffectManager.MASTER_COMP_PRESETS && EffectManager.MASTER_COMP_PRESETS[name];
+        if (!p) return;
+        ['threshold', 'ratio', 'knee', 'attack', 'release'].forEach(k => {
+            if (p[k] !== undefined) AudioEngine.updateMasterComp(k, p[k]);
+        });
+        this.render();
+    }
+
     static render() {
         const container = document.getElementById('mastermix-content');
         if(!container) return;
@@ -1928,6 +1950,7 @@ class MasterMixManager {
             <div class="retro-module" style="border-color:#4fd;">
                 <div class="module-header" style="background:#4fd; color:#000;">MASTER EQ (AIR/SMILE)</div>
                 <div class="module-content">
+                    <div class="control-group"><label for="m_eq_preset">Preset</label><select id="m_eq_preset" onchange="MasterMixManager.applyMasterEQPreset(this.value)" aria-label="Master EQ Preset"><option value="">-- PRESET --</option>${Object.keys(EffectManager.MASTER_EQ_PRESETS).map(k => `<option value="${k}">${k}</option>`).join('')}</select></div>
                     <div class="control-group"><label for="m_lsGain_slide">Low Gain <span id="m_lsGain">${eq.lsGain}</span></label><input id="m_lsGain_slide" type="range" min="-12" max="12" step="0.1" value="${eq.lsGain}" oninput="AudioEngine.updateMasterEQ('lsGain', parseFloat(this.value)); document.getElementById('m_lsGain').textContent=this.value;" aria-label="Master Low Shelf Gain"></div>
                     <div class="control-group"><label for="m_lcFreq_slide">Low Cut <span id="m_lcFreq">${eq.lcFreq}</span></label><input id="m_lcFreq_slide" type="range" min="20" max="200" step="1" value="${eq.lcFreq}" oninput="AudioEngine.updateMasterEQ('lcFreq', parseFloat(this.value)); document.getElementById('m_lcFreq').textContent=this.value;" aria-label="Master Low Cut Frequency"></div>
                     <div class="control-group"><label for="m_hsGain_slide">Hi Gain <span id="m_hsGain">${eq.hsGain}</span></label><input id="m_hsGain_slide" type="range" min="-12" max="12" step="0.1" value="${eq.hsGain}" oninput="AudioEngine.updateMasterEQ('hsGain', parseFloat(this.value)); document.getElementById('m_hsGain').textContent=this.value;" aria-label="Master High Shelf Gain"></div>
@@ -1938,6 +1961,7 @@ class MasterMixManager {
             <div class="retro-module" style="border-color:#afa;">
                 <div class="module-header" style="background:#afa; color:#000;">MASTER COMP (GLUE)</div>
                 <div class="module-content">
+                    <div class="control-group"><label for="m_comp_preset">Preset</label><select id="m_comp_preset" onchange="MasterMixManager.applyMasterCompPreset(this.value)" aria-label="Master Comp Preset"><option value="">-- PRESET --</option>${Object.keys(EffectManager.MASTER_COMP_PRESETS).map(k => `<option value="${k}">${k}</option>`).join('')}</select></div>
                     <div class="control-group"><label for="m_cThresh_slide">Thresh <span id="m_cThresh">${cp.threshold}</span></label><input id="m_cThresh_slide" type="range" min="-60" max="0" step="0.5" value="${cp.threshold}" oninput="AudioEngine.updateMasterComp('threshold', parseFloat(this.value)); document.getElementById('m_cThresh').textContent=this.value;" aria-label="Master Comp Threshold"></div>
                     <div class="control-group"><label for="m_cRatio_slide">Ratio <span id="m_cRatio">${cp.ratio}</span></label><input id="m_cRatio_slide" type="range" min="1" max="20" step="0.1" value="${cp.ratio}" oninput="AudioEngine.updateMasterComp('ratio', parseFloat(this.value)); document.getElementById('m_cRatio').textContent=this.value;" aria-label="Master Comp Ratio"></div>
                     <div class="control-group"><label for="m_cAtt_slide">Attack <span id="m_cAtt">${cp.attack}</span></label><input id="m_cAtt_slide" type="range" min="0" max="1" step="0.01" value="${cp.attack}" oninput="AudioEngine.updateMasterComp('attack', parseFloat(this.value)); document.getElementById('m_cAtt').textContent=this.value;" aria-label="Master Comp Attack"></div>
@@ -2618,7 +2642,7 @@ class InputManager {
         
         let fxHtml = `
         <div style="display:flex; align-items:center; gap:5px; margin-top:5px; border-top:1px dashed #0ff; padding-top:4px;">
-            <span style="flex-shrink: 0; font-weight: bold; color:#0ff; font-size:10px; cursor:pointer; text-decoration:underline;" onclick="EffectManager.setActiveTab('input-bus'); document.getElementById('part3').scrollIntoView({behavior:'smooth'});" title="Go to FX Controls">Chain:</span>
+            <span style="flex-shrink: 0; font-weight: bold; color:#0ff; font-size:10px; cursor:pointer; text-decoration:underline;" onclick="EffectManager.setActiveTab('input-bus'); EffectManager.scrollToEffects();" title="Go to FX Controls">Chain:</span>
             <select style="font-size: 10px; width: 100px; max-width: 120px;"
                     onchange="EffectManager.setActiveTab('input-bus'); EffectManager.applyPresetToMic(this.value);"
                     onclick="event.stopPropagation()" aria-label="Input FX Chain Preset">
@@ -2743,4 +2767,4 @@ document.addEventListener('DOMContentLoaded', () => {
     if (overlayVer) overlayVer.textContent = `ASCII LOOPER ${VERSION} © jorge salgueiro`;
 });
 
-// <title>v0.75.98</title>
+// <title>v0.76.00</title>

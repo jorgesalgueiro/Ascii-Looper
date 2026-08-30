@@ -8,7 +8,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#291a0a">
     <meta name="description" content="ASCII Looper - High-performance browser-based 20-track loop station with effects and sequencing.">
-    <title>ASCII Looper v0.75.99</title>
+    <title>ASCII Looper v0.76.00</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="styles.css">
     <link rel="dns-prefetch" href="//www.google.com">
@@ -25,13 +25,13 @@
 
     <style>
         body {
-            background: #291a0a !important;
+            background: #050505 !important;
             color: #00ff00 !important;
         transition: background 0.3s ease;
     }
-    body.is-recording { background: #4a0000 !important; }
-    body.is-overdubbing, body.mode-overdub { background: #2a004a !important; }
-    body.is-substituting, body.mode-substitute { background: #004a4a !important; }
+    body.is-recording { background: #2a0000 !important; }
+    body.is-overdubbing, body.mode-overdub { background: #1a002a !important; }
+    body.is-substituting, body.mode-substitute { background: #002a2a !important; }
 </style>
 </head>
 <body>
@@ -103,8 +103,8 @@
                         <span id="latencyDisplay" style="color:#666; font-size:9px;" title="System Latency Compensation">0ms</span>
                     </div>
                     <div style="display:flex; gap:5px; align-items:center;">
-                        <label for="bpmInput">BPM:</label><input type="number" id="bpmInput" value="120" style="width:40px;" aria-label="Beats Per Minute">
-                        <label for="numBars">BARS:</label><input type="number" id="numBars" value="2" style="width:30px;" aria-label="Number of Bars">
+                        <label for="bpmInput">BPM:</label><input type="number" id="bpmInput" value="120" style="width:64px;" aria-label="Beats Per Minute">
+                        <label for="numBars">BARS:</label><input type="number" id="numBars" value="2" style="width:52px;" aria-label="Number of Bars">
                     </div>
                     <div style="display:flex; gap:5px; align-items:center; margin-top:2px; border-top: 1px dashed #444; padding-top:2px;">
                         <label style="font-size:9px;" for="latencyCorrection">LATENCY COMP:</label>
@@ -116,8 +116,8 @@
                     </div>
                     <div style="display:flex; gap:5px; align-items:center; margin-bottom: 2px;">
                          <label>SIG:</label>
-                         <input type="number" id="timeSigNum" value="4" style="width:25px;" aria-label="Time Signature Numerator">/
-                         <input type="number" id="timeSigDen" value="4" style="width:25px;" aria-label="Time Signature Denominator">
+                         <input type="number" id="timeSigNum" value="4" style="width:44px;" aria-label="Time Signature Numerator">/
+                         <input type="number" id="timeSigDen" value="4" style="width:44px;" aria-label="Time Signature Denominator">
                     </div>
                     <div style="display:flex; gap:5px; align-items:center;">
                          <label style="font-size:9px;" data-i18n="SYNC_SRC" for="syncSource">SYNC SRC:</label>
@@ -216,7 +216,8 @@
 </main>
 		<hr style="border: 1px dashed var(--term-dim); margin: 20px 0;">
 
-		<div class="retro-module" id="mod-master" style="margin-bottom: 20px; width: 100%;">
+		<div class="sticky-top">
+		<div class="retro-module" id="mod-master" style="margin-bottom: 8px; width: 100%;">
             <div class="module-header"><span data-i18n="MASTER_OUTPUT">MASTER OUTPUT</span><span data-i18n="MIX_REC">[MIX & REC]</span></div>
             <div class="module-content" style="display: flex; flex-direction: column; gap: 5px;">
                 
@@ -243,6 +244,7 @@
             <button class="main-tab-btn" onclick="UIManager.switchWorkspaceTab('tracker'); MasterMixManager.render();" data-i18n="SONG_TRACKER">SONG TRACKER</button>
             <button class="main-tab-btn active" onclick="UIManager.switchWorkspaceTab('live')">LIVE PERFORMANCE</button>
         </div>
+        </div><!-- /.sticky-top -->
 
         <div id="ws-tracker" class="workspace-panel">
             <div class="section-title" style="background: linear-gradient(90deg, #222, transparent); color:#ccc; margin-bottom:10px; border-left: 4px solid #ccc; padding:4px;" data-i18n="SONG_TRACKER">SONG TRACKER</div>
@@ -348,7 +350,7 @@
         <hr style="border: 1px dashed var(--term-dim); margin: 20px 0;">
 
         <div class="section-title" style="background: linear-gradient(90deg, #000033, transparent); color:#aaf; margin-bottom:10px; border-left: 4px solid #55f; padding:4px;">EDITORS & SETUP</div>
-        <div class="module-grid" style="grid-template-columns: 1fr 1fr 1fr; gap: 15px; margin-bottom: 20px;">
+        <div class="module-grid grid-3" style="gap: 15px; margin-bottom: 20px;">
             <div class="retro-module" id="mod-chain">
                 <div class="module-header"><span data-i18n="FX_CHAIN">FX CHAIN EDITOR</span><span data-i18n="PRESETS">[PRESETS]</span></div>
                 <div class="module-content">
@@ -733,41 +735,71 @@
 </div>
 
 </pre>
-        <p>Click below to initialize the Audio Engine:</p>
-        <select id="langSelect" style="background:#000; color:#0f0; border:1px solid #0f0; padding:5px; margin-bottom:15px; font-family:'Courier New'; text-transform:uppercase;" onchange="I18n.lang = this.value;" aria-label="Language Selection">
+        <!-- OVERLAY OPTIONS — desktop and phone variants.
+             The logo above is untouched; only the options differ per device
+             (phones get a simplified thumb-sized attract screen). -->
+        <div id="overlayDesktop">
+            <p>Click below to initialize the Audio Engine:</p>
+            <div class="ov-grid">
+                <label class="ov-label">LATENCY HINT:
+                    <select id="latencySelect">
+                        <option value="interactive" selected>Interactive (Default)</option>
+                        <option value="0">0 (Lowest)</option>
+                        <option value="balanced">Balanced</option>
+                        <option value="playback">Playback</option>
+                    </select>
+                </label>
+                <label class="ov-label">SAMPLE RATE:
+                    <select id="sampleRateSelect">
+                        <option value="44100" selected>44100 Hz</option>
+                        <option value="48000">48000 Hz</option>
+                        <option value="96000">96000 Hz</option>
+                        <option value="192000">192000 Hz</option>
+                    </select>
+                </label>
+            </div>
+        </div>
+
+        <div id="overlayMobile">
+            <p>Insert coin — tap to power up:</p>
+            <details class="ov-adv">
+                <summary>ADVANCED AUDIO</summary>
+                <label class="ov-label">LATENCY:
+                    <select class="ov-mirror" data-target="latencySelect">
+                        <option value="interactive" selected>Interactive (Default)</option>
+                        <option value="0">0 (Lowest)</option>
+                        <option value="balanced">Balanced</option>
+                        <option value="playback">Playback</option>
+                    </select>
+                </label>
+                <label class="ov-label">SAMPLE RATE:
+                    <select class="ov-mirror" data-target="sampleRateSelect">
+                        <option value="44100" selected>44100 Hz</option>
+                        <option value="48000">48000 Hz</option>
+                        <option value="96000">96000 Hz</option>
+                        <option value="192000">192000 Hz</option>
+                    </select>
+                </label>
+            </details>
+        </div>
+
+        <select id="langSelect" onchange="I18n.lang = this.value;" aria-label="Language Selection">
             <option value="en">English</option>
             <option value="es">Español</option>
             <option value="pt">Português</option>
         </select>
 
-        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; width:100%; max-width:400px; margin-bottom:10px;">
-            <label style="color:#0f0; font-size:10px;">LATENCY HINT:
-                <select id="latencySelect" style="width:100%; background:#000; color:#0f0; border:1px solid #444;">
-                    <option value="interactive" selected>Interactive (Default)</option>
-                    <option value="0">0 (Lowest)</option>
-                    <option value="balanced">Balanced</option>
-                    <option value="playback">Playback</option>
-                </select>
-            </label>
-            <label style="color:#0f0; font-size:10px;">SAMPLE RATE:
-                <select id="sampleRateSelect" style="width:100%; background:#000; color:#0f0; border:1px solid #444;">
-                    <option value="44100" selected>44100 Hz</option>
-                    <option value="48000">48000 Hz</option>
-                    <option value="96000">96000 Hz</option>
-                    <option value="192000">192000 Hz</option>
-                </select>
-            </label>
-        </div>
-
-        <div id="driverSelection" style="width: 100%; max-width: 400px; margin-bottom: 20px;">
-            <button id="btn-start" class="full-width" style="font-size: 1.2em; padding: 15px; border-color: #0f0; color: #0f0;">[ START ASCII LOOPER ]</button>
+        <div id="driverSelection">
+            <button id="btn-start" class="overlay-start">[ START ASCII LOOPER ]</button>
         </div>
 
         <div id="driverInfo" style="font-size: 10px; color: #888; max-width: 400px; text-align: center; margin-bottom: 10px;">
-            NOTE: 
+            NOTE:
             <br>To use <strong>ASIO (FlexASIO/ASIO4ALL)</strong> or <strong>JACK</strong>, configure your Browser or OS default audio device before starting.
             <br>The app will automatically use the active system driver with optimized latency settings.
         </div>
+
+        <p id="ovMobileNote">Best with headphones · keep phone in portrait</p>
 
     <div id="startupError" style="color: #f00; font-weight: bold; display: none; margin-top: 10px; border: 1px solid #f00; padding: 10px;"></div>
     <p id="loadingText" style="display:none; color: #0f0;">Initializing Audio Subsystem...</p>
@@ -784,5 +816,69 @@
 <script src="./Modules/projectManager.js" defer></script>
 <script src="./Modules/debug.js" defer></script>
 <script src="main.js" defer></script>
+
+<!-- Styled tooltip engine: mirror title -> data-tip so [data-tip] CSS tooltips
+     show everywhere (mouse hover + keyboard focus) with a consistent look. -->
+<script>
+(function () {
+    function convert(el) {
+        if (!(el instanceof Element) || !el.getAttribute) return;
+        var t = el.getAttribute('title');
+        if (t) { el.setAttribute('data-tip', t); el.removeAttribute('title'); }
+    }
+    function scan(root) {
+        if (!(root instanceof Element)) return;
+        if (root.hasAttribute && root.hasAttribute('title')) convert(root);
+        var nodes = root.querySelectorAll ? root.querySelectorAll('[title]') : [];
+        for (var i = 0; i < nodes.length; i++) convert(nodes[i]);
+    }
+    var mo = new MutationObserver(function (muts) {
+        for (var i = 0; i < muts.length; i++) {
+            var m = muts[i];
+            if (m.type === 'attributes') {
+                if (m.target.getAttribute && m.target.getAttribute('title')) convert(m.target);
+            } else if (m.addedNodes && m.addedNodes.length) {
+                // Scan added subtrees synchronously (rAF may not fire in hidden tabs)
+                for (var j = 0; j < m.addedNodes.length; j++) scan(m.addedNodes[j]);
+            }
+        }
+    });
+    function start() {
+        scan(document.body);
+        mo.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['title'] });
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
+    else start();
+})();
+</script>
+
+<!-- PHONE ATTRACT SCREEN: mirror the phone selects into the desktop ones
+     the audio engine reads, and zoom-fit the ASCII logos to the viewport
+     (the logo art is untouched — only its scale changes). -->
+<script>
+(function () {
+    document.querySelectorAll('.ov-mirror').forEach(function (m) {
+        var target = document.getElementById(m.getAttribute('data-target'));
+        if (!target) return;
+        m.value = target.value;
+        m.addEventListener('change', function () { target.value = m.value; });
+    });
+
+    function fitLogo(pre) {
+        if (!pre) return;
+        var avail = Math.min(window.innerWidth, document.documentElement.clientWidth) - 16;
+        pre.style.zoom = '';
+        var sw = pre.scrollWidth || 1;
+        if (sw > avail) pre.style.zoom = avail / sw;
+    }
+    function fitAllLogos() {
+        fitLogo(document.querySelector('#startOverlay pre'));
+        fitLogo(document.querySelector('#header pre'));
+    }
+    fitAllLogos();
+    window.addEventListener('resize', fitAllLogos);
+    window.addEventListener('orientationchange', fitAllLogos);
+})();
+</script>
 </body>
 </html>

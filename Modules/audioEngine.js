@@ -103,6 +103,7 @@ class AudioEngine {
             // --- Master Soft Clipper (Safety Saturation) ---
             // Gently saturates peaks before they hit the limiter to prevent hard digital breaking
             state.masterSoftClip = state.audioContext.createWaveShaper();
+            state.masterSoftClip.oversample = '4x'; // Prevent aliasing from the saturation curve on the master bus
             const softClipCurve = new Float32Array(4096);
             for (let i = 0; i < 4096; i++) {
                 const x = (i * 2.0 / 4096.0) - 1.0;
@@ -318,34 +319,42 @@ class AudioEngine {
     }
 
     /**
-     * Creates a better stereo impulse response (Velvet Noise).
+     * Creates a natural-sounding stereo impulse response.
+     * Dense noise shaped by a smooth exponential decay (a classic Schroeder-style
+     * IR). Dense, because a sparse velvet-noise IR sounds grainy/metallic; the
+     * convolver's cost depends on IR *length* not density, so filling every
+     * sample is free. `decay` maps to the decay rate: higher decay = tighter,
+     * faster-decaying tail (same direction as the previous pow() envelope).
      */
     static createSimpleReverbIR(duration, decay, sampleRate) {
         if (!state.audioContext) return null;
-        const length = sampleRate * duration;
+        const length = Math.max(1, Math.floor(sampleRate * duration));
         const audioBuffer = state.audioContext.createBuffer(2, length, sampleRate);
-        
+        // Exponential decay rate from the user 'decay' param. Tuned so the tail
+        // stays lush/audible (rate too high front-loads all the energy and makes
+        // the reverb sound thin/short). Higher decay = tighter/shorter tail, same
+        // direction as the previous pow() envelope.
+        const rate = Math.max(1.5, (decay || 1) * 1.8);
+
         for(let c=0; c<2; c++) {
             let maxPeak = 0;
             let rms = 0;
             const data = audioBuffer.getChannelData(c);
             for (let i = 0; i < length; i++) {
-                if(Math.random() < 0.20) {
-                   const d = 1 - (i / length);
-                   const val = (Math.random() * 2 - 1) * Math.pow(d, decay);
-                   data[i] = val;
-                   rms += val * val;
-                   if (Math.abs(val) > maxPeak) maxPeak = Math.abs(val);
-                } else {
-                   data[i] = 0;
-                }
+                const t = i / length;
+                // Smooth exponential decay envelope over dense white noise.
+                const env = Math.exp(-rate * t);
+                const val = (Math.random() * 2 - 1) * env;
+                data[i] = val;
+                rms += val * val;
+                if (Math.abs(val) > maxPeak) maxPeak = Math.abs(val);
             }
             // Normalize to prevent gain explosion with short decays
-           if (maxPeak > 0.001) {
+            if (maxPeak > 0.001) {
                 // Normalize by RMS/Energy rather than peak to keep volume consistent across durations
                 // Target a rough gain factor that doesn't blow up the convolver
                 const actualRms = Math.sqrt(rms / length);
-                const norm = 0.1 / (actualRms + 0.0001); 
+                const norm = 0.1 / (actualRms + 0.0001);
                 for (let i = 0; i < length; i++) data[i] *= norm;
             }
         }

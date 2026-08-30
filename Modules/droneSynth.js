@@ -37,7 +37,8 @@ class SynthInstance {
             scale: 0, rate: 8, filterType: 'lowpass',
             stepsCount: 16,
             steps: Array(64).fill(0.5),
-            gates: Array(64).fill(1)
+            gates: Array(64).fill(1),
+            vels: Array(64).fill(1) // per-step velocity (volume) 0..1
         };
         this.nextStepTime = 0;
         this.stepIndex = 0;
@@ -165,6 +166,7 @@ class DroneSynth {
             });
         }
         this.renderAll();
+        this.bindStepEditor();
         
         this.startScheduler();
     }
@@ -252,7 +254,10 @@ class DroneSynth {
             // Calculate note display based on default 0.5
             // Ensure synth params array is large enough
             if (synth.params.steps[i] === undefined) { synth.params.steps[i] = 0.5; synth.params.gates[i] = 1; }
+            if (!synth.params.vels) synth.params.vels = Array(64).fill(1);
+            if (synth.params.vels[i] === undefined) synth.params.vels[i] = 1;
             const val = synth.params.steps[i];
+            const vel = synth.params.vels[i];
             const noteOffset = (val - 0.5) * 24; // Fractional offsets = microtones
             const noteName = DroneSynth.getNoteName(noteOffset);
             const gate = synth.params.gates[i];
@@ -260,14 +265,14 @@ class DroneSynth {
             
             stepsHtml += `
             <div class="drone-step ${mutedClass}" 
-                 id="ds-${id}-${i}"
-                 title="Step ${i+1}: ${noteName} | Shift+Wheel: semitone | Shift+Ctrl+Wheel: quarter-tone"
-                 style="cursor: pointer; position: relative;"
-                 onwheel="DroneSynth.handleStepWheel(event, ${id}, ${i})">
+                 id="ds-${id}-${i}" data-id="${id}" data-idx="${i}" tabindex="0"
+                 title="Step ${i+1}: ${noteName} | Drag ↕ note · Drag ↔ volume · Click gate | Shift+Wheel note · Shift+Ctrl quarter-tone · Ctrl+Wheel volume · Dbl-click reset"
+                 aria-label="Step ${i+1} pitch and volume">
                 <span id="ds-lbl-${id}-${i}" style="pointer-events:none; position: relative; z-index: 10; text-shadow: 0 0 2px #000;">${noteName}</span>
-                <input type="range" id="ds-rng-${id}-${i}" min="0" max="1" step="0.0104166" value="${val}" aria-label="Step ${i+1} Pitch" style="position: relative; z-index: 1;"
-                oninput="DroneSynth.updateStep(${id}, ${i}, this.value)">
-                <input type="checkbox" id="ds-gate-${id}-${i}" ${gate ? 'checked' : ''} onchange="DroneSynth.toggleGate(${id}, ${i})" title="Gate" aria-label="Step ${i+1} Gate" style="width: 24px; height: 24px; margin-top: 8px;">
+                <div class="ds-pad" id="ds-pad-${id}-${i}">
+                    <div class="ds-vel" id="ds-vel-${id}-${i}" style="height:${Math.round(Math.max(0, Math.min(1, vel)) * 100)}%;"></div>
+                    <div class="ds-thumb" id="ds-th-${id}-${i}" style="bottom:${Math.round(Math.max(0, Math.min(1, val)) * 100)}%;"></div>
+                </div>
             </div>`;
         }
 
@@ -276,7 +281,7 @@ class DroneSynth {
         const mappedKey = (id < 10 && state.keyMapping.kbd[20+id]) ? state.keyMapping.kbd[20+id].toUpperCase() : (id+1);
         
         // Rhythm Patterns
-        const rhythms = ['Random', 'Euclidean 4', 'Techno', 'Chaos', 'Fill'];
+        const rhythms = ['Harmonic', 'Dissonant', 'Random', 'Euclidean 4', 'Techno', 'Chaos', 'Fill'];
         
         const stateColor = DroneSynth.getStateColor(synth.state, synth.isRecording);
 
@@ -335,7 +340,7 @@ class DroneSynth {
     </div>
             
             <div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 5px; background: #000500; padding: 4px 8px; border-bottom: 1px solid #222;">
-                <div style="display:flex; gap:4px; align-items:center;">
+                <div style="display:flex; gap:4px; align-items:center; flex-wrap:wrap;">
                     <span style="font-size:9px; color:#888; font-weight:bold;">PRST:</span>
                     <select id="dronePresetSel_${id}" style="width:85px; height:20px; font-size:9px; background:#000; color:#0f0; border:1px solid #333;" onchange="DroneSynth.loadPreset(${id}, this.value)" aria-label="Drone Preset">
                         ${presetOptions}
@@ -352,7 +357,7 @@ class DroneSynth {
                     <button class="std-btn ${synth.isRecording ? 'btn-red' : ''} small" style="width: 35px; height: 20px;" onclick="DroneSynth.toggleRecord(${id})" data-i18n-title="TIP_REC_DRONE">REC</button>
                     <button id="droneSoloBtn_${id}" class="std-btn ${DroneSynth.soloInstanceId === id ? 'btn-yellow' : ''} small" style="width: 45px; height: 20px; padding:0; line-height:1;" onclick="DroneSynth.toggleSolo(${id})" data-i18n-title="TIP_SOLO">SOLO</button>
                 </div>
-                <div style="display:flex; gap:4px; align-items:center;">
+                <div style="display:flex; gap:4px; align-items:center; flex-wrap:wrap;">
                     <span style="font-size:9px; color:#888; font-weight:bold;">LEN:</span>
                     <input type="number" min="1" max="64" value="${stepsToRender}" style="width:35px; font-size:9px; height:20px; background:#000; border:1px solid #444; color:#0f0; text-align:center;" onchange="DroneSynth.setParam(${id}, 'stepsCount', this.value); DroneSynth.renderAll();" aria-label="Steps Count">
                     <span style="font-size:9px; color:#888; font-weight:bold; margin-left:4px;">SCL:</span>
@@ -451,7 +456,7 @@ class DroneSynth {
         <div class="drone-seq-row">${stepsHtml}</div>
         
         <div style="display:flex; align-items:center; gap:5px; margin-bottom:2px; margin-top:5px; border-top:1px dashed #333; padding-top:4px;">
-            <span style="font-size:10px; font-weight:bold; color:#0ff; cursor:pointer; text-decoration:underline;" onclick="EffectManager.setActiveTab('drone-${id}'); document.getElementById('part3').scrollIntoView({behavior:'smooth'});" title="Go to FX Controls">FX CHAIN:</span>
+            <span style="font-size:10px; font-weight:bold; color:#0ff; cursor:pointer; text-decoration:underline;" onclick="EffectManager.setActiveTab('drone-${id}'); EffectManager.scrollToEffects();" title="Go to FX Controls">FX CHAIN:</span>
             <select id="droneFxPresetSelect_${id}" style="font-size:10px; width:80px;" onchange="if(window.EffectManager) { EffectManager.setActiveTab('drone-${id}'); EffectManager.applyPresetToMic(this.value); }" aria-label="Drone FX Chain Preset"></select>
             <input type="text" id="droneSignalChainInput_${id}" value="${synth.signalChain}" onchange="EffectManager.setGlobalSignalChain(this.value)" onclick="EffectManager.setActiveTab('drone-${id}')" style="width:80px; font-size:10px; font-family:monospace; background:#000; color:#0ff; border:1px solid #044;" title="Manual FX Chain" aria-label="Manual FX Chain">
             <a href="#mod-sync" onclick="document.getElementById('fxMixTimeSel').focus()" class="mixin-link" style="font-size:9px; color:#888; text-decoration:underline; margin-left:4px;">mixin time: ${state.fxMixTime || '2s'}</a>
@@ -552,11 +557,126 @@ class DroneSynth {
         input.value = '';
     }
     
+    // ---------------------------------------------------------------
+    // Step editor (drag pad). Delegates from the drones container so the
+    // handlers survive renderAll() rebuilds.
+    //   vertical drag   = pitch  (full pad height covers the whole range)
+    //   horizontal drag = per-step volume
+    //   click / tap     = toggle gate
+    //   wheel           = pitch ±1 semitone (Shift: snap, Shift+Ctrl: quarter-tone)
+    //   Ctrl+wheel      = volume
+    //   double-click    = reset step to C at full volume
+    //   keyboard        = arrows note/volume, Space/Enter gate
+    static bindStepEditor() {
+        if (this._stepEditorBound) return;
+        const container = document.getElementById('drone-instances-container');
+        if (!container) return;
+        this._stepEditorBound = true;
+        const stepFromTarget = (t) => {
+            const el = (t && t.closest) ? t.closest('.drone-step') : null;
+            if (!el || el.dataset.id === undefined) return null;
+            return { el, id: parseInt(el.dataset.id, 10), idx: parseInt(el.dataset.idx, 10) };
+        };
+
+        container.addEventListener('pointerdown', (e) => {
+            const s = stepFromTarget(e.target);
+            if (!s || this._stepDrag) return; // one drag at a time
+            const synth = this.instances[s.id];
+            if (!synth) return;
+            const pad = s.el.querySelector('.ds-pad');
+            if (!pad) return;
+            e.preventDefault();
+            try { s.el.setPointerCapture(e.pointerId); } catch(err){}
+            try { s.el.focus({ preventScroll: true }); } catch(err){}
+            this._stepDrag = {
+                pointerId: e.pointerId, id: s.id, idx: s.idx, el: s.el,
+                startX: e.clientX, startY: e.clientY,
+                startVal: synth.params.steps[s.idx] ?? 0.5,
+                startVel: (synth.params.vels && synth.params.vels[s.idx]) ?? 1,
+                padH: Math.max(20, pad.clientHeight),
+                padW: Math.max(20, pad.clientWidth),
+                axis: null
+            };
+        });
+
+        container.addEventListener('pointermove', (e) => {
+            const d = this._stepDrag;
+            if (!d || e.pointerId !== d.pointerId) return;
+            const dx = e.clientX - d.startX;
+            const dy = e.clientY - d.startY;
+            if (!d.axis) {
+                if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+                // Lock to the dominant axis so pitch drags don't change volume
+                d.axis = (Math.abs(dy) >= Math.abs(dx)) ? 'pitch' : 'vel';
+            }
+            if (d.axis === 'pitch') {
+                this.updateStep(d.id, d.idx, d.startVal - dy / d.padH); // drag up = higher note
+            } else {
+                this.updateStepVelocity(d.id, d.idx, d.startVel + dx / d.padW); // drag right = louder
+            }
+        });
+
+        const endDrag = (e, cancelled) => {
+            const d = this._stepDrag;
+            if (!d || e.pointerId !== d.pointerId) return;
+            this._stepDrag = null;
+            try { d.el.releasePointerCapture(e.pointerId); } catch(err){}
+            if (cancelled) return;
+            const moved = Math.max(Math.abs(e.clientX - d.startX), Math.abs(e.clientY - d.startY));
+            if (moved < 6) this.toggleGate(d.id, d.idx); // plain click/tap toggles the gate
+        };
+        container.addEventListener('pointerup', (e) => endDrag(e, false));
+        container.addEventListener('pointercancel', (e) => endDrag(e, true));
+
+        container.addEventListener('wheel', (e) => {
+            const s = stepFromTarget(e.target);
+            if (!s) return;
+            if (e.shiftKey) {
+                // Shift+wheel = note (Shift+Ctrl = quarter-tone, Shift = semitone/snap)
+                e.preventDefault();
+                this.handleStepWheel(e, s.id, s.idx);
+            } else if (e.ctrlKey) {
+                // Ctrl+wheel = per-step volume
+                e.preventDefault();
+                const synth = this.instances[s.id];
+                const cur = (synth && synth.params.vels && synth.params.vels[s.idx]) ?? 1;
+                const delta = e.deltaY || e.deltaX;
+                this.updateStepVelocity(s.id, s.idx, cur + (delta < 0 ? 0.05 : -0.05));
+            }
+            // Plain wheel: fall through so the page scrolls and the note is untouched.
+        }, { passive: false });
+
+        container.addEventListener('dblclick', (e) => {
+            const s = stepFromTarget(e.target);
+            if (!s) return;
+            this.updateStep(s.id, s.idx, 0.5);          // back to root C
+            this.updateStepVelocity(s.id, s.idx, 1.0);  // full volume
+        });
+
+        container.addEventListener('keydown', (e) => {
+            const s = stepFromTarget(e.target);
+            if (!s) return;
+            const synth = this.instances[s.id];
+            if (!synth) return;
+            const SEMI = 1 / 24;
+            const cur = synth.params.steps[s.idx] ?? 0.5;
+            const curVel = (synth.params.vels && synth.params.vels[s.idx]) ?? 1;
+            switch (e.key) {
+                case 'ArrowUp':    this.updateStep(s.id, s.idx, cur + SEMI); break;
+                case 'ArrowDown':  this.updateStep(s.id, s.idx, cur - SEMI); break;
+                case 'ArrowRight': this.updateStepVelocity(s.id, s.idx, curVel + 0.05); break;
+                case 'ArrowLeft':  this.updateStepVelocity(s.id, s.idx, curVel - 0.05); break;
+                case ' ': case 'Enter': this.toggleGate(s.id, s.idx); break;
+                default: return; // don't swallow other keys
+            }
+            e.preventDefault();
+        });
+    }
+
     static handleStepWheel(e, id, idx) {
-        e.preventDefault();
-        const rng = document.getElementById(`ds-rng-${id}-${idx}`);
-        if (!rng) return;
-        let val = parseFloat(rng.value);
+        const synth = this.instances[id];
+        if (!synth) return;
+        let val = synth.params.steps[idx] ?? 0.5;
         const SEMI = 1 / 24;    // 1 semitone
         const QUARTER = 1 / 96; // 1 quarter-tone (microtonal)
         // Browsers report Shift+wheel as horizontal scroll (deltaX, deltaY=0)
@@ -565,21 +685,19 @@ class DroneSynth {
             // Shift+Ctrl+wheel = 1 quarter-tone (microtonal)
             val += (delta < 0 ? QUARTER : -QUARTER);
         } else if (e.shiftKey) {
-            // Shift+wheel = 1 semitone (normal notes); snap to the semitone
-            // grid first so previous microtonal offsets resolve back to 12-TET
+            // Shift+wheel = 1 semitone, snapped to the semitone grid so previous
+            // microtonal offsets resolve back to 12-TET
             val = Math.round(val / SEMI) * SEMI + (delta < 0 ? SEMI : -SEMI);
         } else {
             // Plain wheel = 1 semitone
             val += (delta < 0 ? SEMI : -SEMI);
         }
-        val = Math.max(0, Math.min(1, val));
-        rng.value = val;
         this.updateStep(id, idx, val);
     }
 
-    static updateStep(id, idx, valStr) {
+    static updateStep(id, idx, valInput) {
         if (EffectManager.activeTab !== 'drone-' + id) EffectManager.setActiveTab('drone-' + id);
-        const val = parseFloat(valStr);
+        const val = Math.max(0, Math.min(1, parseFloat(valInput)));
         const synth = this.instances[id];
         if(synth) synth.params.steps[idx] = val;
         // Update label
@@ -590,6 +708,20 @@ class DroneSynth {
             lbl.textContent = name;
             lbl.style.color = Math.round(semi) === 0 ? '#666' : '#0ff';
         }
+        // Move the pitch thumb indicator
+        const th = document.getElementById(`ds-th-${id}-${idx}`);
+        if (th) th.style.bottom = (val * 100) + '%';
+    }
+
+    static updateStepVelocity(id, idx, velInput) {
+        if (EffectManager.activeTab !== 'drone-' + id) EffectManager.setActiveTab('drone-' + id);
+        const vel = Math.max(0, Math.min(1, parseFloat(velInput)));
+        const synth = this.instances[id];
+        if (!synth) return;
+        if (!synth.params.vels) synth.params.vels = Array(64).fill(1);
+        synth.params.vels[idx] = vel;
+        const bar = document.getElementById(`ds-vel-${id}-${idx}`);
+        if (bar) bar.style.height = (vel * 100) + '%';
     }
 
     static toggleGate(id, idx) {
@@ -615,6 +747,85 @@ class DroneSynth {
         this.renderAll();
     }
 
+    // ---------------------------------------------------------------
+    // Harmony-aware note generation
+    // Consonance of each interval class (semitones from the drone root):
+    // unison/octave (0) and fifth (7) are most stable; thirds/sixths are
+    // consonant color; m2 (1), tritone (6) and M7 (11) are the tensions.
+    static INTERVAL_CONSONANCE = [1.0, 0.12, 0.35, 0.72, 0.80, 0.82, 0.10, 0.95, 0.60, 0.66, 0.42, 0.18];
+
+    static intervalClass(offset) {
+        return ((Math.round(offset) % 12) + 12) % 12;
+    }
+
+    // All scale degrees mapped into the playable [-12, +12] window (deduped,
+    // works with microtonal scales too).
+    static scaleOffsets(scale) {
+        const seen = new Set();
+        const out = [];
+        for (const deg of scale) {
+            for (const oct of [-12, 0, 12]) {
+                const off = deg + oct;
+                if (off < -12 || off > 12) continue;
+                const key = Math.round(off * 100);
+                if (seen.has(key)) continue;
+                seen.add(key);
+                out.push(off);
+            }
+        }
+        return out.length ? out : [0];
+    }
+
+    static pickWeighted(cands) {
+        let sum = 0;
+        for (const c of cands) sum += c.w;
+        let r = Math.random() * sum;
+        for (const c of cands) {
+            r -= c.w;
+            if (r <= 0) return c.off;
+        }
+        return cands[cands.length - 1].off;
+    }
+
+    // Weighted note pick relative to the drone root.
+    // mode: 'harmonic'  -> stable chord tones, smooth stepwise motion
+    //       'neutral'   -> consonance-leaning with some wander
+    //       'dissonant' -> tension intervals (m2/tritone/7ths), wider leaps
+    static harmonyOffset(scale, prevOffset, mode = 'neutral') {
+        const offs = this.scaleOffsets(scale);
+        const smooth = mode === 'harmonic' ? 0.65 : (mode === 'dissonant' ? 0.22 : 0.45);
+        const cands = offs.map(off => {
+            const cons = this.INTERVAL_CONSONANCE[this.intervalClass(off)] ?? 0.3;
+            let w;
+            if (mode === 'dissonant') w = Math.pow(1 - cons, 2.2);
+            else if (mode === 'harmonic') w = Math.pow(cons, 3);
+            else w = Math.pow(cons, 1.1);
+            w += 0.02; // keep every degree reachable
+            // Melodic proximity: small leaps when harmonic, wide leaps when dissonant
+            if (prevOffset !== null && Number.isFinite(prevOffset)) {
+                w *= 1 / (1 + Math.abs(off - prevOffset) * smooth);
+            }
+            // Mild bias towards the centre register
+            w *= 1 - 0.15 * (Math.abs(off) / 12);
+            return { off, w };
+        });
+        return this.pickWeighted(cands);
+    }
+
+    // Strong chord tones (root / fifth / octave, thirds as fallback) used to
+    // anchor downbeats so generated phrases sit in the key of the drone.
+    static chordToneOffset(scale, { rootBias = false, allowThirds = true } = {}) {
+        const offs = this.scaleOffsets(scale);
+        let pool = offs.filter(o => this.intervalClass(o) === 0 || this.intervalClass(o) === 7);
+        if (rootBias) {
+            const roots = pool.filter(o => this.intervalClass(o) === 0);
+            if (roots.length && Math.random() < 0.6) return roots[Math.floor(Math.random() * roots.length)];
+        }
+        if (!pool.length && allowThirds) pool = offs.filter(o => this.intervalClass(o) === 3 || this.intervalClass(o) === 4);
+        if (!pool.length) pool = offs;
+        return pool[Math.floor(Math.random() * pool.length)];
+    }
+
     static evolveSequence(id) {
         if (EffectManager.activeTab !== 'drone-' + id) EffectManager.setActiveTab('drone-' + id);
         const synth = this.instances[id];
@@ -623,17 +834,15 @@ class DroneSynth {
         const scaleIdx = parseInt(synth.params.scale) || 0;
         const scale = this.SCALES[scaleIdx] || this.SCALES[0];
 
+        let prevOffset = ((synth.params.steps[0] ?? 0.5) - 0.5) * 24;
         for(let i=0; i<stepsToRender; i++) {
             if (Math.random() < 0.15) synth.params.gates[i] = synth.params.gates[i] ? 0 : 1;
             if (Math.random() < 0.20) {
-                const interval = scale[Math.floor(Math.random() * scale.length)];
-                let offset = interval;
-                if (Math.random() > 0.7) offset += (Math.random() > 0.5 ? 12 : -12);
-                while (offset > 12) offset -= 12;
-                while (offset < -12) offset += 12;
+                const offset = this.harmonyOffset(scale, prevOffset, 'neutral');
                 const val = 0.5 + (offset / 24);
                 this.updateStep(id, i, Math.max(0, Math.min(1, val)));
             }
+            prevOffset = ((synth.params.steps[i] ?? 0.5) - 0.5) * 24;
         }
         this.renderAll();
     }
@@ -646,13 +855,34 @@ class DroneSynth {
         const scale = this.SCALES[scaleIdx] || this.SCALES[0];
         const stepsToRender = synth.params.stepsCount || 16;
 
+        let prevOffset = 0;
         for(let i=0; i<stepsToRender; i++) {
-            // 1. Pitch
-            const interval = scale[Math.floor(Math.random() * scale.length)];
-            let offset = interval;
-            if (Math.random() > 0.7) offset += (Math.random() > 0.5 ? 12 : -12);
-            while (offset > 12) offset -= 12;
-            while (offset < -12) offset += 12;
+            const isDownbeat = (i % 4 === 0);
+
+            // 1. Pitch (harmony-aware against the drone root)
+            let offset;
+            if (type === 'Harmonic') {
+                // Chord-tone walk: downbeats anchored to root/fifth, inner
+                // steps arpeggiate chord tones with smooth voice leading.
+                offset = isDownbeat
+                    ? this.chordToneOffset(scale, { rootBias: i % 8 === 0 })
+                    : (Math.random() < 0.6
+                        ? this.chordToneOffset(scale)
+                        : this.harmonyOffset(scale, prevOffset, 'harmonic'));
+            } else if (type === 'Dissonant') {
+                // Tension intervals (m2, tritone, 7ths) with wide leaps;
+                // occasionally resolve to the root on downbeats.
+                offset = (isDownbeat && Math.random() < 0.3)
+                    ? this.chordToneOffset(scale, { rootBias: true })
+                    : this.harmonyOffset(scale, prevOffset, 'dissonant');
+            } else {
+                offset = this.harmonyOffset(scale, prevOffset, 'neutral');
+                // Anchor most downbeats to strong chord tones so the phrase sits in key
+                if (isDownbeat && Math.random() < 0.75) {
+                    offset = this.chordToneOffset(scale, { rootBias: i % 8 === 0 });
+                }
+            }
+            prevOffset = offset;
             const val = 0.5 + (offset / 24);
             this.updateStep(id, i, Math.max(0, Math.min(1, val)));
             
@@ -662,6 +892,8 @@ class DroneSynth {
             else if (type === 'Euclidean 4') gate = (i % 4 === 0) ? 1 : 0;
             else if (type === 'Techno') gate = (i % 4 === 0) ? 1 : (i % 4 === 2 ? 0 : (Math.random()>0.5?1:0));
             else if (type === 'Chaos') gate = (Math.random() > 0.5) ? 1 : 0;
+            else if (type === 'Harmonic') gate = isDownbeat ? 1 : ((i % 4 === 2) ? (Math.random() < 0.7 ? 1 : 0) : (Math.random() < 0.25 ? 1 : 0));
+            else if (type === 'Dissonant') gate = isDownbeat ? (Math.random() < 0.9 ? 1 : 0) : (Math.random() < 0.6 ? 1 : 0);
             else if (type === 'Fill') gate = 1;
             
             synth.params.gates[i] = gate;
@@ -917,6 +1149,16 @@ class DroneSynth {
         } catch(e) {}
     }
 
+    // Clamp the LFO->filter depth so the instantaneous cutoff can never be driven
+    // to 0 Hz. A biquad swept through 0 Hz goes degenerate and clicks on every
+    // LFO cycle. Keep instantaneous cutoff >= ~30 Hz: |depth| <= cutoff - 30.
+    static safeFilterLfoDepth(synth) {
+        const cutoff = Math.max(30, synth.params.cutoff || 800);
+        const depth = synth.params.lfoDepth || 0;
+        const maxDepth = Math.max(0, cutoff - 30);
+        return Math.max(-maxDepth, Math.min(maxDepth, depth));
+    }
+
     static triggerVoice(synth, freq, duration, time, accent = 1.0) {
         const ctx = state.audioContext;
         const v = this.getVoiceFromPool(ctx);
@@ -1040,7 +1282,7 @@ class DroneSynth {
         v.lfo.frequency.cancelScheduledValues(now);
         v.lfo.frequency.setValueAtTime(synth.params.lfoRate, now + startOffset);
         v.lfoGain.gain.cancelScheduledValues(now);
-        v.lfoGain.gain.setValueAtTime(synth.params.lfoDepth, now + startOffset);
+        v.lfoGain.gain.setValueAtTime(this.safeFilterLfoDepth(synth), now + startOffset);
 
         // Amp Envelope (Sustain for step duration)
         const vcaAtk = Math.max(0.005, synth.params.attack || 0.05);
@@ -1053,7 +1295,11 @@ class DroneSynth {
         v.vca.gain.linearRampToValueAtTime(0, now + startOffset); // Prevent pop
 
         const actualAtk = Math.min(vcaAtk, duration);
-        const peak = 0.5 * (actualAtk / vcaAtk) * accent;
+        // Overlapping voices sum on the bus. Soft-compensate per-voice level so dense
+        // patterns don't drive the master limiter (heard as clicks/pumping).
+        const overlap = Object.keys(synth.voices).length;
+        const voiceComp = 1 / Math.sqrt(Math.max(1, overlap));
+        const peak = 0.5 * (actualAtk / vcaAtk) * accent * voiceComp;
 
         v.vca.gain.linearRampToValueAtTime(peak, now + startOffset + actualAtk);
         if (duration > actualAtk) {
@@ -1072,6 +1318,8 @@ class DroneSynth {
         // Connect & Noise
         if (!synth.fxInput) { synth.fxInput = ctx.createGain(); this.rebuildFxChain(synth.id); }
         v.panner.connect(synth.fxInput);
+        if (!synth.dryDestination) synth.dryDestination = ctx.createMediaStreamDestination();
+        v.panner.connect(synth.dryDestination);
         const noise = this.createNoise(ctx, synth.params.noiseType || 'white');
         noise.connect(v.noiseGain);
         const noiseOffset = Math.random() * noise.buffer.duration;
@@ -1089,8 +1337,10 @@ class DroneSynth {
     static getDriveCurve(amount) {
         if (amount <= 0) {
             if (!this.identityCurve) {
-                const n = 256; this.identityCurve = new Float32Array(n);
-                for(let i=0; i<n; i++) this.identityCurve[i] = (i*2/n - 1);
+                // Odd length so input 0 maps exactly to the center sample
+                // (even lengths interpolate between two samples and leak DC).
+                const n = 257; this.identityCurve = new Float32Array(n);
+                for(let i=0; i<n; i++) this.identityCurve[i] = (i*2/(n-1) - 1);
             }
             return this.identityCurve;
         }
@@ -1098,12 +1348,12 @@ class DroneSynth {
         const cacheKey = Math.round(amount);
         if (this.driveCurveCache[cacheKey]) return this.driveCurveCache[cacheKey];
 
-        const n = 256;
+        const n = 257;
         const curve = new Float32Array(n);
         const k = amount;
         
         for (let i = 0; i < n; ++i) {
-            const x = i * 2 / n - 1;
+            const x = i * 2 / (n - 1) - 1;
             // Industrial Foldback: If drive > 50, introduce sine folding
             if (k > 50) {
                 // Mix between tanh and sine fold
@@ -1123,7 +1373,7 @@ class DroneSynth {
 
     static createNoise(ctx, type = 'white') {
         if (!this.noiseBuffers[type] || this.noiseCtx !== ctx) {
-            const bufferSize = ctx.sampleRate * 2; // 2 seconds loop
+            const bufferSize = Math.floor(ctx.sampleRate * 2); // 2 seconds loop
             const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
             const output = buffer.getChannelData(0);
             this.noiseCtx = ctx;
@@ -1221,7 +1471,7 @@ class DroneSynth {
         const noiseGain = ctx.createGain(); noiseGain.gain.value = 0;
         const fmGain = ctx.createGain(); fmGain.gain.value = 0; // FM Modulator Gain
 
-        const oscMix = ctx.createGain(); oscMix.gain.value = 0.6;
+        const oscMix = ctx.createGain(); oscMix.gain.value = 0.5; // headroom so osc+sub+noise don't hard-clip the drive stage
         const subMix = ctx.createGain(); subMix.gain.value = 0;
         const uniGain = ctx.createGain(); uniGain.gain.value = 0;
 
@@ -1263,20 +1513,22 @@ class DroneSynth {
         lfoGain.connect(filter2.frequency);
         lfo.start();
 
-        // Saturation Curve (asymmetric tube-style soft clip, DC-balanced)
+        // Saturation Curve (asymmetric tube-style soft clip)
+        // Anchor the curve at zero input: curve(0) must be 0 or a closed VCA
+        // (input exactly 0) leaks constant DC onto the bus, heard as a click
+        // when the voice connects/disconnects after the note's envelope ends.
+        // Odd length so input 0 maps exactly to the center sample (even
+        // lengths interpolate between two samples and still leak DC).
         if (!this.satCurve) {
-            const n = 1024; this.satCurve = new Float32Array(n);
+            const n = 1025; this.satCurve = new Float32Array(n);
             for(let i=0;i<n;i++){
-                const x = i*2/n - 1;
+                const x = i*2/(n-1) - 1;
                 // Fatter negative half => even harmonics => analog warmth
                 this.satCurve[i] = x >= 0 ? Math.tanh(x * 1.7) : 1.12 * Math.tanh(x * 2.3);
             }
-            // Remove DC offset introduced by the asymmetry, normalize to +/-1
-            let mean = 0;
-            for(let i=0;i<n;i++) mean += this.satCurve[i];
-            mean /= n;
+            const zero = this.satCurve[(n - 1) / 2]; // curve value at x = 0
             let peak = 0;
-            for(let i=0;i<n;i++){ this.satCurve[i] -= mean; const a = Math.abs(this.satCurve[i]); if(a > peak) peak = a; }
+            for(let i=0;i<n;i++){ this.satCurve[i] -= zero; const a = Math.abs(this.satCurve[i]); if(a > peak) peak = a; }
             if (peak > 0) for(let i=0;i<n;i++) this.satCurve[i] /= peak;
         }
         shaper.curve = this.satCurve;
@@ -1308,8 +1560,10 @@ class DroneSynth {
 
         // Initialize drive curve to identity to avoid silence if parameter unset
         if (!this.identityCurve) {
-            const n = 256; this.identityCurve = new Float32Array(n);
-            for(let i=0;i<n;i++) this.identityCurve[i] = (i*2/n - 1);
+            // Odd length so input 0 maps exactly to the center sample
+            // (even lengths interpolate between two samples and leak DC).
+            const n = 257; this.identityCurve = new Float32Array(n);
+            for(let i=0;i<n;i++) this.identityCurve[i] = (i*2/(n-1) - 1);
         }
         drive.curve = this.identityCurve;
 
@@ -1474,7 +1728,7 @@ class DroneSynth {
 
         // LFO
         v.lfo.frequency.cancelScheduledValues(now); v.lfo.frequency.setValueAtTime(synth.params.lfoRate, now + startOffset);
-        v.lfoGain.gain.cancelScheduledValues(now); v.lfoGain.gain.setValueAtTime(synth.params.lfoDepth, now + startOffset);
+        v.lfoGain.gain.cancelScheduledValues(now); v.lfoGain.gain.setValueAtTime(this.safeFilterLfoDepth(synth), now + startOffset);
 
         // 4. VCA (Amp Envelope)
         const ampAtk = Math.max(0.005, synth.params.attack || 0.05);
@@ -1486,7 +1740,9 @@ class DroneSynth {
         v.vca.gain.linearRampToValueAtTime(0, now + startOffset); // Smooth to zero
         
         const gainScale = isDrone ? 0.8 : 0.2;
-        const peakGain = Math.pow(vel / 127.0, 1.5) * gainScale;
+        const overlapN = Object.keys(synth.voices).length;
+        const voiceCompN = 1 / Math.sqrt(Math.max(1, overlapN));
+        const peakGain = Math.pow(vel / 127.0, 1.5) * gainScale * voiceCompN;
         
         v.vca.gain.linearRampToValueAtTime(peakGain, now + startOffset + ampAtk);
         v.vca.gain.setTargetAtTime(peakGain * ampSus, now + startOffset + ampAtk, ampDec / 3);
@@ -1565,6 +1821,8 @@ class DroneSynth {
                     const val = Math.max(0, Math.min(1, 0.5 + (note - 36) / 24));
                     synth.params.steps[synth.stepIndex] = val;
                     synth.params.gates[synth.stepIndex] = 1;
+                    if (!synth.params.vels) synth.params.vels = Array(64).fill(1);
+                    synth.params.vels[synth.stepIndex] = Math.max(0.05, Math.min(1, vel / 127));
                     requestAnimationFrame(() => this.renderAll());
                 }
             } else if (cmdType === 128 || (cmdType === 144 && vel === 0)) {
@@ -1671,11 +1929,13 @@ class DroneSynth {
              if(key === 'cutoff') {
                  if (v.filter) DroneSynth.smoothParamUpdate(v.filter.frequency, Math.max(15, synth.params.cutoff), now, 0.05);
                  if (v.filter2) DroneSynth.smoothParamUpdate(v.filter2.frequency, Math.max(15, synth.params.cutoff), now, 0.05);
+                 // Allowed LFO depth depends on the cutoff; re-clamp it too
+                 DroneSynth.smoothParamUpdate(v.nodes[10].gain, DroneSynth.safeFilterLfoDepth(synth), now, 0.05);
              }
              if(key === 'drive' && v.drive) v.drive.curve = DroneSynth.getDriveCurve(synth.params.drive || 0);
              if(key === 'fmAmt') DroneSynth.smoothParamUpdate(v.nodes[13].gain, synth.params.fmAmt, now, 0.05);
              if(key === 'lfoRate') DroneSynth.smoothParamUpdate(v.nodes[9].frequency, synth.params.lfoRate, now, 0.1);
-             if(key === 'lfoDepth') DroneSynth.smoothParamUpdate(v.nodes[10].gain, synth.params.lfoDepth, now, 0.1);
+             if(key === 'lfoDepth') DroneSynth.smoothParamUpdate(v.nodes[10].gain, DroneSynth.safeFilterLfoDepth(synth), now, 0.1);
              if(key === 'vibratoRate') DroneSynth.smoothParamUpdate(v.nodes[15].frequency, synth.params.vibratoRate, now, 0.1);
              if(key === 'vibratoDepth') DroneSynth.smoothParamUpdate(v.nodes[16].gain, synth.params.vibratoDepth, now, 0.1);
              if(key === 'pan') DroneSynth.smoothParamUpdate(v.nodes[11].pan, Math.max(-1, Math.min(1, synth.params.pan + (v.panSpread||0))), now, 0.1);
@@ -1702,8 +1962,9 @@ class DroneSynth {
         const ctx = state.audioContext;
         const now = ctx.currentTime;
         const lookahead = 0.15; // Increased lookahead slightly
-        const secPerBeat = 60 / state.bpm;
-        const stepDur = secPerBeat * (4 / (synth.params.rate || 4));
+        const rate = (Number.isFinite(synth.params.rate) && synth.params.rate > 0) ? synth.params.rate : 8;
+        const secPerBeat = 60 / Math.max(10, state.bpm || 120);
+        const stepDur = secPerBeat * (4 / rate);
         const maxSteps = synth.params.stepsCount || 16;
 
         // Sync Recovery: If nextStepTime is too far in past (lag), align to grid
@@ -1715,7 +1976,7 @@ class DroneSynth {
                     synth.stepIndex = 0;
                 } else {
                     const elapsed = now - state.masterStartTime;
-                    const stepsElapsed = Math.floor(elapsed / stepDur) + 1;
+                    const stepsElapsed = Math.ceil(elapsed / stepDur);
                     synth.nextStepTime = state.masterStartTime + (stepsElapsed * stepDur);
                     let newStepIndex = stepsElapsed % maxSteps;
                     if (newStepIndex < 0) newStepIndex += maxSteps;
@@ -1742,7 +2003,8 @@ class DroneSynth {
         const semi = (val - 0.5) * 24;
         const safeBpm = Math.max(10, state.bpm || 120);
         const secPerBeat = 60 / safeBpm;
-        const stepDur = secPerBeat * (4 / synth.params.rate);
+        const rate = (Number.isFinite(synth.params.rate) && synth.params.rate > 0) ? synth.params.rate : 8;
+        const stepDur = secPerBeat * (4 / rate);
 
         // Calculate target frequency for this step (honors scale tuning)
         const baseNote = 36; // C2
@@ -1750,9 +2012,13 @@ class DroneSynth {
         const freq = this.noteToFrequency(synth, targetNote);
 
         if (Number(gate) > 0) {
-            const isDownbeat = (index % 4 === 0);
-            const accent = isDownbeat ? 1.2 : 0.8;
-            this.triggerVoice(synth, freq, stepDur, time, accent);
+            const rawVel = Number(synth.params.vels && synth.params.vels[index]);
+            const vel = Number.isFinite(rawVel) ? Math.max(0, Math.min(1, rawVel)) : 1;
+            if (vel > 0.01) {
+                const isDownbeat = (index % 4 === 0);
+                const accent = (isDownbeat ? 1.2 : 0.8) * vel;
+                this.triggerVoice(synth, freq, stepDur, time, accent);
+            }
         }
         
         // Queue visual update index
@@ -1936,7 +2202,7 @@ class DroneSynth {
                 });
             }
 
-            if (instData.signalChain) synth.signalChain = instData.signalChain || "QCATFODBVKZ";
+            if (instData.signalChain) synth.signalChain = instData.signalChain || "QCATFODBVKZG";
             if (instData.activePresets) synth.activePresets = instData.activePresets;
             if (instData.fxState) Object.assign(synth.fxState, instData.fxState);
             if (instData.state === 'playing' || instData.state === 'stopping') synth.state = 'playing';

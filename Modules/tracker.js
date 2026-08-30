@@ -24,11 +24,6 @@ class TrackerManager {
             state.tracker.playlist = [0];
         }
         state.tracker.nextRowTime = AudioEngine.currentTime;
-        
-        // Ensure at least one pattern
-        if (!state.tracker.patterns || state.tracker.patterns.length === 0) {
-            state.tracker.patterns.push({ rows: 16, data: {} });
-        }
 
         // Init Canvas
         this.canvas = document.getElementById('trackerCanvas');
@@ -258,7 +253,10 @@ class TrackerManager {
             const nextGridIndex = Math.floor(elapsed / secondsPerBar) + 1;
             state.tracker.nextRowTime = state.masterStartTime + (nextGridIndex * secondsPerBar);
             
-            const patternLen = (state.tracker.patterns[state.tracker.currentPatternIdx] ? state.tracker.patterns[state.tracker.currentPatternIdx].rows : 16) || 16;
+            const playPatIdx = state.tracker.mode === 'song'
+                ? (state.tracker.playlist[state.tracker.playlistIndex] || 0)
+                : state.tracker.currentPatternIdx;
+            const patternLen = (state.tracker.patterns[playPatIdx] ? state.tracker.patterns[playPatIdx].rows : 16) || 16;
             let targetRow = Math.floor(elapsed / secondsPerBar) % patternLen;
             if (targetRow < 0) targetRow += patternLen;
             state.tracker.currentRow = targetRow;
@@ -284,7 +282,7 @@ class TrackerManager {
             const key = `${row}_${i}`;
             const cmd = pattern.data[key];
             if (cmd && cmd !== '---') {
-                if (cmd === 'LOP') {
+                if (cmd === 'LOP' && i < MAX_LOOPS) {
                     loopTriggered = true;
                 } else {
                     this.triggerCommand(i, cmd, time);
@@ -842,6 +840,7 @@ class SampleLab {
             const sId = parseInt(targetVal.substring(1));
             const sampler = state.samplers[sId];
             if (sampler.buffer && !confirm(`Overwrite Sampler ${sId+1}?`)) return;
+            if (sampler.state === 'playing' || sampler.state === 'stopping') SamplerManager.stop(sId);
             sampler.buffer = this.cloneBuffer(bufferToSend);
             sampler.speed = 1.0;
             if (UIManager.generateWaveformPeaks) sampler.wavePeaks = UIManager.generateWaveformPeaks(sampler.buffer);
@@ -854,6 +853,7 @@ class SampleLab {
             if (!confirm(`Overwrite Loop ${loopId+1}?`)) return;
             LoopManager.pushUndoState(loopId);
         }
+        if (loop.state === 'playing' || loop.state === 'stopping' || loop.state === 'overdubbing' || loop.state === 'substituting') loop.stop();
         loop.audioBuffer = this.cloneBuffer(bufferToSend);
         AudioEngine.seamlessLoopCrossfade(loop.audioBuffer, 0.01); // Ensure smooth looping
         loop.duration = loop.audioBuffer.duration;

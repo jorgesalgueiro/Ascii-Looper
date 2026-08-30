@@ -422,11 +422,12 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
             { name: 'bpm', defaultValue: 120, minValue: 30, maxValue: 300 },
             { name: 'amplitude', defaultValue: 1.0, minValue: 0, maxValue: 2.0 },
             { name: 'range', defaultValue: 1.0, minValue: 0.25, maxValue: 3.0 },
+            { name: 'humanize', defaultValue: 0.35, minValue: 0, maxValue: 1 },
         ];
     }
     constructor() {
         super();
-        this.bufferSize = getWorkletSampleRate() * 4; // Dynamic 4s buffer
+        this.bufferSize = Math.floor(getWorkletSampleRate() * 4); // Dynamic 4s buffer
         this.buffer = [new Float32Array(this.bufferSize), new Float32Array(this.bufferSize)]; // Stereo
         this.wPtr = 0;
         this.gPhase = 0; // Grain phase 0..1
@@ -438,8 +439,14 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
         this.arpDir = 1;
         // Expanded scales
         this.drift = 0; // Internal drift counter
+        this.drift2 = 0; // Second wow oscillator at an incommensurate rate (never repeats -> organic)
+        this.driftRand = 0; // Smoothed humanized pitch wander
+        this.driftRandTarget = 0;
         this.panLFO = 0; // Stereo movement
         this.wobble = 0; // Secondary LFO for organic texture
+        // Musical expression state
+        this.gRateTarget = 0; // Pitch-glide target (smooths note steps)
+        this.env = 0; // Per-step pluck envelope (shapes each echo like a played note)
         this.scales = [
             [0, 12, 24], [0, 4, 7, 12], [0, 3, 7, 12], [0, 7, 12], [0, 2, 4, 7, 9],
             [0, 3, 5, 7, 10], [0, 2, 4, 6, 8, 10], [0, 3, 6, 9], [0, 4, 7, 11], [0, 3, 7, 10],
@@ -470,7 +477,10 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
         const bpm = parameters.bpm[0];
         const amp = parameters.amplitude[0];
         const range = parameters.range[0];
+        const mix = parameters.mix[0];
+        const humanize = parameters.humanize[0];
         const grainSize = 2048; // Fixed grain size matching gRate calculation
+        const numCh = Math.min(output.length, this.buffer.length);
         
         let delayTime = time;
         if(sync) {
@@ -479,7 +489,7 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
             delayTime = this.subdivs[idx] * (60/bpm);
         }
         
-        const delaySamps = Math.floor(delayTime * this.sr);
+        const delaySamps = Math.max(32, Math.floor(delayTime * this.sr));
         const blockSize = output[0].length; // Use output length as reference
         
         // Organic Drift Parameters
@@ -487,13 +497,24 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
         // Normalize speeds for Sample Rate independence (ref: 44100Hz)
         const srScale = 44100 / this.sr;
         const driftSpeed = 0.0001 * srScale; // Slower, deeper drift
+        const drift2Speed = driftSpeed * 1.61803398875; // Golden-ratio rate -> evolving, non-repeating wow
         const driftDepth = 12.0; // Increased depth for organic warp
         const wobbleSpeed = 0.0007 * srScale; // Real tape flutter (~5Hz), not FM grit
         const panSpeed = 0.0005 * srScale;
+
+        // --- Musical expression coefficients (per block) ---
+        // Pluck envelope: each echo decays like a played note instead of staying flat/robotic
+        const pluckDecaySamps = Math.max(64, delaySamps * 0.5);
+        const envDecay = Math.exp(-1 / pluckDecaySamps);
+        const sustainFloor = 0.30;
+        const glideCoef = 1 - Math.exp(-1 / (this.sr * 0.003)); // ~3ms pitch glide between steps
+        const wanderCoef = 1 - Math.exp(-1 / (this.sr * 0.15)); // ~150ms smoothed humanized wander
         
         // Process sample-by-sample for correct rate and smooth envelope
         for (let i = 0; i < blockSize; i++) {
             this.drift += driftSpeed;
+            this.drift2 += drift2Speed; // Evolving, non-repeating wow
+            this.driftRand += (this.driftRandTarget - this.driftRand) * wanderCoef; // Smooth humanized wander
             this.wobble += wobbleSpeed; // Faster flutter LFO
             // 1. Clock Logic
             this.arpClock++;
@@ -531,14 +552,31 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
                 }
                 this.seqIdx = (this.seqIdx + 1) % 16;
 
-                // Optimization: Calculate invariant pitch math only when note changes
-                const pitchRatio = 2 ** (this.currentSemi / 12); // Optimized Math.pow(2, x)
-                this.gRate = (1.0 - pitchRatio) / 2048; // Cache grain rate (2048 size)
+                // --- Musical expression on note change ---
+                // Human intonation: subtle random detune per step (scaled by Feel)
+                const detune = (Math.random() - 0.5) * humanize * 0.14; // +/- ~7 cents at full Feel
+                const pitchRatio = Math.pow(2, (this.currentSemi + detune) / 12);
+                this.gRateTarget = (1.0 - pitchRatio) / grainSize; // Glided per-sample below
+
+                // Humanized pluck re-trigger: downbeat accent + velocity variation
+                const accent = (this.seqIdx % 2 === 0) ? 1.0 : (1.0 - 0.25 * humanize);
+                const vel = accent * (1.0 - humanize * 0.55 * Math.random());
+                this.env = vel;
+
+                // New humanized pitch-wander target for this note
+                this.driftRandTarget = (Math.random() - 0.5) * humanize * 8.0;
             }
 
             // Stereo Panning LFO for grain
             this.panLFO += panSpeed; 
             const pan = Math.sin(this.panLFO); // -1 to 1
+
+            // Smooth pitch glide toward the target note (removes robotic stepping)
+            this.gRate += (this.gRateTarget - this.gRate) * glideCoef;
+
+            // Pluck envelope: decay toward sustain floor so each echo has a note-like shape
+            this.env *= envDecay;
+            const stepGain = sustainFloor + this.env;
 
             // 2. Grain Logic (Tighter size + Hanning Window)
             this.gPhase += this.gRate;
@@ -554,11 +592,11 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
             // 3. Audio Processing
             const writePos = (this.wPtr + i) % this.bufferSize;
             
-            // Organic Offset: Sine Drift + Flutter + Stereo Separation
-            const baseDrift = Math.sin(this.drift) * driftDepth;
+            // Organic Offset: evolving two-oscillator wow + humanized wander + flutter
+            const baseDrift = (Math.sin(this.drift) * 0.62 + Math.sin(this.drift2) * 0.38) * driftDepth * 0.8 + this.driftRand;
             const flutter = Math.sin(this.wobble) * 2.0;
 
-            for (let ch = 0; ch < output.length; ch++) {
+            for (let ch = 0; ch < numCh; ch++) {
                 // Safety: Prevent crash if host output channels > internal state
                 if (ch >= this.lpState.length) break;
                 // Stereo unlinking: Invert drift for Left/Right to widen image
@@ -578,7 +616,8 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
                 const r1 = Math.floor((rPtrBase - offset1 + stereoOffset + this.bufferSize) % this.bufferSize);
                 const r2 = Math.floor((rPtrBase - offset2 + stereoOffset + this.bufferSize) % this.bufferSize);
                 
-                const wet = ((buf[r1] * w1) + (buf[r2] * w2)) * amp;
+                // Pluck-shaped, humanized arp voice
+                const wet = ((buf[r1] * w1) + (buf[r2] * w2)) * amp * stepGain;
                 
                 // --- Organic Feedback Loop ---
                 // 1. Tape Saturation (tanh) - adds warmth and limits peaks
@@ -604,7 +643,6 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
                 if (Math.abs(outSample) < 1e-9 || isNaN(outSample)) outSample = 0;
                 buf[writePos] = outSample;
                 
-                const mix = parameters.mix[0];
                 output[ch][i] = inSample * (1-mix) + wet * mix;
             }
         }
@@ -799,6 +837,7 @@ const effects = {
         sync: 0,
         amplitude: 1.0,
         range: 1.0,
+        humanize: 0.35,
         panSpeed: 0,
         panDepth: 0.8
     },
@@ -1232,6 +1271,26 @@ const EQ_PRESETS = {
     'Radio': { lcFreq: 300, lsFreq: 400, lsGain: -12, p1Freq: 1500, p1Gain: 8, p1Q: 2.0, hsFreq: 4000, hsGain: -12, hcFreq: 5000 }
 };
 
+// Mastering-only presets for the MASTER bus (gentle, full-mix curves).
+const MASTER_EQ_PRESETS = {
+    'Flat':        { lcFreq: 20, lsFreq: 100, lsGain: 0,   p1Freq: 1000, p1Gain: 0,  p1Q: 0.7, hsFreq: 10000, hsGain: 0,   hcFreq: 22000 },
+    'Air / Smile': { lcFreq: 30, lsFreq: 100, lsGain: 1,   p1Freq: 800,  p1Gain: -1, p1Q: 0.7, hsFreq: 12000, hsGain: 2.5, hcFreq: 22000 },
+    'Warm':        { lcFreq: 30, lsFreq: 120, lsGain: 2.5, p1Freq: 400,  p1Gain: 1,  p1Q: 0.7, hsFreq: 8000,  hsGain: -1,  hcFreq: 18000 },
+    'Punch':       { lcFreq: 25, lsFreq: 90,  lsGain: 2,   p1Freq: 120,  p1Gain: 1.5,p1Q: 1.0, hsFreq: 6000,  hsGain: 1,   hcFreq: 20000 },
+    'Clarity':     { lcFreq: 40, lsFreq: 150, lsGain: -1,  p1Freq: 2500, p1Gain: 1.5,p1Q: 0.8, hsFreq: 9000,  hsGain: 1.5, hcFreq: 20000 },
+    'Vintage':     { lcFreq: 60, lsFreq: 150, lsGain: 1,   p1Freq: 800,  p1Gain: -1, p1Q: 0.7, hsFreq: 6000,  hsGain: -2,  hcFreq: 12000 },
+    'Loudness':    { lcFreq: 30, lsFreq: 80,  lsGain: 3,   p1Freq: 1000, p1Gain: 0,  p1Q: 0.7, hsFreq: 10000, hsGain: 3,   hcFreq: 22000 }
+};
+
+const MASTER_COMP_PRESETS = {
+    'Transparent':  { threshold: -12, ratio: 1.5, knee: 20, attack: 0.03,  release: 0.2,  gain: 1.0 },
+    'Glue':         { threshold: -14, ratio: 2,   knee: 15, attack: 0.03,  release: 0.15, gain: 1.5 },
+    'Gentle Bus':   { threshold: -16, ratio: 2.5, knee: 12, attack: 0.02,  release: 0.18, gain: 1.5 },
+    'Punchy':       { threshold: -18, ratio: 3,   knee: 8,  attack: 0.03,  release: 0.25, gain: 2.0 },
+    'Dense':        { threshold: -20, ratio: 4,   knee: 6,  attack: 0.01,  release: 0.15, gain: 2.5 },
+    'Safety Limit': { threshold: -8,  ratio: 8,   knee: 0,  attack: 0.002, release: 0.1,  gain: 1.5 }
+};
+
 const UI_CONFIG = {
     'B': { key: 'reverb', title: 'CONV. REVERB (B)', color: 'lightblue', presets: 'REVERB_PRESETS',
         controls: [
@@ -1321,7 +1380,7 @@ window.EffectsModule = {
     DEFAULT_GLOBAL_PRESETS, DEFAULT_MIDI_CC_MAP, COMPRESSOR_PRESETS,
     DELAY_PRESETS, DISTORTION_PRESETS, FUZZ_PRESETS, OVERDRIVE_PRESETS,
     MACHINE_PRESETS, ARPDELAY_PRESETS, REVERB_PRESETS, DUSK_PRESETS,
-    ZIGZ_PRESETS, GRIZ_PRESETS, EQ_PRESETS, UI_CONFIG
+    ZIGZ_PRESETS, GRIZ_PRESETS, EQ_PRESETS, MASTER_EQ_PRESETS, MASTER_COMP_PRESETS, UI_CONFIG
 };
 
 // =============================================
@@ -1439,6 +1498,8 @@ class EffectManager {
     static ZIGZ_PRESETS = ZIGZ_PRESETS;
     static GRIZ_PRESETS = GRIZ_PRESETS;
     static EQ_PRESETS = EQ_PRESETS;
+    static MASTER_EQ_PRESETS = MASTER_EQ_PRESETS;
+    static MASTER_COMP_PRESETS = MASTER_COMP_PRESETS;
 
     // Configuration for Standard UI Modules
     static UI_CONFIG = UI_CONFIG;
@@ -1861,7 +1922,7 @@ class EffectManager {
 
         // 2. Code Conflict Resolution
         const otherEffects = Object.values(state.customEffects).filter(e => e.name !== fxData.name);
-        const existingCodes = "QCTFODBVKA" + otherEffects.map(e => e.code).join('');
+        const existingCodes = "QCTFODBVKAZG" + otherEffects.map(e => e.code).join('');
         let code = fxData.code.toUpperCase().charAt(0);
 
         if (!skipPrompt && existingCodes.includes(code)) {
@@ -1926,19 +1987,33 @@ class EffectManager {
         if(!skipPrompt) alert(`Effect ${fxData.name} (${fxData.code}) loaded!`);
     }
 
+    // Scroll an element into view just below the sticky master/tabs bar so its
+    // header is visible. Uses scrollIntoView + a dynamic scroll-margin-top equal
+    // to the sticky bar height (window.scrollTo is unreliable across containers).
+    static reveal(el) {
+        if (!el) return;
+        const sticky = document.querySelector('.sticky-top');
+        const off = (sticky && sticky.offsetHeight) ? sticky.offsetHeight + 8 : 8;
+        el.style.scrollMarginTop = off + 'px';
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    static scrollToEffects() {
+        this.reveal(document.getElementById('part3'));
+    }
+
     static goToControl(tab, key) {
         const t = (typeof tab === 'string' && /^\d+$/.test(tab)) ? parseInt(tab) : tab;
         this.setActiveTab(t);
         setTimeout(() => {
             const el = document.getElementById(`fx-mod-${key}`);
             if (el) {
-                el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                this.reveal(el);
                 el.style.transition = 'box-shadow 0.3s ease';
                 el.style.boxShadow = '0 0 15px var(--term-green)';
                 setTimeout(() => el.style.boxShadow = '2px 2px 0 var(--term-dim)', 800);
             } else {
-                const part3 = document.getElementById('part3');
-                if (part3) part3.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                this.scrollToEffects();
             }
         }, 50);
     }
@@ -2094,7 +2169,7 @@ class EffectManager {
                         const fb = value / 11.1;
                         this.smoothSetParam(nodes[0].parameters.get('feedback'), fb, now);
                     } else {
-                        const aP = { time:'time',mix:'mix',stay:'stay',scale:'scale', sync:'sync', amplitude:'amplitude', range:'range' };
+                        const aP = { time:'time',mix:'mix',stay:'stay',scale:'scale', sync:'sync', amplitude:'amplitude', range:'range', humanize:'humanize' };
                         if(aP[param]) this.smoothSetParam(nodes[0].parameters.get(aP[param]), value, now);
                         else if (param === 'panSpeed' || param === 'panDepth') {
                             if (nodes.length >= 3) { // Has Pan nodes [worklet, pan, lfo, gain]
@@ -2321,6 +2396,7 @@ class EffectManager {
                     html += createSlider('Mix', 'arpDelayMix', 0, 1, 0.01, p.mix, "EffectManager.update('arpDelay', 'mix', parseFloat(this.value))");
                     html += createSlider('Note Vol', 'arpDelayAmplitude', 0, 1.5, 0.01, p.amplitude || 1.0, "EffectManager.update('arpDelay', 'amplitude', parseFloat(this.value))");
                     html += createSlider('Oct Range', 'arpDelayRange', 0.25, 3.0, 0.25, p.range !== undefined ? p.range : 1.0, "EffectManager.update('arpDelay', 'range', parseFloat(this.value))");
+                    html += createSlider('Feel', 'arpDelayHumanize', 0, 1, 0.01, p.humanize !== undefined ? p.humanize : 0.35, "EffectManager.update('arpDelay', 'humanize', parseFloat(this.value))");
                     html += `<div class="control-group"><label>Scale: <span id="arpScaleDisp">${currentScale}</span></label>
                     <input type="range" id="arpDelayScale" min="0" max="${EffectManager.ARPDELAY_SCALES.length-1}" step="1" value="${p.scale}" aria-label="Arpeggiator Scale"
                     oninput="EffectManager.update('arpDelay', 'scale', parseFloat(this.value)); document.getElementById('arpScaleDisp').innerText = EffectManager.ARPDELAY_SCALES[Math.floor(this.value)]"></div>`;

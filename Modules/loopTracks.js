@@ -84,6 +84,7 @@ class SamplerTrack {
         if (!this.buffer || !state.audioContext) return;
         const t = time > 0 ? time : state.audioContext.currentTime;
         if (this.source) { try{ this.source.stop(t); } catch(e){} }
+        if (this.panNode) { try{ this.panNode.disconnect(); } catch(e){} }
         this.source = state.audioContext.createBufferSource();
         this.source.buffer = this.buffer;
         this.source.playbackRate.value = this.speed;
@@ -887,19 +888,23 @@ class AudioGraph {
     }
     
     static makeDistortionCurve(amount) {
-        // Improved "Soft Clip" sigmoid curve (Tube-like)
-        // Amount ranges 0-100.
+        // Warm asymmetric soft-clip (tube-like). Amount ranges 0-100.
+        // The negative half saturates slightly softer than the positive half,
+        // which adds even harmonics for a warmer, more "natural" drive (a purely
+        // symmetric tanh only makes odd harmonics and sounds harsh/flat).
+        // ODD length over the exact [-1,1] grid makes the exact-zero input map to
+        // an exact-zero output sample (no interpolation/DC artifact). One-time
+        // generation -> no per-sample or latency cost.
         const k = (Number(amount) || 0) * 0.5;
-        const samples = 8192; // Optimized from 44100 to reduce GC stutter on slider movement
+        const samples = 4097;
         const curve = new Float32Array(samples);
-        
+        const drive = 1 + k * 0.5;
+        const driveNeg = drive * 0.75; // softer negative half -> even harmonics
         for (let i = 0; i < samples; ++i) {
-            const x = i * 2 / samples - 1;
-            // Hyperbolic tangent soft clipping
-            // Pre-gain boost determined by 'k'
-            // Asymmetry added by adding constant to x inside tanh
-            curve[i] = Math.tanh((1 + k * 0.5) * x);
+            const x = i * 2 / (samples - 1) - 1;
+            curve[i] = x >= 0 ? Math.tanh(drive * x) : Math.tanh(driveNeg * x);
         }
+        curve[(samples - 1) >> 1] = 0; // exact-zero anchor
         return curve;
     }
 
@@ -938,23 +943,25 @@ class AudioGraph {
 
     static makeFuzzCurve(bias = 0) {
         bias = Number(bias) || 0;
-        const samples = 8192; // Optimized
+        const samples = 4097;
         const curve = new Float32Array(samples);
         // Gate threshold based on bias
-        const gate = Math.abs(bias) * 0.3; 
-        
+        const gate = Math.abs(bias) * 0.3;
+
         for (let i = 0; i < samples; ++i) {
-            const x = i * 2 / samples - 1;
-            
+            const x = i * 2 / (samples - 1) - 1;
+
             // Velcro Gate effect
             if (Math.abs(x) < gate) {
                 curve[i] = 0;
             } else {
-                // Hard clipping
-                let val = (x * 10.0);
-                curve[i] = Math.max(-0.9, Math.min(0.9, val)); 
+                // Aggressive clip, but run through a soft tanh shoulder so the
+                // top end is dense/saturated instead of brittle/digital.
+                const val = Math.tanh(x * 10.0) * 1.1;
+                curve[i] = Math.max(-0.9, Math.min(0.9, val));
             }
         }
+        curve[(samples - 1) >> 1] = 0; // exact-zero anchor
         return curve;
     }
 
@@ -991,12 +998,14 @@ class AudioGraph {
     }
 
     static makeOverdriveCurve(drive) {
-        // Warm Asymmetric Tube saturation
+        // Warm Asymmetric Tube saturation. ODD length over the exact [-1,1] grid
+        // makes exact-zero input map to an exact-zero output sample (no
+        // interpolation/DC artifact). The exp curve is naturally bounded to +/-1.
         const k = (Number(drive) || 0) * 0.5;
-        const samples = 8192; // Optimized
+        const samples = 4097;
         const curve = new Float32Array(samples);
         for (let i = 0; i < samples; ++i) {
-            const x = i * 2 / samples - 1;
+            const x = i * 2 / (samples - 1) - 1;
             if (k === 0) {
                 curve[i] = x;
             } else {
@@ -1005,6 +1014,7 @@ class AudioGraph {
                 else curve[i] = -1 + Math.exp(k * x);       // Negative excursion
             }
         }
+        curve[(samples - 1) >> 1] = 0; // exact-zero anchor
         return curve;
     }
    _createCompressor(inputNode) {
@@ -1048,7 +1058,10 @@ class AudioGraph {
             node = new AudioWorkletNode(state.audioContext, 'arp-delay-processor', {
                 outputChannelCount: [2], // Force Stereo to prevent mono summing issues
                 parameterData: {
-                    time: p.time, feedback: fb, mix: p.mix, stay: p.stay ? 1 : 0, scale: p.scale, sync: p.sync?1:0, bpm: state.bpm
+                    time: p.time, feedback: fb, mix: p.mix, stay: p.stay ? 1 : 0, scale: p.scale, sync: p.sync?1:0, bpm: state.bpm,
+                    amplitude: (p.amplitude !== undefined) ? p.amplitude : 1.0,
+                    range: (p.range !== undefined) ? p.range : 1.0,
+                    humanize: (p.humanize !== undefined) ? p.humanize : 0.35
                 }
             });
             nodes.push(node);
@@ -1594,7 +1607,9 @@ class Loop {
         
         if (state.syncEnabled && this.duration > 0) {
             const masterElapsed = now - state.masterStartTime;
-            const newShift = (masterElapsed * this.playbackRate) % this.duration;
+            let activeRate = this.effectivePlaybackRate;
+            if (!Number.isFinite(activeRate) || activeRate <= 0) activeRate = this.playbackRate || 1.0;
+            const newShift = (masterElapsed * activeRate) % this.duration;
             let newDelay = newShift / this.duration;
             if (newDelay < 0) newDelay += 1.0;
             
@@ -1712,7 +1727,7 @@ class Loop {
      * Sets the signal chain for this loop and rebuilds the graph if playing.
      */
     setSignalChain(chain) {
-        this.signalChain = chain || "QCATFODBVKZ";
+        this.signalChain = chain || "QCATFODBVKZG";
         if (this.state === 'playing' && this.graph) {
             this.graph.rebuild();
         }
@@ -2819,8 +2834,10 @@ class LoopManager {
             
             loop.wavePeaks = UIManager.generateWaveformPeaks(loop.audioBuffer);
             
-            // Ensure state is correct (we didn't stop playback, just modified buffer)
-            loop.state = 'playing';
+            // Restore playback state only if the loop wasn't stopped while mixing
+            if (loop.state === 'overdubbing' || loop.state === 'substituting') {
+                loop.state = 'playing';
+            }
             
             // Force UI refresh of the waveform immediately
             UIManager.updateLoopDisplays();
@@ -3227,7 +3244,7 @@ class UIManager {
 
                     <div style="display:flex; justify-content:space-between; align-items:center; gap:5px; margin-bottom:5px; border-top:1px dashed #333; padding-top:2px;">
                         <div style="display:flex; align-items:center; gap:5px;">
-                            <span style="flex-shrink: 0; font-weight: bold; font-size:10px; cursor:pointer; text-decoration:underline;" onclick="event.stopPropagation(); EffectManager.setActiveTab(${index}); document.getElementById('part3').scrollIntoView({behavior:'smooth'});" title="Go to FX Controls">FX:</span>
+                            <span style="flex-shrink: 0; font-weight: bold; font-size:10px; cursor:pointer; text-decoration:underline;" onclick="event.stopPropagation(); EffectManager.setActiveTab(${index}); EffectManager.scrollToEffects();" title="Go to FX Controls">FX:</span>
                             <select style="font-size: 10px; width: 85px; height: 18px; min-height: unset; padding: 0;"
                                     onchange="event.stopPropagation(); EffectManager.applyPresetToLoop(${index}, this.value)"
                                     onclick="event.stopPropagation(); EffectManager.setActiveTab(${index});" aria-label="Apply FX Preset">
