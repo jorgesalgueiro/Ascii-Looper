@@ -53,9 +53,17 @@ class EQProcessor extends AudioWorkletProcessor {
             for(let b=0; b<10; b++) this.bands[c].push(new SVF());
         }
         this.sr = getWorkletSampleRate(); 
+        // Reusable per-block buffers (no allocation on the audio thread)
+        this.coBuf = new Float64Array(8);
+        this.bandFreq = new Float64Array(10);
+        this.bandGain = new Float64Array(10);
+        this.bandQ = new Float64Array(10);
+        this.bandType = ['hp','ls','peak','peak','peak','peak','peak','peak','hs','lp'];
+        this.bpPrev = new Uint8Array(10);
+        this.activeBands = [];
     }
 
-    updateBand(svf, type, freq, gainDb, q) {
+    calcCoeffs(type, freq, gainDb, q) {
         const A = Math.pow(10, gainDb / 40);
         const w = this.constPI_SR * freq; // Optimized
         const cosW = Math.cos(w);
@@ -91,8 +99,8 @@ class EQProcessor extends AudioWorkletProcessor {
         const a1 = 1 / (1 + g * (g + k));
         const a2 = g * a1;
         const a3 = g * a2;
-        
-        svf.setCoeffs(g, k, a1, a2, a3, m0, m1, m2);
+        const co = this.coBuf;
+        co[0]=g; co[1]=k; co[2]=a1; co[3]=a2; co[4]=a3; co[5]=m0; co[6]=m1; co[7]=m2;
     }
 
     process(inputs, outputs, parameters) {
@@ -104,26 +112,45 @@ class EQProcessor extends AudioWorkletProcessor {
         // Pre-calc constant for this block
         this.constPI_SR = Math.PI / this.sr;
 
-        // Update Coeffs (once per block for efficiency)
-        // We do it once per block to save CPU, zippering is handled by CSS/UI updates usually, 
-        // but here we rely on the block rate (~3ms) which is fine.
         const p = parameters;
-        
-        // Band 0: Low Cut (HP)
-        const lcFreq = p.lcFreq[0];
-        // Band 1: Low Shelf
-        const lsFreq = p.lsFreq[0]; const lsGain = p.lsGain[0];
-        // Mid Bands (Peaks)
-        const p1Freq = p.p1Freq[0]; const p1Gain = p.p1Gain[0]; const p1Q = p.p1Q[0];
-        const p2Freq = p.p2Freq[0]; const p2Gain = p.p2Gain[0]; const p2Q = p.p2Q[0];
-        const p3Freq = p.p3Freq[0]; const p3Gain = p.p3Gain[0]; const p3Q = p.p3Q[0];
-        const p4Freq = p.p4Freq[0]; const p4Gain = p.p4Gain[0]; const p4Q = p.p4Q[0];
-        const p5Freq = p.p5Freq[0]; const p5Gain = p.p5Gain[0]; const p5Q = p.p5Q[0];
-        const p6Freq = p.p6Freq[0]; const p6Gain = p.p6Gain[0]; const p6Q = p.p6Q[0];
-        // High Bands
-        const hsFreq = p.hsFreq[0]; const hsGain = p.hsGain[0];
-        const hcFreq = p.hcFreq[0];
+        const f = this.bandFreq, gn = this.bandGain, qq = this.bandQ;
+        f[0]=p.lcFreq[0]; gn[0]=0; qq[0]=0.707;
+        f[1]=p.lsFreq[0]; gn[1]=p.lsGain[0]; qq[1]=0.707;
+        f[2]=p.p1Freq[0]; gn[2]=p.p1Gain[0]; qq[2]=p.p1Q[0];
+        f[3]=p.p2Freq[0]; gn[3]=p.p2Gain[0]; qq[3]=p.p2Q[0];
+        f[4]=p.p3Freq[0]; gn[4]=p.p3Gain[0]; qq[4]=p.p3Q[0];
+        f[5]=p.p4Freq[0]; gn[5]=p.p4Gain[0]; qq[5]=p.p4Q[0];
+        f[6]=p.p5Freq[0]; gn[6]=p.p5Gain[0]; qq[6]=p.p5Q[0];
+        f[7]=p.p6Freq[0]; gn[7]=p.p6Gain[0]; qq[7]=p.p6Q[0];
+        f[8]=p.hsFreq[0]; gn[8]=p.hsGain[0]; qq[8]=0.707;
+        f[9]=p.hcFreq[0]; gn[9]=0; qq[9]=0.707;
 
+        // Coefficients are identical across channels: compute once per block.
+        // Shelf/peak bands at 0 dB are unity -> bypass them entirely.
+        const act = this.activeBands;
+        act.length = 0;
+        for (let b = 0; b < 10; b++) {
+            const type = this.bandType[b];
+            const bypass = (type === 'ls' || type === 'peak' || type === 'hs') && Math.abs(gn[b]) < 0.01;
+            if (bypass) {
+                if (!this.bpPrev[b]) {
+                    // Entering bypass: flush filter state so re-enabling is click-free
+                    for (let c = 0; c < this.bands.length; c++) {
+                        this.bands[c][b].ic1eq = 0;
+                        this.bands[c][b].ic2eq = 0;
+                    }
+                }
+                this.bpPrev[b] = 1;
+                continue;
+            }
+            this.bpPrev[b] = 0;
+            this.calcCoeffs(type, f[b], gn[b], qq[b]);
+            const co = this.coBuf;
+            for (let c = 0; c < this.bands.length; c++) {
+                this.bands[c][b].setCoeffs(co[0], co[1], co[2], co[3], co[4], co[5], co[6], co[7]);
+            }
+            act.push(b);
+        }
         const numChannels = output.length;
 
         for(let c=0; c < numChannels; c++) {
@@ -132,27 +159,22 @@ class EQProcessor extends AudioWorkletProcessor {
                 const newCh = [];
                 for(let b=0; b<10; b++) newCh.push(new SVF());
                 this.bands.push(newCh);
+                for (let j = 0; j < act.length; j++) {
+                    const b = act[j];
+                    this.calcCoeffs(this.bandType[b], f[b], gn[b], qq[b]);
+                    const co = this.coBuf;
+                    newCh[b].setCoeffs(co[0], co[1], co[2], co[3], co[4], co[5], co[6], co[7]);
+                }
             }
 
-            this.updateBand(this.bands[c][0], 'hp', lcFreq, 0, 0.707);
-            this.updateBand(this.bands[c][1], 'ls', lsFreq, lsGain, 0.707);
-            this.updateBand(this.bands[c][2], 'peak', p1Freq, p1Gain, p1Q);
-            this.updateBand(this.bands[c][3], 'peak', p2Freq, p2Gain, p2Q);
-            this.updateBand(this.bands[c][4], 'peak', p3Freq, p3Gain, p3Q);
-            this.updateBand(this.bands[c][5], 'peak', p4Freq, p4Gain, p4Q);
-            this.updateBand(this.bands[c][6], 'peak', p5Freq, p5Gain, p5Q);
-            this.updateBand(this.bands[c][7], 'peak', p6Freq, p6Gain, p6Q);
-            this.updateBand(this.bands[c][8], 'hs', hsFreq, hsGain, 0.707);
-            this.updateBand(this.bands[c][9], 'lp', hcFreq, 0, 0.707);
-            
             // Handle empty input (tail processing)
             const inData = (input && input[c]) ? input[c] : null;
             const outData = output[c];
             
             for (let i = 0; i < outData.length; i++) {
                 let s = inData ? inData[i] : 0;
-                // Chain 10 filters
-                for(let b=0; b<10; b++) s = this.bands[c][b].process(s);
+                // Chain only the active (non-unity) filters
+                for(let j=0; j<act.length; j++) s = this.bands[c][act[j]].process(s);
                 outData[i] = s;
             }
         }
@@ -246,17 +268,21 @@ class DuskProcessor extends AudioWorkletProcessor {
         ];
         const scale = sr / 48000; // Reference tuning sample rate
         this.delayTimes = [1109, 1453, 1777, 2213].map(t => Math.floor(t * scale));
-        this.writePtrs = [0, 0, 0, 0];
+        this.writePtr = 0; // shared by all 4 lines (always advance together)
         this.grainBuffer = new Float32Array(sr * 3);
         this.grainWrite = 0;
         this.grains = [];
         for(let i=0; i<8; i++) {
             this.grains.push({ active: false, pos: 0, speed: 1, life: 0, maxLife: 0 });
         }
+        // Precomputed Hanning window for grain shaping (avoids per-sample cos())
+        this.winLUT = new Float32Array(1024);
+        for (let i = 0; i < 1024; i++) {
+            this.winLUT[i] = 0.5 * (1 - Math.cos(2 * Math.PI * (i / 1023)));
+        }
         
         // Initialize Frequency Shifters (Stereo)
         this.shifters = [new FreqShifter(sr), new FreqShifter(sr)];
-        this.dOuts = new Float32Array(4); // Pre-allocate for process loop
     }
     // Linear Interpolation helper for smooth granular/delay reading
     read(buf, pos) {
@@ -289,10 +315,21 @@ class DuskProcessor extends AudioWorkletProcessor {
         const hasInput = (input && input.length > 0);
         const inL = hasInput ? input[0] : null;
         const inR = (hasInput && input.length > 1 && input[1]) ? input[1] : inL;
-        
-        const verbTime = parameters.verbTime[0];
-        const grainMix = parameters.grainMix[0];
+
         const verbMix = parameters.verbMix[0];
+        const grainMix = parameters.grainMix[0];
+
+        // Fast path: effect fully dry -> pure passthrough, no DSP at all
+        if (verbMix < 0.001 && grainMix < 0.001) {
+            for (let i = 0; i < blockSize; i++) {
+                const l = inL ? (inL[i] || 0) : 0;
+                outputL[i] = l;
+                if (outputR) outputR[i] = (inR ? (inR[i] || 0) : l);
+            }
+            return true;
+        }
+
+        const verbTime = parameters.verbTime[0];
         const shimmerAmt = parameters.shimmer[0];
         const hauntParam = parameters.haunt;
         const isHauntAutomated = hauntParam.length > 1;
@@ -300,13 +337,40 @@ class DuskProcessor extends AudioWorkletProcessor {
 
         const grainSize = parameters.grainSize[0];
         
-        // Pre-calc spawn chance for this block (Optimization: move out of sample loop)
-        // Normalize spawn chance by sample rate (ref: 44.1kHz) to maintain density across devices. Cap grainSize to avoid div by zero.
+        // Normalize spawn chance by sample rate (ref: 44.1kHz) to maintain density across devices.
         const spawnChance = (0.0005 * (44100 / getWorkletSampleRate())) / (grainSize + 0.1);
 
         const sr = getWorkletSampleRate(); 
         const avgDelay = 1500; 
         const feedback = Math.pow(0.001, avgDelay / (verbTime * (sr * 0.001))); 
+        const shim = shimmerAmt * 0.12;
+        const doGrains = grainMix > 0.001;
+
+        // Block-level grain spawning (one decision per block, not 8 randoms per sample)
+        if (doGrains) {
+            let budget = spawnChance * blockSize;
+            while (budget > 0) {
+                if (budget >= 1 || Math.random() < budget) {
+                    for (let g = 0; g < this.grains.length; g++) {
+                        const grain = this.grains[g];
+                        if (!grain.active) {
+                            grain.active = true;
+                            const offset = Math.floor(100 + Math.random() * (this.grainBuffer.length * 0.8 * grainSize));
+                            grain.pos = this.wrap(this.grainWrite - offset, this.grainBuffer.length);
+                            grain.maxLife = 2000 + Math.random() * 4000 * grainSize;
+                            grain.life = grain.maxLife;
+                            grain.speed = 0.5 + Math.random();
+                            break;
+                        }
+                    }
+                }
+                budget -= 1;
+            }
+        }
+
+        const win = this.winLUT;
+        const WLAST = win.length - 1;
+        const gbLen = this.grainBuffer.length;
         
         for (let i = 0; i < blockSize; i++) {
             // Safe input mixing
@@ -316,31 +380,20 @@ class DuskProcessor extends AudioWorkletProcessor {
             // FTZ: Prevent denormals entering the grain buffer
             if (Math.abs(inMono) < 1e-9) inMono = 0;
             
-            this.grainBuffer[this.grainWrite] = inMono;
-            this.grainWrite = (this.grainWrite + 1) % this.grainBuffer.length;
             let grainOut = 0;
+            if (doGrains) {
+                this.grainBuffer[this.grainWrite] = inMono;
+                if (++this.grainWrite >= gbLen) this.grainWrite = 0;
 
-            for(let g=0; g<this.grains.length; g++) {
-                let grain = this.grains[g];
-                if(!grain.active) {
-                    if(Math.random() < spawnChance) {
-                        grain.active = true;
-                        let offset = Math.floor(100 + Math.random() * (this.grainBuffer.length * 0.8 * grainSize)); 
-                        grain.pos = this.wrap(this.grainWrite - offset, this.grainBuffer.length);
-                        grain.maxLife = 2000 + Math.random() * 4000 * grainSize;
-                        grain.life = grain.maxLife;
-                        grain.speed = 0.5 + Math.random();
-                    }
-                } else {
-                    // High-quality interpolated read
-                    let s = this.read(this.grainBuffer, grain.pos);
-                    // Hanning window for smoother grain overlap
-                    let grainShape = 0.5 * (1 - Math.cos(2 * Math.PI * (grain.life / grain.maxLife)));
-                    grainOut += s * grainShape;
-
-                    grain.pos = this.wrap(grain.pos + grain.speed, this.grainBuffer.length);
-                    grain.life--;
-                    if(grain.life <= 0) grain.active = false;
+                for(let g=0; g<this.grains.length; g++) {
+                    const grain = this.grains[g];
+                    if(!grain.active) continue;
+                    // High-quality interpolated read + Hanning window via LUT
+                    const s = this.read(this.grainBuffer, grain.pos);
+                    grainOut += s * win[((grain.life / grain.maxLife) * WLAST) | 0];
+                    grain.pos += grain.speed;
+                    if (grain.pos >= gbLen) grain.pos -= gbLen;
+                    if (--grain.life <= 0) grain.active = false;
                 }
             }
             let drySignal = inMono;
@@ -357,35 +410,37 @@ class DuskProcessor extends AudioWorkletProcessor {
                 rightInput = this.shifters[1].process(rightInput, hFreq);
             }
 
-            for(let k=0; k<4; k++) {
-                // Fixed delay times (Haunt is now spectral, not temporal)
-                let rp = (this.writePtrs[k] - this.delayTimes[k] + this.bufferSize);
-                this.dOuts[k] = this.read(this.delays[k], rp);
-            }
-            // Use pre-allocated buffer
-            let s0 = this.dOuts[0] + this.dOuts[1] + this.dOuts[2] + this.dOuts[3];
-            let s1 = -this.dOuts[0] + this.dOuts[1] - this.dOuts[2] + this.dOuts[3];
-            let s2 = -this.dOuts[0] - this.dOuts[1] + this.dOuts[2] + this.dOuts[3];
-            let s3 = this.dOuts[0] - this.dOuts[1] - this.dOuts[2] + this.dOuts[3];
+            const w = this.writePtr;
+            // Fixed delay times (Haunt is spectral, not temporal)
+            let rp = w - this.delayTimes[0]; if (rp < 0) rp += this.bufferSize;
+            const dO0 = this.read(this.delays[0], rp);
+            rp = w - this.delayTimes[1]; if (rp < 0) rp += this.bufferSize;
+            const dO1 = this.read(this.delays[1], rp);
+            rp = w - this.delayTimes[2]; if (rp < 0) rp += this.bufferSize;
+            const dO2 = this.read(this.delays[2], rp);
+            rp = w - this.delayTimes[3]; if (rp < 0) rp += this.bufferSize;
+            const dO3 = this.read(this.delays[3], rp);
+
+            let s0 = dO0 + dO1 + dO2 + dO3;
+            let s1 = -dO0 + dO1 - dO2 + dO3;
+            let s2 = -dO0 - dO1 + dO2 + dO3;
+            let s3 = dO0 - dO1 - dO2 + dO3;
             
             // Shimmer/Diffusion: Inject cross-feedback based on shimmer amount
-            // This increases density and creates a "washed" texture
-            const shim = shimmerAmt * 0.12;
-            
             let d0 = Math.tanh(leftInput + (s0 * feedback * 0.5) + (s3 * shim));
             let d1 = Math.tanh(rightInput + (s1 * feedback * 0.5) + (s2 * shim));
             let d2 = Math.tanh(leftInput + (s2 * feedback * 0.5) - (s1 * shim));
             let d3 = Math.tanh(rightInput + (s3 * feedback * 0.5) - (s0 * shim));
 
             // Optimization: Flush denormals
-            this.delays[0][this.writePtrs[0]] = (Math.abs(d0) < 1e-9) ? 0 : d0;
-            this.delays[1][this.writePtrs[1]] = (Math.abs(d1) < 1e-9) ? 0 : d1;
-            this.delays[2][this.writePtrs[2]] = (Math.abs(d2) < 1e-9) ? 0 : d2;
-            this.delays[3][this.writePtrs[3]] = (Math.abs(d3) < 1e-9) ? 0 : d3;
+            this.delays[0][w] = (Math.abs(d0) < 1e-9) ? 0 : d0;
+            this.delays[1][w] = (Math.abs(d1) < 1e-9) ? 0 : d1;
+            this.delays[2][w] = (Math.abs(d2) < 1e-9) ? 0 : d2;
+            this.delays[3][w] = (Math.abs(d3) < 1e-9) ? 0 : d3;
             
-            for(let k=0; k<4; k++) this.writePtrs[k] = (this.writePtrs[k] + 1) % this.bufferSize;
-            let verbL = this.dOuts[0] + this.dOuts[2];
-            let verbR = this.dOuts[1] + this.dOuts[3];
+            this.writePtr = (w + 1 >= this.bufferSize) ? 0 : w + 1;
+            let verbL = dO0 + dO2;
+            let verbR = dO1 + dO3;
             outputL[i] = drySignal * (1-verbMix) + verbL * verbMix;
             if(outputR) {
                 outputR[i] = drySignal * (1-verbMix) + verbR * verbMix;
@@ -461,12 +516,30 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
         this.subdivs = [0.166, 0.25, 0.333, 0.5, 0.666, 0.75, 1.0, 1.333, 1.5, 2.0];
         // Optimization: Cache grain rate
         this.gRate = 0;
+        // Peak level last written into the delay buffer (idle fast-path gate)
+        this.tailEnv = 1;
     }
     process(inputs, outputs, parameters) {
         const input = inputs[0];
         const output = outputs[0];
         // Allow processing without input for feedback tails
         if (!output || !output[0]) return true;
+
+        // Idle fast path: no feedback tail AND silent input -> nothing to do
+        if (this.tailEnv < 1e-5) {
+            let inPeak = 0;
+            const in0 = input && input[0];
+            if (in0) {
+                for (let i = 0; i < in0.length; i++) {
+                    const a = Math.abs(in0[i]);
+                    if (a > inPeak) { inPeak = a; if (inPeak >= 1e-5) break; }
+                }
+            }
+            if (inPeak < 1e-5) {
+                for (let ch = 0; ch < output.length; ch++) if (output[ch]) output[ch].fill(0);
+                return true;
+            }
+        }
         this.sr = getWorkletSampleRate();
         
         const time = parameters.time[0];
@@ -511,6 +584,7 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
         const wanderCoef = 1 - Math.exp(-1 / (this.sr * 0.15)); // ~150ms smoothed humanized wander
         
         // Process sample-by-sample for correct rate and smooth envelope
+        let wrPeak = 0;
         for (let i = 0; i < blockSize; i++) {
             this.drift += driftSpeed;
             this.drift2 += drift2Speed; // Evolving, non-repeating wow
@@ -642,10 +716,13 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
                 let outSample = inSample + (fbSignal * fb);
                 if (Math.abs(outSample) < 1e-9 || isNaN(outSample)) outSample = 0;
                 buf[writePos] = outSample;
+                const ab = Math.abs(outSample);
+                if (ab > wrPeak) wrPeak = ab;
                 
                 output[ch][i] = inSample * (1-mix) + wet * mix;
             }
         }
+        this.tailEnv = Math.max(wrPeak, this.tailEnv * 0.9);
         this.wPtr = (this.wPtr + blockSize) % this.bufferSize;
         return true;
     }
@@ -791,7 +868,9 @@ const effects = {
         room: 'studio',
         impulseBuffer: null,
         duration: 1.2,
-        decay: 1.8
+        decay: 1.8,
+        damp: 20000,
+        predelay: 0
     },
     delay: {
         time: 0.375,
@@ -1224,15 +1303,20 @@ const ARPDELAY_PRESETS = {
 };
 
 const REVERB_PRESETS = {
-    'studio': { room: 'studio', volume: 1.0, mix: 0.25 },
-    'small': { room: 'small', volume: 1.0, mix: 0.2 },
-    'medium': { room: 'medium', volume: 1.0, mix: 0.35 },
-    'large': { room: 'large', volume: 1.0, mix: 0.45 },
-    'cathedral': { room: 'cathedral', volume: 1.2, mix: 0.6 },
-    'washed-out': { room: 'large', volume: 0.9, mix: 1.0 },
-    'spring': { room: 'spring', volume: 1.0, mix: 0.3 },
-    'plate': { room: 'plate', volume: 1.0, mix: 0.4 },
-    'hall': { room: 'hall', volume: 1.0, mix: 0.5 }
+    'small': { room: 'small', volume: 1.0, mix: 0.2, damp: 12000, predelay: 0 },
+    'studio': { room: 'studio', volume: 1.0, mix: 0.25, damp: 9000, predelay: 0.01 },
+    'medium': { room: 'medium', volume: 1.0, mix: 0.35, damp: 8000, predelay: 0.015 },
+    'large': { room: 'large', volume: 1.0, mix: 0.45, damp: 6000, predelay: 0.03 },
+    'hall': { room: 'hall', volume: 1.0, mix: 0.5, damp: 5500, predelay: 0.04 },
+    'plate': { room: 'plate', volume: 1.0, mix: 0.4, damp: 13000, predelay: 0.005 },
+    'bright-plate': { room: 'plate', volume: 1.1, mix: 0.45, damp: 18000, predelay: 0.008, duration: 2.0 },
+    'spring': { room: 'spring', volume: 1.0, mix: 0.3, damp: 7000, predelay: 0 },
+    'cathedral': { room: 'cathedral', volume: 1.2, mix: 0.6, damp: 4500, predelay: 0.06 },
+    'washed-out': { room: 'large', volume: 0.9, mix: 1.0, damp: 3500, predelay: 0.02 },
+    'tight-drum': { room: 'small', volume: 1.0, mix: 0.15, damp: 10000, predelay: 0.005, duration: 0.4 },
+    'ambient-cloud': { room: 'cathedral', volume: 1.1, mix: 0.8, damp: 3000, predelay: 0.08, duration: 4.5, decay: 2.4 },
+    'dark-cave': { room: 'hall', volume: 1.15, mix: 0.7, damp: 1500, predelay: 0.07, duration: 3.5, decay: 2.8 },
+    'dub-space': { room: 'hall', volume: 1.0, mix: 0.55, damp: 2500, predelay: 0.09, duration: 2.8 }
 };
 
 const DUSK_PRESETS = {
@@ -1297,7 +1381,9 @@ const UI_CONFIG = {
             { l: 'Vol', p: 'volume', min: 0.1, max: 3, step: 0.01 },
             { l: 'Mix', p: 'mix', min: 0, max: 1, step: 0.01 },
             { l: 'Dur', p: 'duration', min: 0.1, max: 5.0, step: 0.1, def: 1.2 },
-            { l: 'Decay', p: 'decay', min: 0.1, max: 5.0, step: 0.1, def: 1.8 }
+            { l: 'Decay', p: 'decay', min: 0.1, max: 5.0, step: 0.1, def: 1.8 },
+            { l: 'Damp', p: 'damp', min: 500, max: 20000, step: 100, def: 20000 },
+            { l: 'PreDly', p: 'predelay', min: 0, max: 0.25, step: 0.005, def: 0 }
         ]
     },
     'D': { key: 'delay', title: 'DELAY (D)', color: 'green', presets: 'DELAY_PRESETS',
@@ -1987,13 +2073,13 @@ class EffectManager {
         if(!skipPrompt) alert(`Effect ${fxData.name} (${fxData.code}) loaded!`);
     }
 
-    // Scroll an element into view just below the sticky master/tabs bar so its
-    // header is visible. Uses scrollIntoView + a dynamic scroll-margin-top equal
-    // to the sticky bar height (window.scrollTo is unreliable across containers).
+    // Scroll an element into view tight against the sticky master/tabs bar so
+    // its header is visible with minimal dead space. Avoid adding extra global
+    // scroll-padding (html now sets 0) — the per-element margin is enough.
     static reveal(el) {
         if (!el) return;
         const sticky = document.querySelector('.sticky-top');
-        const off = (sticky && sticky.offsetHeight) ? sticky.offsetHeight + 8 : 8;
+        const off = (sticky && sticky.offsetHeight) ? sticky.offsetHeight + 2 : 2;
         el.style.scrollMarginTop = off + 'px';
         el.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
@@ -2078,6 +2164,10 @@ class EffectManager {
         }
         
         // 1. Update State
+        // Initialize effect params from defaults if missing (drones / old projects).
+        if (!targetParams[effectType] && effects[effectType]) {
+            targetParams[effectType] = JSON.parse(JSON.stringify(effects[effectType]));
+        }
         if (targetParams[effectType]) {
             targetParams[effectType][param] = value;
         }
@@ -2091,7 +2181,7 @@ class EffectManager {
 
         if (effectType === 'reverb') {
             if (param === 'room') this.updateReverbRoom(value);
-            if (param === 'duration' || param === 'decay') this.regenerateReverb(this.activeTab);
+            if ((param === 'duration' || param === 'decay') && !this.isBatchUpdating) this.regenerateReverb(this.activeTab);
         }
         
         if (effectType === 'eq' && !this.isBatchUpdating) this.drawEQVisualizer();
@@ -2182,9 +2272,12 @@ class EffectManager {
                 case 'reverb':
                     if (param === 'mix') { this.smoothSetParam(nodes[1].gain, 1 - value, now); this.smoothSetParam(nodes[2].gain, value, now); }
                     else if (param === 'volume') { this.smoothSetParam(nodes[3].gain, value, now); }
+                    else if (param === 'damp' && nodes[4]) { this.smoothSetParam(nodes[4].frequency, value, now); }
+                    else if (param === 'predelay' && nodes[5]) { this.smoothSetParam(nodes[5].delayTime, value, now); }
                     break;
                 case 'delay': {
-                    const p = loop.params.delay;
+                    const p = (loop.params && loop.params.delay) || effects.delay;
+                    if (!p) break;
                     if (param === 'time' || param === 'sync') { 
                         let t = p.time;
                         if(p.sync) t = p.time * (60.0 / state.bpm);
@@ -3098,6 +3191,11 @@ class EffectManager {
         }
         this.isBatchUpdating = false;
 
+        // Reverb IR regeneration was deferred during the batch: do it once now
+        if (effectName === 'reverb' && (p.room !== undefined || p.duration !== undefined || p.decay !== undefined)) {
+            this.regenerateReverb(this.activeTab);
+        }
+
         // Save preset state (After update loop to prevent clearing)
         if (this.activeTab === 'input-bus') {
             InputManager.activePresets[effectName] = presetName;
@@ -3150,7 +3248,7 @@ class EffectManager {
         this.updateControlUI('reverb', 'duration', duration);
         this.updateControlUI('reverb', 'decay', decay);
         
-        this.regenerateReverb(this.activeTab);
+        if (!this.isBatchUpdating) this.regenerateReverb(this.activeTab);
     }
 
     static regenerateReverb(targetId = 'global') {

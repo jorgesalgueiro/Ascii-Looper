@@ -749,6 +749,8 @@ class AudioGraph {
         const dry = state.audioContext.createGain();
         const wet = state.audioContext.createGain();
         const output = state.audioContext.createGain();
+        const damp = state.audioContext.createBiquadFilter();   // wet-path high cut
+        const predelay = state.audioContext.createDelay(0.5);   // pre-IR delay
 
         if (p.impulseBuffer instanceof AudioBuffer) convolver.buffer = p.impulseBuffer;
         else {
@@ -763,14 +765,20 @@ class AudioGraph {
         dry.gain.value = 1 - (p.mix ?? 0.15);
         wet.gain.value = p.mix ?? 0.15;
         output.gain.value = p.volume ?? 1.0;
+        damp.type = 'lowpass';
+        damp.frequency.value = p.damp ?? 20000;
+        damp.Q.value = 0.5;
+        predelay.delayTime.value = p.predelay ?? 0;
 
-        inputNode.connect(convolver);
+        inputNode.connect(predelay);
+        predelay.connect(convolver);
         inputNode.connect(dry);
-        convolver.connect(wet);
+        convolver.connect(damp);
+        damp.connect(wet);
         wet.connect(output);
         dry.connect(output);
 
-        return { output, nodes: [convolver, dry, wet, output] };
+        return { output, nodes: [convolver, dry, wet, output, damp, predelay] };
     }
     
     _createMachineReverb(inputNode) {

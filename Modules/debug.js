@@ -73,7 +73,12 @@ class ClickDetectorProcessor extends AudioWorkletProcessor {
             const d = Math.abs(x - this.prev);
             this.prev = x;
             this.env = this.env * 0.9995 + Math.abs(x) * 0.0005;
-            if (d > th) {
+            // Adaptive gate: a jump is only anomalous if it far exceeds the
+            // surrounding level. Normal musical transients at level ~0.3 reach
+            // deltas of ~0.3 without being clicks; a click on quiet content
+            // still exceeds the floor threshold.
+            const gate = Math.max(th, this.env * 3 + 0.05);
+            if (d > gate) {
                 // Throttle to one report per ~60ms so a burst doesn't flood the log
                 if (this.lastReport < 0 || currentTime - this.lastReport > 0.06) {
                     this.lastReport = currentTime;
@@ -96,6 +101,31 @@ class ClickDetectorProcessor extends AudioWorkletProcessor {
     }
 }
 registerProcessor('click-detector-processor', ClickDetectorProcessor);
+
+// Audio-thread overload detector: each process() call should arrive exactly one
+// render quantum apart (128 samples). If the gap is larger, the audio thread
+// missed its deadline (glitch/sound cut). Reports the gap so the debug log
+// shows WHEN the engine overloaded.
+class DropoutDetectorProcessor extends AudioWorkletProcessor {
+    constructor() {
+        super();
+        this.lastT = -1;
+        this.lastReport = -1;
+    }
+    process(inputs, outputs) {
+        const q = 128 / sampleRate;
+        if (this.lastT >= 0) {
+            const dt = currentTime - this.lastT;
+            if (dt > q * 2.5 && (this.lastReport < 0 || currentTime - this.lastReport > 0.25)) {
+                this.lastReport = currentTime;
+                this.port.postMessage({ type: 'dropout', gapMs: (dt - q) * 1000, t: currentTime });
+            }
+        }
+        this.lastT = currentTime;
+        return true;
+    }
+}
+registerProcessor('dropout-detector-processor', DropoutDetectorProcessor);
 `;
 
     static install() {
@@ -185,6 +215,29 @@ registerProcessor('click-detector-processor', ClickDetectorProcessor);
         }
         if (DebugManager._clickDetectors.length > 0) {
             DebugManager._push('sys', `Click detectors armed on: ${DebugManager._clickDetectors.length} bus(es). Pops will be logged below.`);
+        }
+
+        // Audio-thread overload monitor (sound cuts = missed render deadlines)
+        try {
+            const tap = st.masterLimiter || st.masterGain || st.masterMixer;
+            if (tap) {
+                const dd = new Ctor(ctx, 'dropout-detector-processor');
+                tap.connect(dd);
+                const mute = ctx.createGain(); mute.gain.value = 0;
+                dd.connect(mute); mute.connect(ctx.destination);
+                dd.port.addEventListener('message', (e) => {
+                    if (!DebugManager.enabled) return;
+                    const m = e.data;
+                    if (m && m.type === 'dropout') {
+                        DebugManager._push('error', `[OVERLOAD] audio thread missed deadline: gap≈${m.gapMs.toFixed(1)}ms @${(m.t || 0).toFixed(3)}s`);
+                    }
+                });
+                dd.port.start();
+                DebugManager._clickDetectors.push({ det: dd, mute, src: tap });
+                DebugManager._push('sys', 'Dropout detector armed. Audio-thread gaps (sound cuts) will be logged as [OVERLOAD].');
+            }
+        } catch (err) {
+            DebugManager._push('sys', `Dropout detector attach failed: ${err.message}`);
         }
     }
 
@@ -322,6 +375,10 @@ registerProcessor('click-detector-processor', ClickDetectorProcessor);
             L.push('AudioContext : not created (app not started)');
         }
         L.push(`Sync         : bpm=${st.bpm} bars=${st.bars} sig=${st.timeSig.num}/${st.timeSig.den} loopLen=${(st.loopLength || 0).toFixed(2)}s`);
+        const fxNames = (obj) => {
+            if (!obj) return [];
+            return Object.keys(obj).filter(k => obj[k]);
+        };
         const loops = (st.loops || []);
         const active = loops.filter(l => l && l.state === 'playing').length;
         L.push(`Loops        : ${active}/${loops.length} playing; recording=${st.isRecording}${st.isOverdubbing ? ' (overdub)' : ''}`);
@@ -330,15 +387,34 @@ registerProcessor('click-detector-processor', ClickDetectorProcessor);
                 if (!l) return;
                 const dur = l.audioBuffer ? (l.audioBuffer.duration).toFixed(2) + 's' : '-';
                 const vol = typeof l.volume === 'number' ? l.volume.toFixed(2) : '?';
-                L.push(`  loop ${l.id}${l.name ? ` "${l.name}"` : ''}: state=${l.state} len=${dur} vol=${vol}`);
+                const fx = fxNames(l.effects);
+                L.push(`  loop ${l.id}${l.name ? ` "${l.name}"` : ''}: state=${l.state} len=${dur} vol=${vol} chain="${l.signalChain || '-'}" fx=[${fx.join(',') || 'none'}]`);
             } catch (e) {
                 L.push(`  loop <unreadable: ${e.message}>`);
             }
         });
         try {
             if (window.DroneSynth) {
-                const drones = DroneSynth.instances.filter(s => s && s.state !== 'stopped').length;
-                L.push(`Drones       : ${drones}/${DroneSynth.instances.length} active`);
+                const insts = DroneSynth.instances || [];
+                const drones = insts.filter(s => s && s.state !== 'stopped').length;
+                L.push(`Drones       : ${drones}/${insts.length} active`);
+                insts.forEach(s => {
+                    if (!s) return;
+                    const fx = fxNames(s.fxState);
+                    const voices = s.voices ? Object.keys(s.voices).length : 0;
+                    L.push(`  drone ${s.id}: state=${s.state} voices=${voices} chain="${s.signalChain || '-'}" fx=[${fx.join(',') || 'none'}]`);
+                });
+            }
+        } catch (e) {}
+        try {
+            if (window.InputManager) {
+                const fx = fxNames(InputManager.masterEffectsState);
+                L.push(`Input bus    : inputs=${(st.inputs || []).length} chain="${InputManager.masterSignalChain || '-'}" fx=[${fx.join(',') || 'none'}]`);
+            }
+        } catch (e) {}
+        try {
+            if (ctx && ctx.audioWorklet && DebugManager._ports.size >= 0) {
+                L.push(`Worklet ports: ${DebugManager._ports.size} tagged (AudioWorklet load indicator)`);
             }
         } catch (e) {}
         L.push(`Undo/Redo    : ${st.undoStack.length}/${st.redoStack.length}`);
@@ -402,6 +478,39 @@ registerProcessor('click-detector-processor', ClickDetectorProcessor);
         a.download = `ascii-looper-debug-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
         a.click();
         setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    }
+
+    static copy() {
+        const text = DebugManager._logBuffer.map(l => `[${l.t}] [${l.kind}] ${l.text}`).join('\n');
+        if (!text) {
+            DebugManager._push('sys', 'Copy to clipboard skipped: log is empty.');
+            return;
+        }
+        const fallback = () => {
+            try {
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                ta.style.position = 'fixed';
+                ta.style.opacity = '0';
+                document.body.appendChild(ta);
+                ta.focus();
+                ta.select();
+                const ok = document.execCommand('copy');
+                document.body.removeChild(ta);
+                DebugManager._push('sys', ok
+                    ? `Copied ${DebugManager._logBuffer.length} log line(s) to clipboard (fallback).`
+                    : 'Clipboard copy failed: execCommand rejected.');
+            } catch (err) {
+                DebugManager._push('sys', `Clipboard copy failed: ${err.message}`);
+            }
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text)
+                .then(() => DebugManager._push('sys', `Copied ${DebugManager._logBuffer.length} log line(s) to clipboard.`))
+                .catch(() => fallback());
+        } else {
+            fallback();
+        }
     }
 
     static _updateUI() {

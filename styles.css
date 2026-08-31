@@ -1,5 +1,5 @@
 html {
-    scroll-padding-top: 285px; /* Offset for sticky master vu meter + tabs bar */
+    scroll-padding-top: 0; /* reveal() sets dynamic scroll-margin-top per element */
     scroll-behavior: smooth;
 }
 

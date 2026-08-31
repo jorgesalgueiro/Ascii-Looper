@@ -6,6 +6,13 @@
 // >>> Move this block (until its matching END marker) into modules/droneSynth.js during final split.
 // =============================================
 
+// Drone FX defaults mirror the global effect defaults so every drone has a
+// complete params object (prevents "p is undefined" crashes when toggling
+// delay sync/reps before params are initialized).
+const DEFAULT_DRONE_FX_PARAMS = (typeof effects !== 'undefined' && effects)
+    ? JSON.parse(JSON.stringify(effects))
+    : {};
+
 class SynthInstance {
     constructor(id) {
         this.id = id;
@@ -1600,6 +1607,10 @@ class DroneSynth {
     static noteOn(id, note, vel, isDrone = false) {
         const synth = this.instances[id];
         if (!synth) return;
+
+        // Guard against missing/invalid velocity: NaN would propagate into
+        // peakGain and throw on linearRampToValueAtTime.
+        if (!Number.isFinite(vel) || vel <= 0) vel = 100;
 
         const ctx = state.audioContext;
         const now = ctx.currentTime + 0.005;
