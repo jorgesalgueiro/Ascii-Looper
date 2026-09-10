@@ -2,8 +2,6 @@
 
 // =============================================
 // MODULE 3.5: DRONE SYNTH
-// >>> EXTRACT TO: modules/droneSynth.js
-// >>> Move this block (until its matching END marker) into modules/droneSynth.js during final split.
 // =============================================
 
 // Drone FX defaults mirror the global effect defaults so every drone has a
@@ -30,10 +28,10 @@ class SynthInstance {
         // Analyser for clipping detection
         this.analyser = null;
         this.analyserData = null;
-        this.signalChain = "QCATFODBVKZG";
+        this.signalChain = "QCAHTFODBVKZG";
         this.fxParams = typeof DEFAULT_DRONE_FX_PARAMS !== 'undefined' ? JSON.parse(JSON.stringify(DEFAULT_DRONE_FX_PARAMS)) : {};
         this.activePresets = {};
-        this.fxState = { reverb: false, machineReverb: false, delay: false, distortion: false, fuzz: false, overdrive: false, compressor: false, dusk: false, arpDelay: false, eq: false, zigZ: false, griz: false };
+        this.fxState = { reverb: false, machineReverb: false, delay: false, distortion: false, fuzz: false, overdrive: false, compressor: false, dusk: false, arpDelay: false, eq: false, zigZ: false, griz: false, harmony: false };
         this.params = {
             volume: 0.25, detune: 10, subMix: 0.5, noiseMix: 0.1, unison: 0.35,
             osc1Type: 'triangle', osc2Type: 'sawtooth', subType: 'triangle', noiseType: 'pink',
@@ -923,7 +921,8 @@ class DroneSynth {
             'K': { key: 'dusk', label: 'dusK' },
             'Q': { key: 'eq', label: 'eQ' },
             'Z': { key: 'zigZ', label: 'zigZ' },
-            'G': { key: 'griz', label: 'Griz' }
+            'G': { key: 'griz', label: 'Griz' },
+            'H': { key: 'harmony', label: 'Harm' }
         };
 
         const uniqueChain = [...new Set(synth.signalChain.split(''))].join('');
@@ -2213,7 +2212,7 @@ class DroneSynth {
                 });
             }
 
-            if (instData.signalChain) synth.signalChain = instData.signalChain || "QCATFODBVKZG";
+            if (instData.signalChain) synth.signalChain = instData.signalChain || "QCAHTFODBVKZG";
             if (instData.activePresets) synth.activePresets = instData.activePresets;
             if (instData.fxState) Object.assign(synth.fxState, instData.fxState);
             if (instData.state === 'playing' || instData.state === 'stopping') synth.state = 'playing';
@@ -2227,5 +2226,3 @@ class DroneSynth {
         this.renderAll();
     }
 }
-
-// <<< END EXTRACT: droneSynth.js

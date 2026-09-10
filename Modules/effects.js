@@ -1,6 +1,6 @@
 
 // =============================================
-// MODULE: EFFECTS (EQ) [Extractable to effects.js]
+// MODULE: EFFECTS (EQ)
 // =============================================
 // Worklet processor source: injected as a <script type="text/worklet-script">
 // element so the worklet loader (audioEngine.js) can collect it from the DOM.
@@ -187,7 +187,7 @@ registerProcessor('eq-processor', EQProcessor);
 })();
 
 // =============================================
-// MODULE: EFFECTS (DUSK REVERB) [Extractable to effects.js]
+// MODULE: EFFECTS (DUSK REVERB)
 // =============================================
 (function () {
     const el = document.createElement('script');
@@ -455,7 +455,7 @@ registerProcessor('dusk-processor', DuskProcessor);
 })();
 
 // =============================================
-// MODULE: EFFECTS (ARP DELAY) [Extractable to effects.js]
+// MODULE: EFFECTS (ARP DELAY)
 // =============================================
 (function () {
     const el = document.createElement('script');
@@ -733,7 +733,7 @@ registerProcessor('arp-delay-processor', ArpDelayProcessor);
 })();
 
 // =============================================
-// MODULE: EFFECTS (GRISTLEIZER) [Extractable to effects.js]
+// MODULE: EFFECTS (GRISTLEIZER)
 // =============================================
 (function () {
     const el = document.createElement('script');
@@ -857,6 +857,606 @@ registerProcessor('gristleizer-processor', GristleizerProcessor);
 })();
 
 // =============================================
+// MODULE: EFFECTS (HARMONY)
+// =============================================
+(function () {
+    const el = document.createElement('script');
+    el.type = 'text/worklet-script';
+    el.textContent = `
+/*
+ * Real-time vocal harmonizer.
+ *
+ * Pitch tracking : NSDF autocorrelation over a decimated copy of the input,
+ *                  accumulated in small slices across render quanta so no
+ *                  single block ever spikes.
+ * Pitch shifting : pitch-synchronous overlap-add. Source grains are centered
+ *                  on nearby pitch marks and read at native waveform rate,
+ *                  then placed at target-pitch spacing to retain the vocal
+ *                  spectral envelope across harmony intervals.
+ * Harmony        : the detected note is snapped to the selected scale and each
+ *                  voice moves by a scale degree. Ratios are derived from the
+ *                  *quantized* note, which is what keeps the singer's vibrato
+ *                  alive in every voice instead of flattening it out.
+ */
+const HARMONY_SCALES = [
+    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+    [0, 2, 4, 5, 7, 9, 11],
+    [0, 2, 3, 5, 7, 8, 10]
+];
+
+class HarmonyProcessor extends AudioWorkletProcessor {
+    static get parameterDescriptors() {
+        return [
+            { name: 'mix', defaultValue: 0.5, minValue: 0, maxValue: 1 },
+            { name: 'volume', defaultValue: 1.0, minValue: 0, maxValue: 2 },
+            { name: 'voices', defaultValue: 2, minValue: 1, maxValue: 4 },
+            { name: 'mode', defaultValue: 1, minValue: 0, maxValue: 2 },
+            { name: 'key', defaultValue: 0, minValue: 0, maxValue: 11 },
+            { name: 'h1', defaultValue: 2, minValue: -12, maxValue: 12 },
+            { name: 'h2', defaultValue: 4, minValue: -12, maxValue: 12 },
+            { name: 'h3', defaultValue: -3, minValue: -12, maxValue: 12 },
+            { name: 'h4', defaultValue: 6, minValue: -12, maxValue: 12 },
+            { name: 'humanize', defaultValue: 0.5, minValue: 0, maxValue: 1 }
+        ];
+    }
+
+    constructor() {
+        super();
+        const sr = getWorkletSampleRate();
+        this.sr = sr;
+
+        this.WRAP_AT = 0x30000000;
+        this.WRAP_BY = 0x2FFFC000;   // multiple of RING, keeps masking continuous
+
+        this.RING = 16384;
+        this.MASK = this.RING - 1;
+        this.ring = new Float32Array(this.RING);
+        this.markRing = new Float32Array(this.RING);
+        this.markLP1 = 0;
+        this.markLP2 = 0;
+        this.wAbs = this.RING;       // monotonic write index, keeps every read positive
+        // The look-ahead holds a complete analysis frame and overlapping grains,
+        // keeping the dry tap aligned with the native-rate PSOLA voice layer.
+        this.baseDelay = Math.round(0.065 * sr);
+        this.ratio = new Float64Array(4).fill(1);
+        this.ratioTarget = new Float64Array(4).fill(1);
+        this.humRatio = new Float64Array(4).fill(1);
+        this.humWalk = new Float64Array(4);
+        this.stagger = new Float64Array(4);
+        this.panL = new Float64Array(4).fill(0.7071);
+        this.panR = new Float64Array(4).fill(0.7071);
+        this.vGain = new Float64Array(4).fill(0.7071);
+        this.degrees = new Int32Array(4);
+        this.GRAINS = 6;
+        this.grainOut = new Float64Array(24).fill(-1e12);
+        this.grainSrc = new Float64Array(24);
+        this.grainHalf = new Float64Array(24);
+        this.grainHead = new Int32Array(4);
+        this.grainReady = new Uint8Array(4);
+        this.nextGrainOut = new Float64Array(4);
+        this.nextGrainSrc = new Float64Array(4);
+        this.voiceFilter = [new SVF(), new SVF(), new SVF(), new SVF()];
+        this.filterCutoff = new Float64Array(4);
+        this.humTarget = new Float64Array(4);
+        this.humNext = new Float64Array(4);
+        this.hann = new Float32Array(1025);
+        for (let i = 0; i <= 1024; i++) this.hann[i] = 0.5 - 0.5 * Math.cos(Math.PI * i / 1024);
+
+        this.dsr = sr * 0.5;
+        this.TAU_MIN = Math.max(4, Math.round(this.dsr / 900));
+        this.TAU_MAX = Math.round(this.dsr / 65);
+        this.TAU_N = this.TAU_MAX - this.TAU_MIN + 1;
+        this.MJ = 512;               // j-samples summed per analysis
+        this.JSTEP = 32;             // j-samples per render quantum
+        this.WIN = this.TAU_MAX + this.MJ;
+        this.DETD = 2048;
+        this.DETMASK = this.DETD - 1;
+        this.detRing = new Float32Array(this.DETD);
+        this.detW = 0;
+        this.win = new Float32Array(this.WIN);
+        this.aNum = new Float64Array(this.TAU_N);
+        this.aE2 = new Float64Array(this.TAU_N);
+        this.nsdf = new Float64Array(this.TAU_N);
+        this.anBusy = false;
+        this.anJ = 0;
+        this.anE1 = 0;
+
+        this.lpState = 0;
+        this.detailState = 0;
+        this.level = 0;
+        this.levelActive = false;
+        this.rmsSum = 0;
+        this.rmsCount = 0;
+        this.peakVal = 0;
+
+        this.period = 0;
+        this.smoothPeriod = 0;
+        this.lastGoodPeriod = 0;
+        this.suspPeriod = 0;
+        this.voiced = false;
+        this.voiceConfidence = 0;
+        this.gateEnv = 0;
+        this.snappedMidi = 60;
+        this.scaleDeg = 0;
+        this.scaleOct = 0;
+        this.hasStableScale = false;
+        this.pendingMidi = 0;
+        this.pendingDeg = 0;
+        this.pendingOct = 0;
+        this.pendingScaleFrames = 0;
+
+        this.modeIdx = 1;
+        this.keyIdx = 0;
+        this.nvCount = 2;
+        this.humAmount = 0.5;
+        this.needResnap = false;
+
+        this.envAttack = 1 - Math.exp(-1 / (0.030 * sr));
+        this.envRelease = 1 - Math.exp(-1 / (0.145 * sr));
+        this.glideCoef = 1 - Math.exp(-1 / (0.032 * sr));
+        this.time = 0;
+        this.frame = 0;
+
+        // updateControl only re-lays-out when the voice count *changes*, so the
+        // default count has to be seeded here or every voice stays centre-panned.
+        this.layoutVoices();
+        for (let v = 0; v < 4; v++) this.setVoiceFilter(v, 1);
+        this.resetGrains();
+    }
+
+    resetGrains() {
+        this.grainReady.fill(0);
+    }
+
+    readAt(absPos) {
+        const i = Math.floor(absPos);
+        const f = absPos - i;
+        const y0 = this.ring[(i - 1) & this.MASK];
+        const y1 = this.ring[i & this.MASK];
+        const y2 = this.ring[(i + 1) & this.MASK];
+        const y3 = this.ring[(i + 2) & this.MASK];
+        const a0 = y3 - y2 - y0 + y1;
+        const a1 = y0 - y1 - a0;
+        const a2 = y2 - y0;
+        return ((a0 * f + a1) * f + a2) * f + y1;
+    }
+
+    findPitchMark(estimate, period, initial) {
+        const span = initial ? 0.48 : 0.20;
+        const radius = Math.min(144, Math.max(12, Math.round(period * span)));
+        const ring = this.markRing, mask = this.MASK;
+        let best = estimate, bestDistance = Infinity, bestSlope = -Infinity;
+        let prev = ring[(Math.floor(estimate - radius - 1)) & mask];
+        for (let offset = -radius; offset <= radius; offset++) {
+            const pos = estimate + offset;
+            const sample = ring[(Math.floor(pos)) & mask];
+            if (prev <= 0 && sample > 0) {
+                const distance = Math.abs(offset);
+                const slope = sample - prev;
+                if (distance < bestDistance || (distance === bestDistance && slope > bestSlope)) {
+                    best = pos;
+                    bestDistance = distance;
+                    bestSlope = slope;
+                }
+            }
+            prev = sample;
+        }
+        return best;
+    }
+
+    schedulePSOLA(v, w, ratio) {
+        const period = Math.max(32, Math.min(this.sr / 60, this.smoothPeriod || this.lastGoodPeriod || this.sr / 180));
+        const half = Math.max(32, Math.round(period * 0.96));
+        let initial = !this.grainReady[v];
+        if (initial) {
+            this.grainReady[v] = 1;
+            this.nextGrainOut[v] = w + half;
+            this.nextGrainSrc[v] = this.nextGrainOut[v] - this.baseDelay;
+        }
+        let guard = 0;
+        while (w >= this.nextGrainOut[v] - half && guard++ < 3) {
+            const mark = this.findPitchMark(this.nextGrainSrc[v], period, initial);
+            initial = false;
+            const slot = v * this.GRAINS + this.grainHead[v];
+            this.grainOut[slot] = this.nextGrainOut[v];
+            this.grainSrc[slot] = mark;
+            this.grainHalf[slot] = half;
+            this.grainHead[v] = (this.grainHead[v] + 1) % this.GRAINS;
+            this.nextGrainOut[v] += period / Math.max(0.5, Math.min(2, ratio));
+            this.nextGrainSrc[v] = mark + period;
+            const wanted = this.nextGrainOut[v] - this.baseDelay;
+            const error = this.nextGrainSrc[v] - wanted;
+            if (error > period * 0.5) this.nextGrainSrc[v] -= period * Math.ceil((error - period * 0.5) / period);
+            else if (error < -period * 0.5) this.nextGrainSrc[v] += period * Math.ceil((-period * 0.5 - error) / period);
+        }
+    }
+
+    renderPSOLA(v, w, ratio) {
+        this.schedulePSOLA(v, w, ratio);
+        let sum = 0, weight = 0;
+        const base = v * this.GRAINS;
+        for (let i = 0; i < this.GRAINS; i++) {
+            const slot = base + i;
+            const half = this.grainHalf[slot];
+            const age = w - this.grainOut[slot];
+            if (!(half > 0) || age < -half || age > half) continue;
+            let index = Math.round((age + half) * 512 / half);
+            if (index < 0) index = 0;
+            else if (index > 1024) index = 1024;
+            const gain = this.hann[index];
+            sum += this.readAt(this.grainSrc[slot] + age) * gain;
+            weight += gain;
+        }
+        if (weight < 1e-5) return 0;
+        return sum / weight;
+    }
+
+    setVoiceFilter(v, ratio) {
+        const cutoff = ratio > 1.15
+            ? Math.max(4500, Math.min(this.sr * 0.45, 15500 / ratio))
+            : this.sr * 0.45;
+        if (Math.abs(cutoff - this.filterCutoff[v]) < 80) return;
+        const g = Math.tan(Math.PI * cutoff / this.sr);
+        const k = Math.SQRT2;
+        const a1 = 1 / (1 + g * (g + k));
+        const a2 = g * a1;
+        const a3 = g * a2;
+        this.voiceFilter[v].setCoeffs(g, k, a1, a2, a3, 0, 0, 1);
+        this.filterCutoff[v] = cutoff;
+    }
+
+    layoutVoices() {
+        const nv = this.nvCount;
+        const spread = 0.8;
+        for (let v = 0; v < 4; v++) {
+            let pan = 0;
+            if (nv > 1 && v < nv) pan = -spread + 2 * spread * v / (nv - 1);
+            const a = (pan + 1) * Math.PI * 0.25;
+            this.panL[v] = Math.cos(a);
+            this.panR[v] = Math.sin(a);
+        }
+    }
+
+    updateControl(mode, key, voices, humanize, h1, h2, h3, h4) {
+        const mi = Math.max(0, Math.min(2, Math.round(mode)));
+        const ki = Math.max(0, Math.min(11, Math.round(key)));
+        const nv = Math.max(1, Math.min(4, Math.round(voices)));
+        let dirty = false;
+        if (mi !== this.modeIdx) { this.modeIdx = mi; dirty = true; }
+        if (ki !== this.keyIdx) { this.keyIdx = ki; dirty = true; }
+        if (nv !== this.nvCount) { this.nvCount = nv; this.layoutVoices(); dirty = true; }
+        const d0 = Math.round(h1), d1 = Math.round(h2), d2 = Math.round(h3), d3 = Math.round(h4);
+        if (d0 !== this.degrees[0] || d1 !== this.degrees[1] || d2 !== this.degrees[2] || d3 !== this.degrees[3]) {
+            this.degrees[0] = d0; this.degrees[1] = d1; this.degrees[2] = d2; this.degrees[3] = d3;
+            dirty = true;
+        }
+        this.humAmount = humanize;
+        if (dirty) this.needResnap = true;
+    }
+
+    // Slow per-voice drift: the micro-detune and timing scatter that stop four
+    // pitch-shifted copies of one waveform from collapsing into an organ stop.
+    updateSlow() {
+        const hum = this.humAmount;
+        const limit = this.nvCount === 1 ? 2.5 : 6;
+        const centre = (this.nvCount - 1) * 0.5;
+        for (let v = 0; v < 4; v++) {
+            if (this.time >= this.humNext[v]) {
+                this.humTarget[v] = (Math.random() * 2 - 1) * limit * hum;
+                this.humNext[v] = this.time + 0.150 + Math.random() * 0.150;
+            }
+            this.humWalk[v] += (this.humTarget[v] - this.humWalk[v]) * 0.035;
+            this.humRatio[v] = Math.pow(2, this.humWalk[v] / 1200);
+            this.stagger[v] = (v - centre) * 0.00055 * this.sr * hum;
+        }
+    }
+
+    runDetector() {
+        if (this.anBusy) {
+            const jEnd = Math.min(this.anJ + this.JSTEP, this.MJ);
+            const win = this.win, TMIN = this.TAU_MIN, TN = this.TAU_N;
+            const aNum = this.aNum, aE2 = this.aE2;
+            let e1 = this.anE1;
+            for (let j = this.anJ; j < jEnd; j++) {
+                const xj = win[j];
+                e1 += xj * xj;
+                for (let t = 0; t < TN; t++) {
+                    const xv = win[j + TMIN + t];
+                    aNum[t] += xj * xv;
+                    aE2[t] += xv * xv;
+                }
+            }
+            this.anE1 = e1;
+            this.anJ = jEnd;
+            if (this.anJ >= this.MJ) {
+                this.anBusy = false;
+                this.finishDetection();
+            }
+            return;
+        }
+        if (this.detW < this.WIN || !this.levelActive) return;
+        const WIN = this.WIN, DETMASK = this.DETMASK, detRing = this.detRing;
+        const start = this.detW - WIN;
+        for (let k = 0; k < WIN; k++) this.win[k] = detRing[(start + k) & DETMASK];
+        this.aNum.fill(0);
+        this.aE2.fill(0);
+        this.anE1 = 0;
+        this.anJ = 0;
+        this.anBusy = true;
+    }
+
+    finishDetection() {
+        const TN = this.TAU_N;
+        const nsdf = this.nsdf, aNum = this.aNum, aE2 = this.aE2;
+        const e1 = this.anE1;
+        let gmax = 0;
+        for (let t = 0; t < TN; t++) {
+            const d = e1 + aE2[t];
+            const v = d > 1e-10 ? (2 * aNum[t]) / d : 0;
+            nsdf[t] = v;
+            if (v > gmax) gmax = v;
+        }
+        const rms = this.rmsCount > 0 ? Math.sqrt(this.rmsSum / this.rmsCount) : 0;
+        this.rmsSum = 0;
+        this.rmsCount = 0;
+        this.peakVal = gmax;
+
+        const threshold = this.voiced ? 0.42 : 0.54;
+        if (!(gmax > threshold && rms > 0.003 && this.level > 0.0007)) {
+            this.voiceConfidence *= 0.58;
+            this.voiced = this.voiceConfidence > 0.04;
+            this.suspPeriod = 0;
+            return;
+        }
+
+        // On acquisition, periodic voices can yield equally high NSDF peaks at
+        // several multiples of the true period. Keep the shortest credible peak;
+        // once tracking, continuity takes precedence over this tie-break.
+        const thresh = Math.max(threshold, gmax * 0.62);
+        let bestT = -1, bestScore = -Infinity, bestPeak = -Infinity, bestPeriod = Infinity;
+        for (let t = 1; t < TN - 1; t++) {
+            if (nsdf[t] < thresh || nsdf[t] < nsdf[t - 1] || nsdf[t] <= nsdf[t + 1]) continue;
+            const candidate = (t + this.TAU_MIN) * 2;
+            if (this.period <= 0) {
+                if (nsdf[t] > bestPeak + 0.025 ||
+                    (nsdf[t] >= bestPeak - 0.025 && candidate < bestPeriod)) {
+                    bestPeak = nsdf[t];
+                    bestPeriod = candidate;
+                    bestT = t;
+                }
+                continue;
+            }
+            const score = nsdf[t] - 0.14 * Math.min(2, Math.abs(Math.log2(candidate / this.period)));
+            if (score > bestScore) { bestScore = score; bestT = t; }
+        }
+        if (bestT < 0) {
+            let bv = -1;
+            for (let t = 0; t < TN; t++) {
+                if (nsdf[t] > bv) { bv = nsdf[t]; bestT = t; }
+            }
+        }
+        if (bestT <= 0 || bestT >= TN - 1) {
+            this.voiceConfidence *= 0.58;
+            this.voiced = this.voiceConfidence > 0.04;
+            this.suspPeriod = 0;
+            return;
+        }
+
+        const a = nsdf[bestT - 1], b = nsdf[bestT], c = nsdf[bestT + 1];
+        const den = a - 2 * b + c;
+        let frac = den !== 0 ? 0.5 * (a - c) / den : 0;
+        if (frac > 1) frac = 1;
+        else if (frac < -1) frac = -1;
+        const cand = (bestT + this.TAU_MIN + frac) * (this.sr / this.dsr);
+        this.voiceConfidence = Math.max((gmax - 0.38) / 0.55, this.voiceConfidence * 0.80);
+        if (this.voiceConfidence > 1) this.voiceConfidence = 1;
+        this.voiced = true;
+
+        if (this.period <= 0) {
+            this.period = cand;
+            this.updateHarmony();
+            return;
+        }
+        const r = cand / this.period;
+        if (r < 1.45 && r > 0.69) {
+            this.suspPeriod = 0;
+            this.period = Math.max(this.period * 0.7, Math.min(this.period * 1.4, cand));
+            this.updateHarmony();
+        } else if (this.suspPeriod > 0 && Math.abs(cand / this.suspPeriod - 1) < 0.09) {
+            // Two agreeing frames outrank one slew limit, so a real octave leap lands.
+            this.suspPeriod = 0;
+            this.period = cand;
+            this.updateHarmony();
+        } else {
+            this.suspPeriod = cand;
+        }
+    }
+
+    updateHarmony() {
+        const f0 = this.sr / this.period;
+        const n = Math.round(69 + 12 * Math.log2(f0 / 440));
+        const scale = HARMONY_SCALES[this.modeIdx];
+        const L = scale.length;
+        const key = this.keyIdx;
+        const base = key + 12 * Math.floor((n - key) / 12);
+        const off = n - base;
+
+        let bestIdx = 0, bestDist = 99;
+        for (let d = 0; d < L; d++) {
+            for (let o = -1; o <= 1; o++) {
+                const dist = Math.abs(scale[d] + 12 * o - off);
+                if (dist < bestDist) { bestDist = dist; bestIdx = d + o * L; }
+            }
+        }
+        const oct = Math.floor(bestIdx / L);
+        const deg = bestIdx - oct * L;
+        const candidateMidi = base + scale[deg] + 12 * oct;
+        if (!this.hasStableScale) {
+            this.snappedMidi = candidateMidi;
+            this.scaleDeg = deg;
+            this.scaleOct = oct;
+            this.hasStableScale = true;
+        } else if (candidateMidi !== this.snappedMidi) {
+            if (candidateMidi === this.pendingMidi) this.pendingScaleFrames++;
+            else {
+                this.pendingMidi = candidateMidi;
+                this.pendingDeg = deg;
+                this.pendingOct = oct;
+                this.pendingScaleFrames = 1;
+            }
+            const largeMove = Math.abs(candidateMidi - this.snappedMidi) >= 2 && this.voiceConfidence > 0.72;
+            if (largeMove || this.pendingScaleFrames >= 3) {
+                this.snappedMidi = candidateMidi;
+                this.scaleDeg = this.pendingDeg;
+                this.scaleOct = this.pendingOct;
+                this.pendingScaleFrames = 0;
+            }
+        } else {
+            this.pendingScaleFrames = 0;
+        }
+
+        for (let v = 0; v < 4; v++) {
+            const idx = this.scaleDeg + this.degrees[v];
+            const io = Math.floor(idx / L);
+            const pc = idx - io * L;
+            let delta = (scale[pc] - scale[this.scaleDeg]) + 12 * (io - this.scaleOct);
+            // Wider intervals lose the close-stack character and needlessly
+            // exaggerate source-vowel differences.
+            if (delta > 12) delta = 12;
+            else if (delta < -12) delta = -12;
+            this.ratioTarget[v] = Math.pow(2, delta / 12);
+            this.setVoiceFilter(v, this.ratioTarget[v]);
+        }
+
+        this.lastGoodPeriod = this.period;
+        if (this.smoothPeriod <= 0) this.smoothPeriod = this.period;
+        this.smoothPeriod += (this.period - this.smoothPeriod) * 0.35;
+    }
+
+    process(inputs, outputs, parameters) {
+        const output = outputs[0];
+        if (!output || !output[0]) return true;
+        const input = inputs[0];
+        const hasInput = !!(input && input.length > 0 && input[0]);
+        const inL = hasInput ? input[0] : null;
+        const inR = (hasInput && input.length > 1 && input[1]) ? input[1] : null;
+        const n = output[0].length;
+        const outL = output[0];
+        const outR = output.length > 1 ? output[1] : null;
+        const sr = this.sr;
+
+        const mixArr = parameters.mix;
+        const volArr = parameters.volume;
+        const mixAuto = !!(mixArr && mixArr.length > 1);
+        const volAuto = !!(volArr && volArr.length > 1);
+        let mix = mixArr ? mixArr[0] : 0.5;
+        let vol = volArr ? volArr[0] : 1.0;
+
+        this.updateControl(
+            parameters.mode ? parameters.mode[0] : 1,
+            parameters.key ? parameters.key[0] : 0,
+            parameters.voices ? parameters.voices[0] : 2,
+            parameters.humanize ? parameters.humanize[0] : 0.5,
+            parameters.h1 ? parameters.h1[0] : 2,
+            parameters.h2 ? parameters.h2[0] : 4,
+            parameters.h3 ? parameters.h3[0] : -3,
+            parameters.h4 ? parameters.h4[0] : 6
+        );
+        if (this.needResnap && this.period > 0) {
+            this.updateHarmony();
+            this.needResnap = false;
+        }
+
+        this.time += n / sr;
+        this.frame++;
+        if ((this.frame & 3) === 0) this.updateSlow();
+
+        const gT = 1 / Math.sqrt(this.nvCount);
+        for (let v = 0; v < 4; v++) {
+            const t = (v < this.nvCount) ? gT : 0;
+            this.vGain[v] += (t - this.vGain[v]) * 0.2;
+        }
+
+        if (this.wAbs > this.WRAP_AT) this.wAbs -= this.WRAP_BY;
+
+        const MASK = this.MASK, ring = this.ring;
+        const detRing = this.detRing, DETMASK = this.DETMASK;
+        const glide = this.glideCoef, atk = this.envAttack, rel = this.envRelease;
+        const nv = this.nvCount;
+
+        for (let i = 0; i < n; i++) {
+            let m = inL ? inL[i] : 0;
+            if (inR) m = 0.5 * (m + inR[i]);
+            const w = this.wAbs;
+            ring[w & MASK] = m;
+            this.markLP1 += 0.16 * (m - this.markLP1);
+            this.markLP2 += 0.16 * (this.markLP1 - this.markLP2);
+            this.markRing[w & MASK] = this.markLP2;
+
+            this.lpState += 0.22 * (m - this.lpState);
+            if ((w & 1) === 0) {
+                detRing[this.detW & DETMASK] = this.lpState;
+                this.detW++;
+            }
+            const am = m < 0 ? -m : m;
+            this.level += (am - this.level) * 0.0008;
+            this.rmsSum += m * m;
+            this.rmsCount++;
+
+            if (mixAuto) mix = mixArr[i];
+            if (volAuto) vol = volArr[i];
+
+            const gTarget = this.voiceConfidence;
+            this.gateEnv += (gTarget - this.gateEnv) * (gTarget > this.gateEnv ? atk : rel);
+            const gate = this.gateEnv;
+
+            const dry = this.readAt(w - this.baseDelay);
+            const dryG = Math.cos(mix * Math.PI * 0.5);
+            const wetG = Math.sin(mix * Math.PI * 0.5);
+            const wetScale = vol * wetG;
+            this.detailState += 0.14 * (dry - this.detailState);
+            const consonant = (dry - this.detailState) * (1 - gate) * 0.13;
+
+            let wetL = 0, wetR = 0;
+            if (wetScale > 1e-4 && this.period > 8) {
+                for (let v = 0; v < 4; v++) {
+                    const target = this.ratioTarget[v] * this.humRatio[v];
+                    this.ratio[v] += (target - this.ratio[v]) * glide;
+                }
+                for (let v = 0; v < nv; v++) {
+                    const vg = this.vGain[v];
+                    if (vg < 0.0005) continue;
+                    const R = this.ratio[v];
+                    const shifted = this.renderPSOLA(v, w, R);
+                    const g = this.voiceFilter[v].process(shifted) * vg * gate;
+                    wetL += g * this.panL[v];
+                    wetR += g * this.panR[v];
+                }
+                wetL += consonant;
+                wetR += consonant;
+            }
+
+            if (outR) {
+                outL[i] = dry * dryG + wetL * wetScale;
+                outR[i] = dry * dryG + wetR * wetScale;
+            } else {
+                outL[i] = dry * dryG + (wetL + wetR) * 0.7071 * wetScale;
+            }
+            this.wAbs = w + 1;
+        }
+
+        this.levelActive = this.level > 0.0006;
+        if (!this.levelActive) this.rmsSum = this.rmsCount = 0;
+        this.runDetector();
+        return true;
+    }
+}
+registerProcessor('harmony-processor', HarmonyProcessor);
+`;
+    document.head.appendChild(el);
+})();
+
+// =============================================
 // MODULE: EFFECTS (effects.js)
 // =============================================
 
@@ -930,6 +1530,20 @@ const effects = {
         panSpeed: 0,
         panDepth: 0.8
     },
+    // h1..h4 are scale degrees in the selected mode, so the same number means a
+    // third in major/minor and a semitone in chromatic.
+    harmony: {
+        mix: 0.5,
+        volume: 1.0,
+        voices: 2,
+        mode: 1,
+        key: 0,
+        h1: 2,
+        h2: 4,
+        h3: -3,
+        h4: 6,
+        humanize: 0.5
+    },
     griz: {
         rate: 4.0,
         wave: 1,
@@ -988,6 +1602,7 @@ const effectColors = {
     compressor: 'lightgreen',
     arpDelay: '#e0f',
     dusk: 'SlateBlue',
+    harmony: '#F5F5DC',
     griz: 'gray',
     zigZ: '#ff00ff',
     reverse: 'white', 
@@ -998,12 +1613,12 @@ const effectColors = {
 const DEFAULT_GLOBAL_PRESETS = {
     "Init / Clean": {
         chain: "QCATFODBVKZG",
-        active: { eq: false, compressor: false, reverb: false, dusk: false, delay: false, distortion: false, fuzz: false, overdrive: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false },
+        active: { eq: false, compressor: false, reverb: false, dusk: false, delay: false, distortion: false, fuzz: false, overdrive: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
         params: JSON.parse(JSON.stringify(effects))
     },
     "Voice (Lead)": { 
         chain: "CQBATFODVKZG", 
-        active: { eq: true, compressor: true, reverb: true, dusk: false, delay: false, distortion: false, fuzz: false, overdrive: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false },
+        active: { eq: true, compressor: true, reverb: true, dusk: false, delay: false, distortion: false, fuzz: false, overdrive: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
             eq: { ...effects.eq, lcFreq: 110, p1Freq: 1000, p1Gain: -4.0, p1Q: 2.0, hsFreq: 8000, hsGain: 2.0, hcFreq: 18000 },
@@ -1013,7 +1628,7 @@ const DEFAULT_GLOBAL_PRESETS = {
     },
     "Drums (Punch)": {
         chain: "CTQAFODBVKZG",
-        active: { eq: true, compressor: true, reverb: true, distortion: true, dusk: false, delay: false, fuzz: false, overdrive: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false },
+        active: { eq: true, compressor: true, reverb: true, distortion: true, dusk: false, delay: false, fuzz: false, overdrive: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
             eq: { ...effects.eq, lcFreq: 30, lsFreq: 60, lsGain: 3.0, p1Freq: 400, p1Gain: -5.0, p1Q: 1.0, hsFreq: 8000, hsGain: 2.0 },
@@ -1024,7 +1639,7 @@ const DEFAULT_GLOBAL_PRESETS = {
     },
     "Bass (Solid)": {
         chain: "CQATFODBVKZG",
-        active: { eq: true, compressor: true, overdrive: true, dusk: false, delay: false, distortion: false, fuzz: false, reverb: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false },
+        active: { eq: true, compressor: true, overdrive: true, dusk: false, delay: false, distortion: false, fuzz: false, reverb: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
             compressor: { ...effects.compressor, threshold: -18, ratio: 8.0, attack: 0.02, release: 0.2, gain: 3.0 },
@@ -1034,7 +1649,7 @@ const DEFAULT_GLOBAL_PRESETS = {
     },
     "Guitar (Acoustic)": {
         chain: "CQKATFODBVZG",
-        active: { eq: true, compressor: true, reverb: true, dusk: true, delay: false, distortion: false, fuzz: false, overdrive: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false },
+        active: { eq: true, compressor: true, reverb: true, dusk: true, delay: false, distortion: false, fuzz: false, overdrive: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
             compressor: { ...effects.compressor, threshold: -20, ratio: 4.0, attack: 0.02, release: 0.2, gain: 3.0 },
@@ -1045,7 +1660,7 @@ const DEFAULT_GLOBAL_PRESETS = {
     },
     "Guitar (Rock)": {
         chain: "OCQATFDBVKZG",
-        active: { eq: true, overdrive: true, compressor: false, reverb: true, dusk: false, delay: false, distortion: false, fuzz: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false },
+        active: { eq: true, overdrive: true, compressor: false, reverb: true, dusk: false, delay: false, distortion: false, fuzz: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
             overdrive: { ...effects.overdrive, drive: 25, tone: 5000, mix: 1.0 },
@@ -1055,7 +1670,7 @@ const DEFAULT_GLOBAL_PRESETS = {
     },
     "Guitar (Psychedelic)": {
         chain: "ZDAQCTFOBVKG",
-        active: { eq: true, delay: true, reverb: true, zigZ: true, compressor: false, distortion: false, fuzz: false, overdrive: false, machineReverb: false, arpDelay: false, dusk: false, griz: false },
+        active: { eq: true, delay: true, reverb: true, zigZ: true, compressor: false, distortion: false, fuzz: false, overdrive: false, machineReverb: false, arpDelay: false, dusk: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
             zigZ: { rate: 2.0, depth: 1.0, phase: 0.0 },
@@ -1065,7 +1680,7 @@ const DEFAULT_GLOBAL_PRESETS = {
     },
     "Guitar (Noise)": {
         chain: "FTVQCAODBKZG",
-        active: { eq: true, distortion: true, machineReverb: true, fuzz: true, dusk: false, compressor: false, reverb: false, overdrive: false, delay: false, arpDelay: false, zigZ: false, griz: false },
+        active: { eq: true, distortion: true, machineReverb: true, fuzz: true, dusk: false, compressor: false, reverb: false, overdrive: false, delay: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
             fuzz: { ...effects.fuzz, gain: 45, bias: 0.3, tone: 2500, mix: 1.0 },
@@ -1076,7 +1691,7 @@ const DEFAULT_GLOBAL_PRESETS = {
     },
     "Style: Dub": {
         chain: "DQCATFOBVKZG",
-        active: { eq: true, delay: true, compressor: true, reverb: true, dusk: false, distortion: false, fuzz: false, overdrive: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false },
+        active: { eq: true, delay: true, compressor: true, reverb: true, dusk: false, distortion: false, fuzz: false, overdrive: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
             compressor: { ...effects.compressor, ratio: 4.0, threshold: -15, release: 0.3 },
@@ -1087,7 +1702,7 @@ const DEFAULT_GLOBAL_PRESETS = {
     },
     "Style: Noise Rock": {
         chain: "TFQCAODBVKZG",
-        active: { eq: true, fuzz: true, delay: true, compressor: false, reverb: false, distortion: false, overdrive: false, machineReverb: false, dusk: false, arpDelay: false, zigZ: false, griz: false },
+        active: { eq: true, fuzz: true, delay: true, compressor: false, reverb: false, distortion: false, overdrive: false, machineReverb: false, dusk: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
             distortion: { ...effects.distortion, amount: 40, mix: 1.0 },
@@ -1098,7 +1713,7 @@ const DEFAULT_GLOBAL_PRESETS = {
     },
     "Lo-Fi Tape": {
         chain: "ZCQDATFOBVKG",
-        active: { eq: true, zigZ: true, compressor: true, delay: true, overdrive: true, dusk: false, reverb: false, distortion: false, fuzz: false, machineReverb: false, arpDelay: false, griz: false },
+        active: { eq: true, zigZ: true, compressor: true, delay: true, overdrive: true, dusk: false, reverb: false, distortion: false, fuzz: false, machineReverb: false, arpDelay: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
             eq: { ...effects.eq, lcFreq: 150, p1Freq: 400, p1Gain: -3, hsFreq: 6000, hsGain: -4, hcFreq: 10000 },
@@ -1110,7 +1725,7 @@ const DEFAULT_GLOBAL_PRESETS = {
     },
     "Ambient Wash": {
         chain: "QKVDG",
-        active: { eq: true, dusk: true, machineReverb: true, delay: true, reverb: false, distortion: false, fuzz: false, overdrive: false, arpDelay: false, zigZ: false, compressor: false, griz: false },
+        active: { eq: true, dusk: true, machineReverb: true, delay: true, reverb: false, distortion: false, fuzz: false, overdrive: false, arpDelay: false, zigZ: false, compressor: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
             dusk: { ...effects.dusk, shimmer: 0.8, verbMix: 0.6, grainMix: 0.1, time: 3000 },
@@ -1121,7 +1736,7 @@ const DEFAULT_GLOBAL_PRESETS = {
     },
     "Drone (Deep Space)": {
         chain: "KVQCATFODBZG",
-        active: { dusk: true, machineReverb: true, eq: true, reverb: false, delay: false, distortion: false, fuzz: false, overdrive: false, arpDelay: false, zigZ: false, compressor: false, griz: false },
+        active: { dusk: true, machineReverb: true, eq: true, reverb: false, delay: false, distortion: false, fuzz: false, overdrive: false, arpDelay: false, zigZ: false, compressor: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
             dusk: { ...effects.dusk, time: 4000, grainMix: 0.3, verbMix: 0.6, shimmer: 0.4, haunt: 55 },
@@ -1131,7 +1746,7 @@ const DEFAULT_GLOBAL_PRESETS = {
     },
     "Exp (Glitch Texture)": {
         chain: "ZAFQCTODBVG",
-        active: { zigZ: true, arpDelay: true, fuzz: true, eq: true, compressor: true, reverb: false, delay: false, distortion: false, overdrive: false, machineReverb: false, dusk: false, griz: false },
+        active: { zigZ: true, arpDelay: true, fuzz: true, eq: true, compressor: true, reverb: false, delay: false, distortion: false, overdrive: false, machineReverb: false, dusk: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
             zigZ: { rate: 16.0, depth: 1.0, phase: 0.0 },
@@ -1141,7 +1756,7 @@ const DEFAULT_GLOBAL_PRESETS = {
     },
     "Style: Experimental": {
         chain: "AKZQCTFODBVG",
-        active: { arpDelay: true, dusk: true, zigZ: true, eq: false, distortion: false, machineReverb: false, compressor: false, reverb: false, fuzz: false, overdrive: false, delay: false, griz: false },
+        active: { arpDelay: true, dusk: true, zigZ: true, eq: false, distortion: false, machineReverb: false, compressor: false, reverb: false, fuzz: false, overdrive: false, delay: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
             arpDelay: { ...effects.arpDelay, time: 0.15, mix: 0.6, scale: 19, stay: 0 },
@@ -1151,7 +1766,7 @@ const DEFAULT_GLOBAL_PRESETS = {
     },
     "Style: Rock": {
         chain: "OCQATFDBVKZG",
-        active: { overdrive: true, compressor: true, eq: true, reverb: false, dusk: false, delay: false, distortion: false, fuzz: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false },
+        active: { overdrive: true, compressor: true, eq: true, reverb: false, dusk: false, delay: false, distortion: false, fuzz: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
             compressor: { ...effects.compressor, threshold: -18, ratio: 4.0 },
@@ -1161,7 +1776,7 @@ const DEFAULT_GLOBAL_PRESETS = {
     },
     "Master (Glue)": {
         chain: "QCG",
-        active: { eq: true, compressor: true, reverb: false, dusk: false, delay: false, distortion: false, fuzz: false, overdrive: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false },
+        active: { eq: true, compressor: true, reverb: false, dusk: false, delay: false, distortion: false, fuzz: false, overdrive: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
             eq: { ...effects.eq, lcFreq: 30, lsFreq: 80, lsGain: 2.0, p1Freq: 500, p1Gain: -1.0, p1Q: 0.7, hsFreq: 12000, hsGain: 2.0 },
@@ -1170,7 +1785,7 @@ const DEFAULT_GLOBAL_PRESETS = {
     },
     "Voice (Radio)": {
         chain: "CQTAFODBVKZG",
-        active: { eq: true, compressor: true, distortion: true, delay: true, reverb: false, dusk: false, fuzz: false, overdrive: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false },
+        active: { eq: true, compressor: true, distortion: true, delay: true, reverb: false, dusk: false, fuzz: false, overdrive: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
             eq: { ...effects.eq, lcFreq: 300, hcFreq: 4000, p1Freq: 1500, p1Gain: 6.0, p1Q: 2.0 },
@@ -1344,6 +1959,24 @@ const GRIZ_PRESETS = {
     'bandpass-sweep': { rate: 2.0, wave: 0, depth: 0.9, bias: 0.5, drive: 20.0, vcfMode: 2, mix: 0.8 }
 };
 
+// mode: 0 = chromatic (degrees are semitones), 1 = major, 2 = natural minor.
+const HARMONY_PRESETS = {
+    'default': { voices: 2, mode: 1, key: 0, h1: 2, h2: 4, h3: -3, h4: 6, humanize: 0.5, mix: 0.5 },
+    'beach-boys': { voices: 3, mode: 1, key: 0, h1: 2, h2: 4, h3: -3, h4: 6, humanize: 0.65, mix: 0.5 },
+    'gospel-stack': { voices: 4, mode: 1, key: 0, h1: 2, h2: 4, h3: 6, h4: -3, humanize: 0.75, mix: 0.55 },
+    'barbershop': { voices: 3, mode: 0, key: 0, h1: 4, h2: -5, h3: -12, h4: 7, humanize: 0.5, mix: 0.5 },
+    'sweet-thirds': { voices: 1, mode: 1, key: 0, h1: 2, h2: 4, h3: -3, h4: 6, humanize: 0.4, mix: 0.45 },
+    'octave-up': { voices: 1, mode: 0, key: 0, h1: 12, h2: 4, h3: -3, h4: 6, humanize: 0.3, mix: 0.5 },
+    'octaves': { voices: 2, mode: 0, key: 0, h1: 12, h2: -12, h3: -3, h4: 6, humanize: 0.35, mix: 0.5 },
+    'angel-choir': { voices: 4, mode: 1, key: 0, h1: 2, h2: 4, h3: 6, h4: -5, humanize: 0.9, mix: 0.65 },
+    'dark-minor': { voices: 3, mode: 2, key: 0, h1: 2, h2: 4, h3: -3, h4: 6, humanize: 0.5, mix: 0.5 },
+    'dissonant': { voices: 2, mode: 0, key: 0, h1: 1, h2: 6, h3: -3, h4: 6, humanize: 0.25, mix: 0.5 },
+    'evil': { voices: 3, mode: 0, key: 0, h1: 6, h2: 1, h3: -6, h4: 6, humanize: 0.3, mix: 0.55 },
+    'demonic': { voices: 4, mode: 0, key: 0, h1: -1, h2: 6, h3: 11, h4: -12, humanize: 0.45, mix: 0.6, volume: 0.9 },
+    'tone-cluster': { voices: 3, mode: 0, key: 0, h1: 1, h2: 2, h3: -1, h4: 6, humanize: 0.2, mix: 0.5 },
+    'tritone': { voices: 1, mode: 0, key: 0, h1: 6, h2: 4, h3: -3, h4: 6, humanize: 0.2, mix: 0.5 }
+};
+
 const EQ_PRESETS = {
     'Drums': { lcFreq: 30, lsFreq: 80, lsGain: 3, p1Freq: 400, p1Gain: -4, p1Q: 1.0, hsFreq: 8000, hsGain: 3, hcFreq: 18000 },
     'Low End Clean': { lcFreq: 40, lsFreq: 120, lsGain: -2, p1Freq: 300, p1Gain: -4, p1Q: 0.7, hsFreq: 5000, hsGain: 0, hcFreq: 22000 },
@@ -1440,6 +2073,31 @@ const UI_CONFIG = {
             { l: 'Pan Spd', p: 'panSpeed', min: 0, max: 5, step: 0.1, def: 0 }
         ]
     },
+    'H': { key: 'harmony', title: 'HARMONY (H)', color: '#F5F5DC', presets: 'HARMONY_PRESETS',
+        extraHtml: (p) => {
+            const modes = ['Chromatic', 'Major', 'Minor'];
+            const notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+            const sel = (list, cur, label, fn) => {
+                const c = (cur === undefined) ? 0 : Math.round(cur);
+                return `<div class="preset-row"><label>${label}:</label>
+                    <select onchange="${fn}" style="flex:1;" aria-label="Harmony ${label}">
+                    ${list.map((n, i) => `<option value="${i}" ${c === i ? 'selected' : ''}>${n}</option>`).join('')}
+                    </select></div>`;
+            };
+            return sel(modes, p.mode, 'Scale', "EffectManager.update('harmony','mode',parseInt(this.value))")
+                 + sel(notes, p.key, 'Key', "EffectManager.update('harmony','key',parseInt(this.value))");
+        },
+        controls: [
+            { l: 'Voices', p: 'voices', min: 1, max: 4, step: 1 },
+            { l: 'Voice 1', p: 'h1', min: -12, max: 12, step: 1 },
+            { l: 'Voice 2', p: 'h2', min: -12, max: 12, step: 1 },
+            { l: 'Voice 3', p: 'h3', min: -12, max: 12, step: 1 },
+            { l: 'Voice 4', p: 'h4', min: -12, max: 12, step: 1 },
+            { l: 'Humanize', p: 'humanize', min: 0, max: 1, step: 0.01 },
+            { l: 'Vol', p: 'volume', min: 0, max: 2, step: 0.01 },
+            { l: 'Mix', p: 'mix', min: 0, max: 1, step: 0.01 }
+        ]
+    },
     'G': { key: 'griz', title: 'GRISTLEIZER (G)', color: 'gray', presets: 'GRIZ_PRESETS',
         controls: [
             { l: 'Rate', p: 'rate', min: 0.1, max: 20, step: 0.1 },
@@ -1466,7 +2124,7 @@ window.EffectsModule = {
     DEFAULT_GLOBAL_PRESETS, DEFAULT_MIDI_CC_MAP, COMPRESSOR_PRESETS,
     DELAY_PRESETS, DISTORTION_PRESETS, FUZZ_PRESETS, OVERDRIVE_PRESETS,
     MACHINE_PRESETS, ARPDELAY_PRESETS, REVERB_PRESETS, DUSK_PRESETS,
-    ZIGZ_PRESETS, GRIZ_PRESETS, EQ_PRESETS, MASTER_EQ_PRESETS, MASTER_COMP_PRESETS, UI_CONFIG
+    ZIGZ_PRESETS, GRIZ_PRESETS, HARMONY_PRESETS, EQ_PRESETS, MASTER_EQ_PRESETS, MASTER_COMP_PRESETS, UI_CONFIG
 };
 
 // =============================================
@@ -1563,8 +2221,6 @@ window.DroneSynthModule = { DRONE_PRESETS };
 
 // =============================================
 // MODULE 7: EFFECT MANAGER
-// >>> EXTRACT TO: modules/effects.js
-// >>> Move this block (until its matching END marker) into modules/effects.js during final split.
 // =============================================
 
 class EffectManager {
@@ -1583,6 +2239,7 @@ class EffectManager {
     static DUSK_PRESETS = DUSK_PRESETS;
     static ZIGZ_PRESETS = ZIGZ_PRESETS;
     static GRIZ_PRESETS = GRIZ_PRESETS;
+    static HARMONY_PRESETS = HARMONY_PRESETS;
     static EQ_PRESETS = EQ_PRESETS;
     static MASTER_EQ_PRESETS = MASTER_EQ_PRESETS;
     static MASTER_COMP_PRESETS = MASTER_COMP_PRESETS;
@@ -1643,6 +2300,7 @@ class EffectManager {
             case 'overdrive': return nodes[4] && nodes[5] ? { type: 'drywet', dry: nodes[4].gain, wet: nodes[5].gain } : null;
             case 'compressor': return nodes[2] && nodes[3] ? { type: 'drywet', dry: nodes[2].gain, wet: nodes[3].gain } : null;
             case 'arpDelay': return nodes[0] ? { type: 'param', param: nodes[0].parameters.get('mix') } : null;
+            case 'harmony': return nodes[0] ? { type: 'param', param: nodes[0].parameters.get('mix') } : null;
             case 'dusk': return nodes[0] ? { type: 'dusk', verb: nodes[0].parameters.get('verbMix'), grain: nodes[0].parameters.get('grainMix') } : null;
             case 'griz': return nodes[1] && nodes[2] ? { type: 'drywet', dry: nodes[1].gain, wet: nodes[2].gain } : null;
             case 'zigZ': return nodes[2] ? { type: 'param', param: nodes[2].gain } : null;
@@ -1663,7 +2321,9 @@ class EffectManager {
                 AudioEngine.scheduledFade(targets.dry, 1.0 - targetMix, now, mixTimeMs);
                 AudioEngine.scheduledFade(targets.wet, targetMix, now, mixTimeMs);
             } else if (targets.type === 'param') {
-                let targetVal = (effectName === 'arpDelay') ? (p.mix !== undefined ? p.mix : 0.5) : (effectName === 'zigZ' ? (p.depth !== undefined ? p.depth : 0.7) : 1.0);
+                let targetVal = 1.0;
+                if (effectName === 'arpDelay' || effectName === 'harmony') targetVal = p.mix !== undefined ? p.mix : 0.5;
+                else if (effectName === 'zigZ') targetVal = p.depth !== undefined ? p.depth : 0.7;
                 targets.param.value = 0.0;
                 AudioEngine.scheduledFade(targets.param, targetVal, now, mixTimeMs);
             } else if (targets.type === 'dusk') {
@@ -1692,6 +2352,7 @@ class EffectManager {
                     try {
                         if (targets.type === 'drywet') { AudioEngine.scheduledFade(targets.dry, 1.0, now, mixTimeMs); AudioEngine.scheduledFade(targets.wet, 0.0, now, mixTimeMs); }
                         else if (targets.type === 'dusk') { AudioEngine.scheduledFade(targets.verb, 0.0, now, mixTimeMs); AudioEngine.scheduledFade(targets.grain, 0.0, now, mixTimeMs); }
+                        else if (targets.type === 'param') { AudioEngine.scheduledFade(targets.param, 0.0, now, mixTimeMs); }
                     } catch(e) {}
                     
                     effectsState[effectName] = false;
@@ -1766,7 +2427,7 @@ class EffectManager {
             chain = newChain;
         }
         
-        const validChars = "BVDTFOCKVQAZG"; 
+        const validChars = "BVDTFOCKQAZGH"; 
         const customChars = Object.values(state.customEffects).map(e=>e.code).join('');
         // Deduplicate chain to prevent resource leaks/control desync
         const cleanChain = [...new Set(chain.toUpperCase().split('').filter(c => (validChars + customChars).includes(c)))].join('');
@@ -1805,6 +2466,7 @@ class EffectManager {
         const nativeMap = [
              {c:'Q', n:'EQ',   k:'eq'},
              {c:'C', n:'Comp', k:'compressor'},
+             {c:'H', n:'Harm', k:'harmony'},
              {c:'T', n:'Dist', k:'distortion'},
              {c:'F', n:'Fuzz', k:'fuzz'},
              {c:'O', n:'Odrv', k:'overdrive'},
@@ -1974,6 +2636,7 @@ class EffectManager {
                 overdrive: this.OVERDRIVE_PRESETS,
                 machineReverb: this.MACHINE_PRESETS,
                 arpDelay: this.ARPDELAY_PRESETS,
+                harmony: this.HARMONY_PRESETS,
                 reverb: this.REVERB_PRESETS,
                 dusk: this.DUSK_PRESETS,
                 griz: this.GRIZ_PRESETS,
@@ -2008,7 +2671,7 @@ class EffectManager {
 
         // 2. Code Conflict Resolution
         const otherEffects = Object.values(state.customEffects).filter(e => e.name !== fxData.name);
-        const existingCodes = "QCTFODBVKAZG" + otherEffects.map(e => e.code).join('');
+        const existingCodes = "QCTFODBVKAZGH" + otherEffects.map(e => e.code).join('');
         let code = fxData.code.toUpperCase().charAt(0);
 
         if (!skipPrompt && existingCodes.includes(code)) {
@@ -2324,6 +2987,9 @@ class EffectManager {
                 case 'eq':
                    if(nodes[0] && nodes[0].parameters && nodes[0].parameters.get(param)) this.smoothSetParam(nodes[0].parameters.get(param), value, now);
                break;
+                case 'harmony':
+                   if(nodes[0] && nodes[0].parameters && nodes[0].parameters.get(param)) this.smoothSetParam(nodes[0].parameters.get(param), value, now);
+                   break;
             case 'griz':
                 if (!nodes[0]) break;
                 if (param === 'rate') this.smoothSetParam(nodes[0].parameters.get('lfoFreq'), value, now);
@@ -2364,14 +3030,14 @@ class EffectManager {
             container.innerHTML = '<div style="padding:10px; color:#666; font-size:11px; text-align:center;">[MASTER BUS SELECTED]<br>Use the Console/Mixer in "SONG MASTER" tab for global EQ & Dynamics.</div>';
             return;
         } else if (this.activeTab === 'input-bus') {
-             chain = InputManager.masterSignalChain || "QCATFODBVKZG";
+             chain = InputManager.masterSignalChain || "QCAHTFODBVKZG";
              paramsSrc = InputManager.masterParams;
              activePresets = InputManager.activePresets;
         } else if (typeof this.activeTab === 'string' && this.activeTab.startsWith('drone-')) {
              const id = parseInt(this.activeTab.split('-')[1]);
              const synth = DroneSynth.instances[id];
              if (synth) {
-                 chain = synth.signalChain || "QCATFODBVKZG";
+                 chain = synth.signalChain || "QCAHTFODBVKZG";
                  paramsSrc = synth.fxParams;
                  activePresets = synth.activePresets;
              } else {
@@ -2381,7 +3047,7 @@ class EffectManager {
         } else {
              const loop = state.loops[this.activeTab];
              if (loop) {
-                 chain = loop.signalChain || "QCATFODBVKZG";
+                 chain = loop.signalChain || "QCAHTFODBVKZG";
                  paramsSrc = loop.params;
                  activePresets = loop.activePresets || {};
              } else return; // Safety check
@@ -2759,13 +3425,13 @@ class EffectManager {
     static updateChainVisual(val) {
         const names = { 
             B:'revB', V:'reVm', D:'Dlay', T:'disTr', F:'Fuzz', 
-            O:'Odrv', C:'Comp', K:'dusK', Q:'eQ', A:'Arpd', Z:'zigZ', G:'Griz'
+            O:'Odrv', C:'Comp', H:'Harm', K:'dusK', Q:'eQ', A:'Arpd', Z:'zigZ', G:'Griz'
         };
         
         // Direct mapping to avoid fuzzy matching errors with abbreviations
         const colorMap = {
             'B': 'reverb', 'V': 'machineReverb', 'D': 'delay', 'T': 'distortion', 
-            'F': 'fuzz', 'O': 'overdrive', 'C': 'compressor', 'K': 'dusk', 'Q': 'eq', 'A': 'arpDelay', 'Z': 'zigZ', 'G': 'griz'
+            'F': 'fuzz', 'O': 'overdrive', 'C': 'compressor', 'H': 'harmony', 'K': 'dusk', 'Q': 'eq', 'A': 'arpDelay', 'Z': 'zigZ', 'G': 'griz'
         };
         
         let html = "";
@@ -3180,6 +3846,7 @@ class EffectManager {
         else if (effectName === 'arpDelay') presets = this.ARPDELAY_PRESETS;
         else if (effectName === 'griz') presets = this.GRIZ_PRESETS;
         else if (effectName === 'zigZ') presets = this.ZIGZ_PRESETS;
+        else if (effectName === 'harmony') presets = this.HARMONY_PRESETS;
 
         if (!presets || !presets[presetName]) return;
         const p = presets[presetName];
@@ -3391,5 +4058,3 @@ class EffectManager {
         this.drawEQVisualizer();
     }
 }
-
-// <<< END EXTRACT: effects.js

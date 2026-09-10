@@ -1,6 +1,6 @@
 
 // =============================================
-// MODULE: METRONOME [Extractable to metronome.js]
+// MODULE: METRONOME
 // =============================================
 // Worklet processor source: injected as a <script type="text/worklet-script">
 // element so the worklet loader (audioEngine.js) can collect it from the DOM.
@@ -100,9 +100,7 @@ registerProcessor('metronome-processor', MetronomeProcessor);
 
 
 // =============================================
-// MODULE 3: SYNC & TIMELINE MANAGEMENT [Extractable to syncManager.js]
-// >>> EXTRACT TO: modules/scales.js (time signatures)
-// >>> Move this block (until its matching END marker) into modules/scales.js during final split.
+// MODULE 3: SYNC & TIMELINE MANAGEMENT
 // =============================================
 
 class SyncManager {
@@ -410,10 +408,6 @@ class SyncManager {
     }
 }
 
-// <<< END EXTRACT: scales.js
-
-// >>> EXTRACT TO: modules/scales.js (metronome)
-// >>> Move this block (until its matching END marker) into modules/scales.js during final split.
 /**
  * Metronome Scheduler
  * Schedules clicks using the Web Audio "lookahead" technique.
@@ -520,4 +514,3 @@ class MetronomeScheduler {
     }
 }
 
-// <<< END EXTRACT: scales.js

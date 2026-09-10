@@ -1,8 +1,6 @@
 
 // =============================================
 // MODULE 9.5: TRACKER MANAGER
-// >>> EXTRACT TO: modules/tracker.js
-// >>> Move this block (until its matching END marker) into modules/tracker.js during final split.
 // =============================================
 
 class TrackerManager {
@@ -1074,4 +1072,3 @@ class SampleLab {
     }
 }
 
-// <<< END EXTRACT: tracker.js

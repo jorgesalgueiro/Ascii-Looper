@@ -1,6 +1,6 @@
 
 // =============================================
-// MODULE 1.5: INTERNATIONALIZATION (I18N) [Extractable to i18n.js]
+// MODULE 1.5: INTERNATIONALIZATION (I18N)
 // =============================================
 const I18n = {
     lang: 'en',

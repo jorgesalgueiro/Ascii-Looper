@@ -6,7 +6,7 @@
 // MODULE 1: CONSTANTS & GLOBALS
 // =============================================
 
-const VERSION = "v0.76.00"; // Version aligned with blueprint
+const VERSION = "v0.76.01"; // Version aligned with blueprint
 let MAX_LOOPS = 10;
 const SAMPLER_HOTKEYS = ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'ç']; // Specific to Sampler Tracks
 const AUDIO_FORMATS= {
@@ -2066,6 +2066,7 @@ class InputChannel {
         this.monitor = false; // Default OFF to prevent feedback loops on startup
         this.deviceId = 'default';
         this.channelMode = 'stereo'; // Default to Stereo, user chooses L/R if mono source
+        this.channelModeUserSet = false; // true once the user picks L/R/ST manually (blocks auto-detect)
     }
 }
 
@@ -2075,10 +2076,10 @@ class InputManager {
     static masterGain = null; // Final gain before recording/monitoring
     static masterChain = { nodes: {}, end: null }; // Effects nodes
     static masterParams = JSON.parse(JSON.stringify(effects)); // Global Input FX params
-    static masterSignalChain = "QCATFODBVKZG";
+    static masterSignalChain = "QCAHTFODBVKZG";
     static masterEffectsState = { 
         reverb: false, machineReverb: false, delay: false, distortion: false, 
-        fuzz: false, overdrive: false, compressor: false, dusk: false, arpDelay: false, eq: false, zigZ: false, griz: false
+        fuzz: false, overdrive: false, compressor: false, dusk: false, arpDelay: false, eq: false, zigZ: false, griz: false, harmony: false
     }; // Toggles
     static inputBus = null; // Node where all inputs sum BEFORE effects
     static masterVolume = 1.0;
@@ -2193,6 +2194,7 @@ class InputManager {
             input.source = state.audioContext.createMediaStreamSource(input.stream);
 
             this.rebuildInputGraph(id);
+            this.detectActiveChannel(input);
             this.lastInputError = null;
             return true;
 
@@ -2419,8 +2421,81 @@ class InputManager {
     static setChannelMode(id, mode) {
         const input = state.inputs[id];
         if (!input || input.channelMode === mode) return;
+        this.stopChannelDetect(input);
         input.channelMode = mode;
+        input.channelModeUserSet = true;
         this.rebuildInputGraph(id); // Re-route audio without re-requesting stream
+    }
+
+    // Interfaces like the Topping E2x2 deliver inputs 1+2 as one stereo pair;
+    // if the signal sits on only one side, route that channel through (mono,
+    // centred) instead of leaving it hard-panned. Runs for a few seconds after
+    // init unless the user already picked a mode manually.
+    static detectActiveChannel(input) {
+        this.stopChannelDetect(input);
+        if (!input.source || input.source.channelCount < 2 || input.channelModeUserSet) return;
+
+        const ctx = state.audioContext;
+        const split = ctx.createChannelSplitter(2);
+        const anL = ctx.createAnalyser(); anL.fftSize = 1024;
+        const anR = ctx.createAnalyser(); anR.fftSize = 1024;
+        input.source.connect(split);
+        split.connect(anL, 0);
+        split.connect(anR, 1);
+        input._chDetectNodes = { split, anL, anR };
+
+        const bufL = new Float32Array(anL.fftSize);
+        const bufR = new Float32Array(anR.fftSize);
+        const peak = buf => {
+            let m = 0;
+            for (let i = 0; i < buf.length; i++) {
+                const v = buf[i] < 0 ? -buf[i] : buf[i];
+                if (v > m) m = v;
+            }
+            return m;
+        };
+
+        let polls = 0, runL = 0, runR = 0, runBoth = 0;
+        input._chDetect = setInterval(() => {
+            if (!input.source) { this.stopChannelDetect(input); return; }
+            anL.getFloatTimeDomainData(bufL);
+            anR.getFloatTimeDomainData(bufR);
+            const l = peak(bufL), r = peak(bufR);
+            polls++;
+
+            if (l > 0.02 && l >= r * 6)      { runL++; runR = 0; runBoth = 0; }
+            else if (r > 0.02 && r >= l * 6) { runR++; runL = 0; runBoth = 0; }
+            else if (l > 0.02 && r > 0.02)   { runBoth++; runL = 0; runR = 0; }
+            else                             { runL = Math.max(0, runL - 1); runR = Math.max(0, runR - 1); }
+
+            let decision = null;
+            if (runL >= 3) decision = 'left';
+            else if (runR >= 3) decision = 'right';
+            else if (runBoth >= 5) decision = 'stereo'; // True stereo source: leave it alone
+
+            if (decision || polls >= 50) { // ~4 s window
+                this.stopChannelDetect(input);
+                if (decision && decision !== 'stereo' && input.channelMode === 'stereo' && !input.channelModeUserSet) {
+                    input.channelMode = decision;
+                    this.rebuildInputGraph(input.id);
+                    this.renderUI();
+                    if (window.DebugManager && DebugManager.enabled) {
+                        console.log(`[input ${input.id + 1}] auto-selected ${decision.toUpperCase()} channel (signal on one side only)`);
+                    }
+                }
+            }
+        }, 80);
+    }
+
+    static stopChannelDetect(input) {
+        if (input._chDetect) { clearInterval(input._chDetect); input._chDetect = null; }
+        const n = input._chDetectNodes;
+        if (n) {
+            try { n.split.disconnect(); } catch(e) {}
+            try { n.anL.disconnect(); } catch(e) {}
+            try { n.anR.disconnect(); } catch(e) {}
+            input._chDetectNodes = null;
+        }
     }
 
     static getRecordingNode() {
@@ -2599,7 +2674,8 @@ class InputManager {
                     ${isSys ? '<option>APP/SYS AUDIO</option>' : ''}
                 </select>
 
-                <select style="width:35px; font-size:9px; text-align:center; background:#111; color:#ccc;" onchange="InputManager.setChannelMode(${inp.id}, this.value)" title="Input Mode: Left / Right / Stereo" aria-label="Input Channel Mode">
+                <span style="color:#888; font-size:8px;" aria-hidden="true">CH</span>
+                <select style="width:38px; font-size:9px; text-align:center; background:#111; color:#ccc;" onchange="InputManager.setChannelMode(${inp.id}, this.value)" title="Input channel: L = left only, R = right only, ST = stereo. Auto-selects the channel with signal if the other is silent." aria-label="Input Channel Mode">
                     <option value="left" ${inp.channelMode==='left'?'selected':''}>L</option>
                     <option value="right" ${inp.channelMode==='right'?'selected':''}>R</option>
                     <option value="stereo" ${inp.channelMode==='stereo'?'selected':''}>ST</option>
@@ -2670,7 +2746,8 @@ class InputManager {
             'K': { key: 'dusk', label: 'dusK' },
             'Q': { key: 'eq', label: 'eQ' },
             'Z': { key: 'zigZ', label: 'zigZ' },
-            'G': { key: 'griz', label: 'Griz' }
+            'G': { key: 'griz', label: 'Griz' },
+            'H': { key: 'harmony', label: 'Harm' }
         };
 
         // Filter valid chars and deduplicate based on current chain
@@ -2767,4 +2844,4 @@ document.addEventListener('DOMContentLoaded', () => {
     if (overlayVer) overlayVer.textContent = `ASCII LOOPER ${VERSION} © jorge salgueiro`;
 });
 
-// <title>v0.76.00</title>
+// <title>v0.76.01</title>

@@ -2,7 +2,7 @@
 
 
 // =============================================
-// MODULE: LOOP TRACKS (RECORDER) [Extractable to loopTracks.js]
+// MODULE: LOOP TRACKS (RECORDER)
 // =============================================
 // Worklet processor source: injected as a <script type="text/worklet-script">
 // element so the worklet loader (audioEngine.js) can collect it from the DOM.
@@ -56,9 +56,7 @@ registerProcessor('recorder-processor', RecorderProcessor);
 })();
 
 // =============================================
-// MODULE 3.1: SAMPLER TRACKS [Extractable to loopTracks.js]
-// >>> EXTRACT TO: modules/loopTracks.js
-// >>> Move this block (until its matching END marker) into modules/loopTracks.js during final split.
+// MODULE 3.1: SAMPLER TRACKS
 // =============================================
 class SamplerTrack {
     constructor(id) {
@@ -365,13 +363,10 @@ class SamplerManager {
     }
 }
 
-// <<< END EXTRACT: loopTracks.js
-
 
 
 // =============================================
-// MODULE 4.5: AUDIO GRAPH (LOOP PLAYBACK) [Extractable to loopTracks.js]
-// >>> EXTRACT TO: modules/loopTracks.js
+// MODULE 4.5: AUDIO GRAPH (LOOP PLAYBACK)
 // =============================================
 
 
@@ -574,7 +569,7 @@ class AudioGraph {
         this.nodes.effects = {};
         
         // Process each effect in signal chain order
-        const chain = this.loop.signalChain || "QCATFODBVKZG";
+        const chain = this.loop.signalChain || "QCAHTFODBVKZG";
         for (const effectChar of chain) {
             const effectName = this._getEffectByChar(effectChar);
             if (effectName && this.loop.effects[effectName]) {
@@ -671,7 +666,6 @@ class AudioGraph {
         }
 
         // 2. Check Native Effects
-        // Order: QCTFODBVKA
         const nativeMap = {
             'B': 'reverb',
             'V': 'machineReverb', 
@@ -680,6 +674,7 @@ class AudioGraph {
             'F': 'fuzz',
             'O': 'overdrive',
             'C': 'compressor',
+            'H': 'harmony',
             'A': 'arpDelay',
             'K': 'dusk',
             'Q': 'eq',
@@ -707,6 +702,7 @@ class AudioGraph {
             case 'overdrive':     return this._createOverdrive(inputNode);
 			case 'compressor':    return this._createCompressor(inputNode);
             case 'dusk':          return this._createDusk(inputNode);
+            case 'harmony':       return this._createHarmony(inputNode);
             case 'arpDelay':      return this._createArpDelay(inputNode);
             case 'eq':            return this._createEQ(inputNode);
             case 'zigZ':          return this._createZigZ(inputNode);
@@ -1140,6 +1136,40 @@ class AudioGraph {
         return { output: duskNode, nodes: nodes };
     }
 
+    /**
+     * Creates the Harmony vocal-harmonizer effect.
+     * The worklet blends dry and wet internally, so nodes[0] is also the output
+     * and doubles as the crossfade target for fade-in/out.
+     */
+    _createHarmony(inputNode) {
+        const d = effects.harmony;
+        const p = this.loop.params.harmony || d;
+        let node;
+        try {
+            node = new AudioWorkletNode(state.audioContext, 'harmony-processor', {
+                outputChannelCount: [2],
+                parameterData: {
+                    mix: p.mix ?? d.mix,
+                    volume: p.volume ?? d.volume,
+                    voices: p.voices ?? d.voices,
+                    mode: p.mode ?? d.mode,
+                    key: p.key ?? d.key,
+                    h1: p.h1 ?? d.h1,
+                    h2: p.h2 ?? d.h2,
+                    h3: p.h3 ?? d.h3,
+                    h4: p.h4 ?? d.h4,
+                    humanize: p.humanize ?? d.humanize
+                }
+            });
+        } catch (e) {
+            console.error("Harmony worklet failed:", e);
+            return { output: inputNode, nodes: [] };
+        }
+
+        inputNode.connect(node);
+        return { output: node, nodes: [node] };
+    }
+
     _addAutoPanToWet(wetNode, outputNode, rate, depth, nodesArray) {
         // Insert Panner between Wet and Output
         wetNode.disconnect();
@@ -1473,8 +1503,6 @@ class SoloManager {
 
 // =============================================
 // MODULE 5: LOOP CLASS, MANAGER, & UI
-// >>> EXTRACT TO: modules/loopTracks.js
-// >>> Move this block (until its matching END marker) into modules/loopTracks.js during final split.
 // =============================================
 
 /**
@@ -1507,7 +1535,7 @@ class Loop {
        this.peak = { value: 0, lastUpdate: 0 };
        this.visual = { rms: 0, peak: 0 }; // For smoothed ASCII meter
         // Effects
-        this.signalChain = "QCATFODBVKZG";
+        this.signalChain = "QCAHTFODBVKZG";
         this.effects = {
             reverb: false, 
             dusk: false,
@@ -1521,7 +1549,8 @@ class Loop {
             arpDelay: false,
             eq: false,
             zigZ: false,
-            griz: false
+            griz: false,
+            harmony: false
         };
         
         // Playback
@@ -1735,7 +1764,7 @@ class Loop {
      * Sets the signal chain for this loop and rebuilds the graph if playing.
      */
     setSignalChain(chain) {
-        this.signalChain = chain || "QCATFODBVKZG";
+        this.signalChain = chain || "QCAHTFODBVKZG";
         if (this.state === 'playing' && this.graph) {
             this.graph.rebuild();
         }
@@ -3097,14 +3126,15 @@ class UIManager {
             'K': { key: 'dusk', label: 'dusK' },
             'Q': { key: 'eq', label: 'eQ' },
                 'Z': { key: 'zigZ', label: 'zigZ' },
-                'G': { key: 'griz', label: 'Griz' }
+                'G': { key: 'griz', label: 'Griz' },
+                'H': { key: 'harmony', label: 'Harm' }
             };
             
             // Add reverse effect first (not in signal chain)
             html += UIManager.createEffectToggleHTML(loop, index, 'reverse', 'Rvers', prefix);
         
         // Add other effects in signal chain order
-        const uniqueChain = [...new Set((loop.signalChain || "QCATFODBVKZG").split(''))].join('');
+        const uniqueChain = [...new Set((loop.signalChain || "QCAHTFODBVKZG").split(''))].join('');
         for (const char of uniqueChain) {
             const effect = effectMap[char];
             if (effect) {
@@ -4158,5 +4188,4 @@ class UIManager {
     }
 }
 
-// <<< END EXTRACT: loopTracks.js
 

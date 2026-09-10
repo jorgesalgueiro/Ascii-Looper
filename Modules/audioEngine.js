@@ -1,12 +1,12 @@
 
 // =============================================
-// MODULE 2: CORE AUDIO ENGINE [Extractable to audioEngine.js]
+// MODULE 2: CORE AUDIO ENGINE
 // =============================================
 
 
 // Audio Worklet Processors
 // =============================================
-// MODULE: AUDIO ENGINE (CORE) [Extractable to audioEngine.js]
+// MODULE: AUDIO ENGINE (CORE)
 // =============================================
 // Worklet processor source: injected as a <script type="text/worklet-script">
 // element so the worklet loader (below) can collect it from the DOM.

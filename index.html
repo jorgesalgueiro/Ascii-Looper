@@ -8,13 +8,13 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#291a0a">
     <meta name="description" content="ASCII Looper - High-performance browser-based 20-track loop station with effects and sequencing.">
-    <title>ASCII Looper v0.76.00</title>
+    <title>ASCII Looper v0.76.01</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="styles.css">
     <link rel="dns-prefetch" href="//www.google.com">
 
     <!-- ============================================= -->
-    <!-- MODULE IMPORTS (Prepared for Extraction)      -->
+    <!-- MODULE IMPORTS                                -->
     <!-- ============================================= -->
     <script type="module">
         import {SoundTouch, SimpleFilter} from "https://cdn.jsdelivr.net/npm/soundtouchjs@0.1.30/dist/soundtouch.min.js";
@@ -376,10 +376,10 @@
                     </div>
                     <hr style="border:0; border-bottom:1px dashed #444; margin:5px 0;">
                     <div class="preset-row">
-                        <input type="text" id="effectSignalChain" value="QCATFODBVKZG" style="flex:2;" placeholder="Order (e.g. TF)" oninput="this.value = this.value.toUpperCase(); EffectManager.updateChainVisual(this.value)" aria-label="Effects Chain Order">
-                        <span style="font-size: 9px; color: #666;">(B,M,D,T,F,O,C,K,Q,A,Z,G)</span>
+                        <input type="text" id="effectSignalChain" value="QCAHTFODBVKZG" style="flex:2;" placeholder="Order (e.g. TF)" oninput="this.value = this.value.toUpperCase(); EffectManager.updateChainVisual(this.value)" aria-label="Effects Chain Order">
+                        <span style="font-size: 9px; color: #666;">(B,M,D,T,F,O,C,K,Q,A,Z,G,H)</span>
                     </div>
-                    <div id="chainVisualDisplay" class="chain-visual">eQ > Comp > Dist > Fuzz > Odrv > Dly > RevB > reVm > dusK > ArpD > ZigZ > Griz</div>
+                    <div id="chainVisualDisplay" class="chain-visual">eQ > Comp > Harm > Dist > Fuzz > Odrv > Dly > RevB > reVm > dusK > ArpD > ZigZ > Griz</div>
                     <div id="fxChainLegend" class="chain-legend" style="max-width: 100%;"></div>
                 </div>
             </div>
@@ -703,7 +703,7 @@
 
     <!-- 
       =============================================
-      NEW: START OVERLAY
+      START OVERLAY
       =============================================
       This overlay forces a user interaction (click)
       before initializing audio, which is required by
@@ -805,8 +805,7 @@
     <div id="startupError" style="color: #f00; font-weight: bold; display: none; margin-top: 10px; border: 1px solid #f00; padding: 10px;"></div>
     <p id="loadingText" style="display:none; color: #0f0;">Initializing Audio Subsystem...</p>
 </div>
-<!-- MODULARIZATION: prepared script slots (keep commented while app is monolithic).
-     Load order matters: data modules first, then engines, then managers, then main. -->
+<!-- Module scripts: load order matters — data modules first, then engines, then managers, then main. -->
 <script src="./Modules/i18n.js" defer></script>
 <script src="./Modules/effects.js" defer></script>
 <script src="./Modules/scales.js" defer></script>

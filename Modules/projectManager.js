@@ -1,10 +1,7 @@
 
 
 // =============================================
-// =============================================
 // MODULE 6: PROJECT MANAGEMENT
-// >>> EXTRACT TO: modules/projectManager.js
-// >>> Move this block (until its matching END marker) into modules/projectManager.js during final split.
 // =============================================
 
 class ProjectManager {
@@ -143,6 +140,8 @@ class ProjectManager {
                     reverb: EffectManager.REVERB_PRESETS,
                     dusk: EffectManager.DUSK_PRESETS,
                     zigZ: EffectManager.ZIGZ_PRESETS,
+                    griz: EffectManager.GRIZ_PRESETS,
+                    harmony: EffectManager.HARMONY_PRESETS,
                     eq: EffectManager.EQ_PRESETS
                 }
             };
@@ -479,7 +478,7 @@ class ProjectManager {
             loop.playbackRate = loopData.playbackRate ?? 1.0;
             loop.feedback = loopData.feedback ?? 0.80;
             loop.startDelay = loopData.startDelay || 0.0;
-            loop.signalChain = loopData.signalChain || "QCATFODBVKZG";
+            loop.signalChain = loopData.signalChain || "QCAHTFODBVKZG";
             loop.originalBpm = loopData.originalBpm || state.bpm;
             loop.state = (loop.audioBuffer) ? 'stopped' : 'empty';
             if (loopData.activePresets) loop.activePresets = loopData.activePresets;
@@ -790,4 +789,3 @@ class ProjectManager {
 }
 
 
-// <<< END EXTRACT: projectManager.js
