@@ -1518,6 +1518,7 @@ class App {
             if (timestamp - last30FpsTime >= 33.3) {
                 last30FpsTime = timestamp;
                 UIManager.updateLoopDisplays();
+                if (window.LoopManager && state.syncEnabled) LoopManager.realignDriftedLoops();
             }
 
             // 10 FPS - Low priority (Text Time Displays)
@@ -1552,14 +1553,14 @@ class App {
 
 	static updateMeters() {
 		const lerp = (a, b, t) => a + (b - a) * t;
-		const clipLevel = 0.95; 
-        const peakHoldTime = 500;
+		const clipLevel = 0.95;
+        const peakHoldTime = 0.5; // Seconds on the audio clock so holds survive context suspends
         const rmsSmoothFactor = 0.3;
         const peakSmoothFactor = 0.2;
- 
+
         const updateAsciiMeter = (analyser, data, audioPeakState, visualState, el, width, prefix, defaultColor, sliders = []) => {
             if (!audioPeakState || !visualState) return audioPeakState;
-            const now = performance.now();
+            const now = AudioEngine.currentTime;
             let currentLinearPeak = 0;
             let rms = 0;
  

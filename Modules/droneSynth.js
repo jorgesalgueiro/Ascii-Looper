@@ -46,6 +46,8 @@ class SynthInstance {
             vels: Array(64).fill(1) // per-step velocity (volume) 0..1
         };
         this.nextStepTime = 0;
+        this.startTime = 0;
+        this.stopTime = 0;
         this.stepIndex = 0;
         this.lastVisualIndex = -1;
         this.muted = false;
@@ -1015,39 +1017,23 @@ class DroneSynth {
         }
     }
 
-    static togglePlay(id, fromTracker = false) {
+    static togglePlay(id, fromTracker = false, scheduledTime = 0) {
         if (!fromTracker && EffectManager.activeTab !== 'drone-' + id) EffectManager.setActiveTab('drone-' + id);
         const synth = this.instances[id];
-        if(!synth) return;
-        
-        if (synth.state === 'playing' || synth.state === 'armed') {
-             if (!fromTracker && window.TrackerManager) TrackerManager.logLiveEvent(MAX_LOOPS + id, 'OFF');
-             
-             if (synth.startTimeout) { clearTimeout(synth.startTimeout); synth.startTimeout = null; }
+        if (!synth) return;
 
-             if (state.syncEnabled && synth.state === 'playing') {
-                 synth.state = 'stopping';
-                 const offset = SyncManager.getQuantizeOffset();
-                 if (synth.stopTimeout) clearTimeout(synth.stopTimeout);
-                 synth.stopTimeout = setTimeout(() => this._stopSynth(id), offset * 1000);
-             } else {
-                 this._stopSynth(id);
-             }
+        const now = AudioEngine.currentTime;
+        const targetTime = scheduledTime > now
+            ? scheduledTime
+            : (state.syncEnabled ? SyncManager.getNextGridTime() : now);
+
+        if (synth.state === 'playing' || synth.state === 'armed') {
+            if (!fromTracker && window.TrackerManager) TrackerManager.logLiveEvent(MAX_LOOPS + id, 'OFF');
+            if (synth.state === 'armed') this._stopSynth(id);
+            else this._stopSynth(id, targetTime);
         } else if (synth.state === 'stopped' || synth.state === 'stopping') {
             if (!fromTracker && window.TrackerManager) TrackerManager.logLiveEvent(MAX_LOOPS + id, 'ON');
-            
-            if (synth.stopTimeout) { clearTimeout(synth.stopTimeout); synth.stopTimeout = null; }
-
-            if (state.syncEnabled) {
-                synth.state = 'armed';
-                const offset = SyncManager.getQuantizeOffset();
-                if (synth.startTimeout) clearTimeout(synth.startTimeout);
-                synth.startTimeout = setTimeout(() => {
-                    if (synth.state === 'armed') this._startSynth(id);
-                }, offset * 1000);
-            } else {
-                this._startSynth(id);
-            }
+            this._startSynth(id, targetTime);
         }
         this.updateDroneUI(id);
     }
@@ -1116,24 +1102,74 @@ class DroneSynth {
         if(window.UIManager && UIManager.updateLiveDrone) UIManager.updateLiveDrone(id);
     }
 
-    static _startSynth(id) {
+    static _startSynth(id, scheduledTime = 0) {
         const synth = this.instances[id];
+        if (!synth || !state.audioContext) return;
         if (synth.startTimeout) { clearTimeout(synth.startTimeout); synth.startTimeout = null; }
-        synth.state = 'playing';
-        synth.nextStepTime = 0;
-        if (!state.syncEnabled) synth.stepIndex = 0;
-        synth.lastFreq = null; // Reset glide tracking
-        if(state.audioContext && state.audioContext.state === 'suspended') AudioEngine.resume();
+        if (synth.stopTimeout) { clearTimeout(synth.stopTimeout); synth.stopTimeout = null; }
+
+        const now = AudioEngine.currentTime;
+        const targetTime = scheduledTime > now ? scheduledTime : now;
+        synth.startTime = targetTime;
+        synth.stopTime = 0;
+        synth.nextStepTime = targetTime;
+        if (state.syncEnabled && state.masterStartTime > 0) {
+            const rate = (Number.isFinite(synth.params.rate) && synth.params.rate > 0) ? synth.params.rate : 8;
+            const stepDur = (60 / Math.max(10, state.bpm || 120)) * (4 / rate);
+            const stepsElapsed = Math.round((targetTime - state.masterStartTime) / stepDur);
+            synth.stepIndex = ((stepsElapsed % (synth.params.stepsCount || 16)) + (synth.params.stepsCount || 16)) % (synth.params.stepsCount || 16);
+        } else {
+            synth.stepIndex = 0;
+        }
+        synth.state = targetTime > now + 0.001 ? 'armed' : 'playing';
+        synth.lastFreq = null;
+        if (state.audioContext.state === 'suspended') AudioEngine.resume();
+
+        if (synth.state === 'armed') {
+            synth.startTimeout = setTimeout(() => {
+                if (synth.state !== 'armed' || synth.startTime !== targetTime) return;
+                synth.state = 'playing';
+                synth.startTimeout = null;
+                this.updateDroneUI(id);
+            }, Math.max(0, targetTime - now) * 1000);
+        }
         this.updateDroneUI(id);
     }
 
-    static _stopSynth(id) {
+    static _stopSynth(id, scheduledTime = 0) {
         const synth = this.instances[id];
+        if (!synth || !state.audioContext) return;
+        if (synth.startTimeout) { clearTimeout(synth.startTimeout); synth.startTimeout = null; }
+
+        const now = AudioEngine.currentTime;
+        const targetTime = scheduledTime > now ? scheduledTime : now;
+        if (targetTime <= now + 0.001) {
+            this._finishStopSynth(id);
+            return;
+        }
+
+        synth.state = 'stopping';
+        synth.stopTime = targetTime;
+        Object.keys(synth.voices).forEach(voiceId => {
+            this.noteOff(id, voiceId, true, Math.max(now, targetTime - 0.015));
+        });
+        if (synth.stopTimeout) clearTimeout(synth.stopTimeout);
+        synth.stopTimeout = setTimeout(() => {
+            if (synth.state === 'stopping' && synth.stopTime === targetTime) this._finishStopSynth(id);
+        }, (targetTime - now) * 1000);
+        this.updateDroneUI(id);
+    }
+
+    static _finishStopSynth(id) {
+        const synth = this.instances[id];
+        if (!synth) return;
         if (synth.startTimeout) { clearTimeout(synth.startTimeout); synth.startTimeout = null; }
         if (synth.stopTimeout) { clearTimeout(synth.stopTimeout); synth.stopTimeout = null; }
         synth.state = 'stopped';
-        if(synth.voices['drone']) this.noteOff(id, 'drone');
-        if(synth.isRecording) this.toggleRecord(id);
+        synth.nextStepTime = 0;
+        synth.stopTime = 0;
+        Object.keys(synth.voices).forEach(voiceId => this.noteOff(id, voiceId, true));
+        if (synth.isRecording) this.toggleRecord(id);
         this.updateDroneUI(id);
     }
 
@@ -1780,37 +1816,33 @@ class DroneSynth {
         if(!synth.nextStepTime) synth.nextStepTime = now;
     }
 
-    static noteOff(synthId, voiceId, immediate=false) {
+    static noteOff(synthId, voiceId, immediate = false, scheduledTime = 0) {
         const synth = this.instances[synthId];
         if (!synth) return;
         const v = synth.voices[voiceId];
         if (!v) return;
         const now = state.audioContext.currentTime;
-        v.releasing = true; // Mark as releasing to prevent sequencer re-trigger
-        
-        // Release Envelope
+        const releaseStart = scheduledTime > now ? scheduledTime : now;
+        v.releasing = true;
+
         const relTime = immediate ? 0.015 : Math.max(0.005, synth.params.release || 0.1);
         if (immediate) {
-            AudioEngine.scheduledFade(v.vca, 0, now, 15);
+            AudioEngine.scheduledFade(v.vca, 0, releaseStart, 15);
         } else {
             v.vca.gain.cancelScheduledValues(now);
             try { v.vca.gain.setValueAtTime(v.vca.gain.value || 0, now); } catch(e){}
-            v.vca.gain.setTargetAtTime(0, now, relTime / 4);
+            v.vca.gain.setTargetAtTime(0, releaseStart, relTime / 4);
         }
 
-        // Smooth Filter Release
         const baseFreq = Math.max(20, synth.params.cutoff);
-        v.filter.frequency.setTargetAtTime(baseFreq, now, relTime / 4);
-        if (v.filter2) v.filter2.frequency.setTargetAtTime(baseFreq, now, relTime / 4);
-        
-        // Schedule Stop (Cleanup)
-        const stopTime = now + (immediate ? 0.1 : (relTime + 0.2));
-        
-        // Stop noise immediately at end
-        if(v.nodes[7]) { 
-            try { v.nodes[7].stop(stopTime); } catch(e){} 
+        v.filter.frequency.setTargetAtTime(baseFreq, releaseStart, relTime / 4);
+        if (v.filter2) v.filter2.frequency.setTargetAtTime(baseFreq, releaseStart, relTime / 4);
+
+        const stopTime = releaseStart + (immediate ? 0.1 : (relTime + 0.2));
+        if (v.nodes[7]) {
+            try { v.nodes[7].stop(stopTime); } catch(e) {}
         }
-        
+
         setTimeout(() => {
             DroneSynth.returnVoiceToPool(v);
             if (synth.voices[voiceId] === v) delete synth.voices[voiceId];
@@ -1961,7 +1993,7 @@ class DroneSynth {
 
     static schedule() {
         this.instances.forEach(synth => {
-            if(synth.state === 'playing' || synth.state === 'stopping') {
+            if (synth.state === 'armed' || synth.state === 'playing' || synth.state === 'stopping') {
                 this.scheduleSynth(synth);
             }
         });
@@ -1971,17 +2003,17 @@ class DroneSynth {
     static scheduleSynth(synth) {
         const ctx = state.audioContext;
         const now = ctx.currentTime;
-        const lookahead = 0.15; // Increased lookahead slightly
+        const lookahead = 0.15;
         const rate = (Number.isFinite(synth.params.rate) && synth.params.rate > 0) ? synth.params.rate : 8;
         const secPerBeat = 60 / Math.max(10, state.bpm || 120);
         const stepDur = secPerBeat * (4 / rate);
         const maxSteps = synth.params.stepsCount || 16;
+        const scheduleUntil = synth.stopTime > 0 ? Math.min(now + lookahead, synth.stopTime) : now + lookahead;
 
-        // Sync Recovery: If nextStepTime is too far in past (lag), align to grid
+        if (synth.stopTime > 0 && now >= synth.stopTime) return;
         if (!synth.nextStepTime || synth.nextStepTime < now - 0.05) {
             if (state.syncEnabled && state.masterStartTime > 0) {
                 if (now < state.masterStartTime) {
-                    // Don't burst fire in the past if master start is awaiting quantization boundary
                     synth.nextStepTime = state.masterStartTime;
                     synth.stepIndex = 0;
                 } else {
@@ -1997,7 +2029,7 @@ class DroneSynth {
             }
         }
         let safeguard = 0;
-        while (synth.nextStepTime < ctx.currentTime + lookahead && safeguard++ < 32) {
+        while (synth.nextStepTime < scheduleUntil && safeguard++ < 32) {
             if (synth.nextStepTime >= now - 0.02) {
                 this.scheduleStep(synth, synth.stepIndex, synth.nextStepTime);
             }

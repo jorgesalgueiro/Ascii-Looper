@@ -232,15 +232,21 @@ class AudioEngine {
         if (state.audioContext.state === 'closed') return false;
         
         if (state.audioContext.state === 'running') {
-            if (state.masterStartTime === 0) state.masterStartTime = state.audioContext.currentTime;
+            if (state.masterStartTime === 0) {
+                state.masterStartTime = state.audioContext.currentTime;
+                if (window.MetronomeScheduler) window.MetronomeScheduler.updateSettings();
+            }
             return true;
         }
-        
+
         try {
             // Resume context (handles suspended or interrupted states common on iOS/macOS)
             if (state.audioContext.state !== 'running') await state.audioContext.resume();
             if (state.audioContext.state === 'running') {
-                if (state.masterStartTime === 0) state.masterStartTime = state.audioContext.currentTime;
+                if (state.masterStartTime === 0) {
+                    state.masterStartTime = state.audioContext.currentTime;
+                    if (window.MetronomeScheduler) window.MetronomeScheduler.updateSettings();
+                }
                 return true;
             }
         } catch (e) {

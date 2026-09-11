@@ -502,6 +502,8 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
         // Musical expression state
         this.gRateTarget = 0; // Pitch-glide target (smooths note steps)
         this.env = 0; // Per-step pluck envelope (shapes each echo like a played note)
+        this.envTarget = 0;
+        this.envAttack = 0;
         this.scales = [
             [0, 12, 24], [0, 4, 7, 12], [0, 3, 7, 12], [0, 7, 12], [0, 2, 4, 7, 9],
             [0, 3, 5, 7, 10], [0, 2, 4, 6, 8, 10], [0, 3, 6, 9], [0, 4, 7, 11], [0, 3, 7, 10],
@@ -552,14 +554,21 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
         const range = parameters.range[0];
         const mix = parameters.mix[0];
         const humanize = parameters.humanize[0];
-        const grainSize = 2048; // Fixed grain size matching gRate calculation
+        const grainSize = 4096;
         const numCh = Math.min(output.length, this.buffer.length);
         
         let delayTime = time;
         if(sync) {
-            // Map 0..1 approx to subdivision
-            const idx = Math.floor(Math.max(0, Math.min(0.99, time/2.0)) * this.subdivs.length); // Safety clamp
-            delayTime = this.subdivs[idx] * (60/bpm);
+            let subdivision = this.subdivs[0];
+            let closest = Math.abs(time - subdivision);
+            for (let i = 1; i < this.subdivs.length; i++) {
+                const distance = Math.abs(time - this.subdivs[i]);
+                if (distance < closest) {
+                    subdivision = this.subdivs[i];
+                    closest = distance;
+                }
+            }
+            delayTime = subdivision * (60 / bpm);
         }
         
         const delaySamps = Math.max(32, Math.floor(delayTime * this.sr));
@@ -569,19 +578,22 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
         // Combine slow drift with faster wobble (tape age simulation)
         // Normalize speeds for Sample Rate independence (ref: 44100Hz)
         const srScale = 44100 / this.sr;
-        const driftSpeed = 0.0001 * srScale; // Slower, deeper drift
-        const drift2Speed = driftSpeed * 1.61803398875; // Golden-ratio rate -> evolving, non-repeating wow
-        const driftDepth = 12.0; // Increased depth for organic warp
-        const wobbleSpeed = 0.0007 * srScale; // Real tape flutter (~5Hz), not FM grit
+        const driftSpeed = 0.0001 * srScale;
+        const drift2Speed = driftSpeed * 1.61803398875;
+        const driftDepth = 5.0;
+        const wobbleSpeed = 0.0007 * srScale;
         const panSpeed = 0.0005 * srScale;
 
         // --- Musical expression coefficients (per block) ---
         // Pluck envelope: each echo decays like a played note instead of staying flat/robotic
         const pluckDecaySamps = Math.max(64, delaySamps * 0.5);
         const envDecay = Math.exp(-1 / pluckDecaySamps);
-        const sustainFloor = 0.30;
-        const glideCoef = 1 - Math.exp(-1 / (this.sr * 0.003)); // ~3ms pitch glide between steps
-        const wanderCoef = 1 - Math.exp(-1 / (this.sr * 0.15)); // ~150ms smoothed humanized wander
+        const sustainFloor = 0.38;
+        const envAttackSamps = Math.max(32, Math.min(Math.floor(this.sr * 0.012), Math.floor(delaySamps * 0.08)));
+        const envAttackCoef = 1 - Math.exp(-4 / envAttackSamps);
+        const glideSeconds = 0.008 + humanize * 0.016;
+        const glideCoef = 1 - Math.exp(-1 / (this.sr * glideSeconds));
+        const wanderCoef = 1 - Math.exp(-1 / (this.sr * 0.15));
         
         // Process sample-by-sample for correct rate and smooth envelope
         let wrPeak = 0;
@@ -627,18 +639,15 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
                 this.seqIdx = (this.seqIdx + 1) % 16;
 
                 // --- Musical expression on note change ---
-                // Human intonation: subtle random detune per step (scaled by Feel)
-                const detune = (Math.random() - 0.5) * humanize * 0.14; // +/- ~7 cents at full Feel
+                const detune = (Math.random() - 0.5) * humanize * 0.08;
                 const pitchRatio = Math.pow(2, (this.currentSemi + detune) / 12);
-                this.gRateTarget = (1.0 - pitchRatio) / grainSize; // Glided per-sample below
+                this.gRateTarget = (1.0 - pitchRatio) / grainSize;
 
-                // Humanized pluck re-trigger: downbeat accent + velocity variation
-                const accent = (this.seqIdx % 2 === 0) ? 1.0 : (1.0 - 0.25 * humanize);
-                const vel = accent * (1.0 - humanize * 0.55 * Math.random());
-                this.env = vel;
+                const accent = (this.seqIdx % 2 === 0) ? 1.0 : (1.0 - 0.10 * humanize);
+                this.envTarget = accent * (1.0 - humanize * 0.16 * Math.random());
+                this.envAttack = envAttackSamps;
 
-                // New humanized pitch-wander target for this note
-                this.driftRandTarget = (Math.random() - 0.5) * humanize * 8.0;
+                this.driftRandTarget = (Math.random() - 0.5) * humanize * 2.5;
             }
 
             // Stereo Panning LFO for grain
@@ -649,7 +658,12 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
             this.gRate += (this.gRateTarget - this.gRate) * glideCoef;
 
             // Pluck envelope: decay toward sustain floor so each echo has a note-like shape
-            this.env *= envDecay;
+            if (this.envAttack > 0) {
+                this.env += (this.envTarget - this.env) * envAttackCoef;
+                this.envAttack--;
+            } else {
+                this.env *= envDecay;
+            }
             const stepGain = sustainFloor + this.env;
 
             // 2. Grain Logic (Tighter size + Hanning Window)
@@ -660,8 +674,8 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
             const w1 = 0.5 * (1.0 - Math.cos(2.0 * Math.PI * this.gPhase));
             const w2 = 1.0 - w1;
 
-            const offset1 = Math.floor(this.gPhase * grainSize);
-            const offset2 = Math.floor(((this.gPhase + 0.5) % 1.0) * grainSize);
+            const offset1 = this.gPhase * grainSize;
+            const offset2 = ((this.gPhase + 0.5) % 1.0) * grainSize;
 
             // 3. Audio Processing
             const writePos = (this.wPtr + i) % this.bufferSize;
@@ -677,7 +691,7 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
                 const stereoMod = (ch === 0) ? 1 : -1;
                 const totalDrift = baseDrift + (flutter * 0.5 * stereoMod);
                 
-                const rPtrBase = (writePos - delaySamps + totalDrift + this.bufferSize) % this.bufferSize;
+                const rPtrBase = (writePos - delaySamps + grainSize * 0.5 + totalDrift + this.bufferSize) % this.bufferSize;
 
                 // Handle mono input for stereo output (duplicate left channel if right missing)
                 const srcCh = (input && input.length === 1) ? 0 : ch;
@@ -685,30 +699,32 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
                 const buf = this.buffer[ch];
                 
                 // Stereo Spread: Offset read heads slightly per channel, modulated by LFO
-                const stereoOffset = ((ch === 0) ? -15 : 15) + (pan * 20);
-
-                const r1 = Math.floor((rPtrBase - offset1 + stereoOffset + this.bufferSize) % this.bufferSize);
-                const r2 = Math.floor((rPtrBase - offset2 + stereoOffset + this.bufferSize) % this.bufferSize);
+                const stereoOffset = ((ch === 0) ? -8 : 8) + (pan * 10);
+                const r1Pos = (rPtrBase - offset1 + stereoOffset + this.bufferSize) % this.bufferSize;
+                const r2Pos = (rPtrBase - offset2 + stereoOffset + this.bufferSize) % this.bufferSize;
+                const r1 = Math.floor(r1Pos);
+                const r2 = Math.floor(r2Pos);
+                const r1Next = (r1 + 1 === this.bufferSize) ? 0 : r1 + 1;
+                const r2Next = (r2 + 1 === this.bufferSize) ? 0 : r2 + 1;
+                const grain1 = buf[r1] + (buf[r1Next] - buf[r1]) * (r1Pos - r1);
+                const grain2 = buf[r2] + (buf[r2Next] - buf[r2]) * (r2Pos - r2);
                 
                 // Pluck-shaped, humanized arp voice
-                const wet = ((buf[r1] * w1) + (buf[r2] * w2)) * amp * stepGain;
+                const wet = ((grain1 * w1) + (grain2 * w2)) * amp * stepGain;
                 
                 // --- Organic Feedback Loop ---
-                // 1. Tape Saturation (tanh) - adds warmth and limits peaks
-                let fbSignal = Math.tanh(wet * 1.2); // Reduced drive for cleaner tails
+                let fbSignal = Math.tanh(wet * 0.9) / 0.9;
                 
-                // 2. Bandpass Filtering (Tape heads lose high/lows)
-                // Highpass (Simple DC blocker/Mud cut)
+                // Highpass (DC blocker)
                 const hpIn = fbSignal;
-                const hpOut = 0.98 * (this.hpState[ch].out + hpIn - this.hpState[ch].in); // 0.98 ~ 140Hz cutoff
+                const hpOut = 0.995 * (this.hpState[ch].out + hpIn - this.hpState[ch].in);
                 this.hpState[ch].in = hpIn;
                 this.hpState[ch].out = hpOut;
                 if (Math.abs(hpOut) < 1e-9) this.hpState[ch].out = 0; // Flush denormal
                 fbSignal = hpOut;
 
-                // Lowpass (Simulate dub echo darkness)
-                // Coefficient 0.15 makes repeats warmer/darker (Organic tape)
-                this.lpState[ch] += (fbSignal - this.lpState[ch]) * 0.15;
+                // Lowpass (gentle tape smoothing)
+                this.lpState[ch] += (fbSignal - this.lpState[ch]) * 0.28;
                 if (Math.abs(this.lpState[ch]) < 1e-9) this.lpState[ch] = 0; // Flush denormal
                 fbSignal = this.lpState[ch];
                 
@@ -2532,7 +2548,7 @@ class EffectManager {
         }
         if (data.effectPresets) {
             for (const [fxName, presets] of Object.entries(data.effectPresets)) {
-                const targetName = fxName.toUpperCase() + '_PRESETS';
+                const targetName = fxName === 'machineReverb' ? 'MACHINE_PRESETS' : fxName.toUpperCase() + '_PRESETS';
                 if (this[targetName]) {
                     this[targetName] = { ...this[targetName], ...presets };
                 }
@@ -3702,9 +3718,9 @@ class EffectManager {
 
             loop.params = safeParams;
             loop.signalChain = newChain;
-                
-                // Reset effects
+
                 Object.keys(loop.effects).forEach(k => loop.effects[k] = false);
+                Object.assign(loop.effects, newActive);
                 
                 if (!loop.name || loop.name.startsWith("Loop ")) loop.name = presetKey;
 

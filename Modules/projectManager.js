@@ -288,7 +288,7 @@ class ProjectManager {
             }
 
             // Verify missing effects in project dependencies
-            const knownCodes = "QCTFODBVKAZG" + Object.values(state.customEffects).map(e => e.code).join('');
+            const knownCodes = "QCTFODBVKAZGH" + Object.values(state.customEffects).map(e => e.code).join('');
             const usedChains = (data.loops || []).map(l => l.signalChain || "").concat(data.inputChain || "");
             const missingEffects = new Set();
 
@@ -357,7 +357,7 @@ class ProjectManager {
 
             if (data.effectPresets) {
                 for (const [fxName, presets] of Object.entries(data.effectPresets)) {
-                    const targetName = fxName.toUpperCase() + '_PRESETS';
+                    const targetName = fxName === 'machineReverb' ? 'MACHINE_PRESETS' : fxName.toUpperCase() + '_PRESETS';
                     if (EffectManager[targetName]) {
                         EffectManager[targetName] = { ...EffectManager[targetName], ...presets };
                     }

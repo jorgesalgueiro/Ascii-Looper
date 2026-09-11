@@ -15,6 +15,7 @@ class RecorderProcessor extends AudioWorkletProcessor {
         super();
         this._recording = false;
         this._chunks = [];
+        this._startFrame = -1;
         this.port.onmessage = this.handleMessage.bind(this);
     }
     process(inputs, outputs) {
@@ -24,6 +25,7 @@ class RecorderProcessor extends AudioWorkletProcessor {
         // The recorder node connects to destination only to keep the Worklet active.
         
         if (this._recording && input && input[0] && input[0].length > 0) {
+            if (this._startFrame < 0) this._startFrame = currentFrame;
             const channels = [];
             let hasSignal = false;
             for (let c = 0; c < input.length; c++) {
@@ -43,9 +45,10 @@ class RecorderProcessor extends AudioWorkletProcessor {
         if (event.data.command === 'start') {
             this._recording = true;
             this._chunks = [];
+            this._startFrame = -1;
         } else if (event.data.command === 'stop') {
             this._recording = false;
-            this.port.postMessage({ event: 'recorded', chunks: this._chunks });
+            this.port.postMessage({ event: 'recorded', chunks: this._chunks, startFrame: this._startFrame });
             this._chunks = [];
         }
     }
@@ -80,36 +83,51 @@ class SamplerTrack {
     }
     play(time = 0) {
         if (!this.buffer || !state.audioContext) return;
-        const t = time > 0 ? time : state.audioContext.currentTime;
-        if (this.source) { try{ this.source.stop(t); } catch(e){} }
-        if (this.panNode) { try{ this.panNode.disconnect(); } catch(e){} }
-        this.source = state.audioContext.createBufferSource();
-        this.source.buffer = this.buffer;
-        this.source.playbackRate.value = this.speed;
-        this.source.loop = this.isLooping;
-        this.startTime = t;
-        this.source.onended = () => {
-            if (!this.isLooping && this.state === 'playing') {
-                this.state = 'stopped';
-                SamplerManager.renderUI();
-            }
+        const now = state.audioContext.currentTime;
+        const t = time > 0 ? time : now;
+        if (this.source) { try { this.source.stop(t); } catch(e) {} }
+
+        const source = state.audioContext.createBufferSource();
+        const gain = state.audioContext.createGain();
+        const panNode = state.audioContext.createStereoPanner();
+        source.buffer = this.buffer;
+        source.playbackRate.value = this.speed;
+        source.loop = this.isLooping;
+        gain.gain.value = (this.muted || this.isMutedBySolo) ? 0 : this.volume;
+        panNode.pan.value = (this.pan / 5.0) - 1.0;
+
+        source.onended = () => {
+            try { source.disconnect(); } catch(e) {}
+            try { gain.disconnect(); } catch(e) {}
+            try { panNode.disconnect(); } catch(e) {}
+            if (this.source !== source) return;
+            this.source = null;
+            this.gain = null;
+            this.panNode = null;
+            if (this.startTimeout) { clearTimeout(this.startTimeout); this.startTimeout = null; }
+            if (this.stopTimeout) { clearTimeout(this.stopTimeout); this.stopTimeout = null; }
+            this.state = 'stopped';
+            SamplerManager.renderUI();
         };
-        this.gain = state.audioContext.createGain();
-        this.gain.gain.value = (this.muted || this.isMutedBySolo) ? 0 : this.volume;
-        this.panNode = state.audioContext.createStereoPanner();
-        this.panNode.pan.value = (this.pan / 5.0) - 1.0;
-        this.source.connect(this.gain);
-        this.gain.connect(this.panNode);
-        AudioEngine.connectToMaster(this.panNode);
-        this.source.start(t);
-        this.state = 'playing';
+
+        source.connect(gain);
+        gain.connect(panNode);
+        AudioEngine.connectToMaster(panNode);
+        source.start(t);
+
+        this.source = source;
+        this.gain = gain;
+        this.panNode = panNode;
+        this.startTime = t;
+        this.state = t > now + 0.001 ? 'armed' : 'playing';
     }
     stop(time = 0) {
+        const now = state.audioContext ? state.audioContext.currentTime : 0;
+        const t = time > 0 ? time : now;
         if (this.source) {
-            const t = time > 0 ? time : (state.audioContext ? state.audioContext.currentTime : 0);
-            try { this.source.stop(t); } catch(e){}
+            try { this.source.stop(t); } catch(e) {}
         }
-        this.state = 'stopped';
+        this.state = t > now + 0.001 ? 'stopping' : 'stopped';
     }
 }
 
@@ -202,46 +220,53 @@ class SamplerManager {
             this.drawWaveform(id);
         }
     }
-    static togglePlay(id) {
+    static togglePlay(id, scheduledTime = 0) {
         const s = state.samplers[id];
         if (!s.buffer) return;
-        
+
+        const now = AudioEngine.currentTime;
+        const targetTime = scheduledTime > now
+            ? scheduledTime
+            : (state.syncEnabled ? SyncManager.getNextGridTime() : now);
+
         if (s.state === 'playing' || s.state === 'armed') {
-            if (s.startTimeout) { clearTimeout(s.startTimeout); s.startTimeout = null; }
-            if (state.syncEnabled && s.state === 'playing') {
-                s.state = 'stopping';
-                const offset = SyncManager.getQuantizeOffset();
-                if (s.stopTimeout) clearTimeout(s.stopTimeout);
-                s.stopTimeout = setTimeout(() => this._stopSampler(id), offset * 1000);
-            } else {
+            if (s.state === 'armed') {
                 this._stopSampler(id);
+            } else {
+                this._stopSampler(id, targetTime);
             }
         } else if (s.state === 'stopped' || s.state === 'stopping' || s.state === 'empty') {
-            if (s.stopTimeout) { clearTimeout(s.stopTimeout); s.stopTimeout = null; }
-            if (state.syncEnabled) {
-                s.state = 'armed';
-                const offset = SyncManager.getQuantizeOffset();
-                if (s.startTimeout) clearTimeout(s.startTimeout);
-                s.startTimeout = setTimeout(() => {
-                    if (s.state === 'armed') this._startSampler(id);
-                }, offset * 1000);
-            } else {
-                this._startSampler(id);
-            }
+            this._startSampler(id, targetTime);
         }
         this.renderUI();
     }
-    static _startSampler(id) {
-        const s = state.samplers[id];
-        if (s.startTimeout) { clearTimeout(s.startTimeout); s.startTimeout = null; }
-        s.play();
-        this.renderUI();
-    }
-    static _stopSampler(id) {
+    static _startSampler(id, scheduledTime = 0) {
         const s = state.samplers[id];
         if (s.startTimeout) { clearTimeout(s.startTimeout); s.startTimeout = null; }
         if (s.stopTimeout) { clearTimeout(s.stopTimeout); s.stopTimeout = null; }
-        s.stop();
+
+        const now = AudioEngine.currentTime;
+        const targetTime = scheduledTime > now ? scheduledTime : now;
+        s.play(targetTime);
+
+        if (s.state === 'armed') {
+            s.startTimeout = setTimeout(() => {
+                if (s.state !== 'armed' || s.startTime !== targetTime) return;
+                s.state = 'playing';
+                s.startTimeout = null;
+                this.renderUI();
+            }, Math.max(0, targetTime - now) * 1000);
+        }
+        this.renderUI();
+    }
+    static _stopSampler(id, scheduledTime = 0) {
+        const s = state.samplers[id];
+        if (s.startTimeout) { clearTimeout(s.startTimeout); s.startTimeout = null; }
+        if (s.stopTimeout) { clearTimeout(s.stopTimeout); s.stopTimeout = null; }
+
+        const now = AudioEngine.currentTime;
+        const targetTime = scheduledTime > now ? scheduledTime : now;
+        s.stop(targetTime);
         this.renderUI();
     }
     static toggleLoop(id) {
@@ -379,6 +404,7 @@ class AudioGraph {
         this.source = null;
         this.nodes = {}; // Holds all created AudioNodes for cleanup
         this.startTime = 0;
+        this.startOffset = 0; // Buffer offset the source was started with (for drift correction)
         this.rebuildTimer = null;
         this.isDestroyed = false;
         
@@ -438,6 +464,7 @@ class AudioGraph {
             startOffset = loopRef.startDelay * loopRef.duration;
         }
         
+        this.startOffset = startOffset;
         this.source.start(this.startTime, startOffset);
     }
 
@@ -484,6 +511,7 @@ class AudioGraph {
              } else {
                  startOffset = this.loop.startDelay * this.loop.duration;
              }
+             this.startOffset = startOffset;
              this.source.start(this.startTime, startOffset);
         } else if (state.syncEnabled && !this.loop.isMutedBySolo && !this.immediate) { 
             // Closed Tape Logic: 
@@ -499,11 +527,13 @@ class AudioGraph {
             let bufferOffset = ((masterElapsed * activeRate) - shift) % dur;
             if (bufferOffset < 0) bufferOffset += dur;
             
+            this.startOffset = bufferOffset;
             this.source.start(this.startTime, bufferOffset);
         } else {
             // Unsynced: Just start with the delay offset applied to 0
             this.startTime = AudioEngine.currentTime;
-            this.source.start(this.startTime, this.loop.startDelay * this.loop.duration);
+            this.startOffset = this.loop.startDelay * this.loop.duration;
+            this.source.start(this.startTime, this.startOffset);
         }
 
         // --- 3. Build Effects Chain ---
@@ -1920,9 +1950,7 @@ class Loop {
      */
     scheduleStop() {
         if (this.state !== 'playing' || !this.graph) return;
-        
-        const offset = SyncManager.getQuantizeOffset();
-        this.stop(AudioEngine.currentTime + offset);
+        this.stop(SyncManager.getNextGridTime());
     }
 
     /**
@@ -2341,7 +2369,7 @@ class LoopManager {
 
         state.loopRecorder.port.onmessage = (e) => {
             if (e.data.event === 'recorded') {
-                this.processRecordedData(e.data.chunks, loopId);
+                this.processRecordedData(e.data.chunks, loopId, e.data.startFrame);
             }
         };
 
@@ -2540,10 +2568,48 @@ class LoopManager {
     }
 
     /**
+     * Drift watchdog (FreeWheeling-style beat Jump): compares each playing
+     * loop's live phase against the master grid phase and re-anchors loops
+     * that have accumulated error, so long sessions never drift apart.
+     */
+    static realignDriftedLoops() {
+        if (!state.syncEnabled || !state.audioContext || !(state.masterStartTime > 0)) return;
+        const now = AudioEngine.currentTime;
+        state.loops.forEach(loop => {
+            if (loop.state !== 'playing' || !loop.graph || !loop.graph.startTime || loop.graph.isDestroyed) return;
+            if (loop.isMutedBySolo || loop.graph.immediate) return;
+            const dur = loop.duration;
+            const rate = loop.effectivePlaybackRate;
+            if (!Number.isFinite(dur) || dur <= 0 || !Number.isFinite(rate) || rate <= 0) return;
+
+            const shift = loop.startDelay * dur;
+            let expected = (((now - state.masterStartTime) * rate) - shift) % dur;
+            if (expected < 0) expected += dur;
+            let actual = (loop.graph.startOffset + (now - loop.graph.startTime) * rate) % dur;
+            if (actual < 0) actual += dur;
+
+            let err = actual - expected;
+            if (err > dur / 2) err -= dur;
+            if (err < -dur / 2) err += dur;
+
+            if (Math.abs(err) > 0.006) {
+                loop._driftStrikes = (loop._driftStrikes || 0) + 1;
+                // Sustained error only: rate ramps (BPM changes) cause brief transients
+                if (loop._driftStrikes >= 10) {
+                    loop._driftStrikes = 0;
+                    loop.restart(SyncManager.getNextGridTime());
+                }
+            } else {
+                loop._driftStrikes = 0;
+            }
+        });
+    }
+
+    /**
      * Callback for when the Recorder Worklet stops.
      * Processes the recorded audio chunks.
      */
-    static async processRecordedData(chunks, loopId) {
+    static async processRecordedData(chunks, loopId, startFrame = -1) {
         const loop = state.loops[loopId];
         
         if (!loop || (state.recordingLoopId === -1 && !state.isFinishingRecording)) {
@@ -2566,7 +2632,9 @@ class LoopManager {
             if (state.syncEnabled && state.recordingActualStartTime && loop.graph && loop.graph.startTime) {
                 const exactSamples = Math.round(SyncManager.getLoopLength() * ctx.sampleRate);
                 const trueStartTime = loop.graph.startTime + lat;
-                const prefixDuration = trueStartTime - state.recordingActualStartTime;
+                // Prefer the worklet's exact first-captured frame over the main-thread arm time
+                const captureStart = (startFrame >= 0) ? (startFrame / ctx.sampleRate) : state.recordingActualStartTime;
+                const prefixDuration = trueStartTime - captureStart;
                 
                 let startSample = 0;
                 let dstOffset = 0;

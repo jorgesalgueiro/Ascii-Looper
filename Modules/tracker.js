@@ -308,10 +308,10 @@ class TrackerManager {
         if (isSampler) {
             const sId = loopId - MAX_LOOPS - DroneSynth.instances.length;
             if (cmd === 'ON' || cmd === 'LOP') {
-                if (state.samplers[sId].state === 'stopped' || state.samplers[sId].state === 'stopping' || state.samplers[sId].state === 'empty') SamplerManager.togglePlay(sId);
+                if (state.samplers[sId].state === 'stopped' || state.samplers[sId].state === 'stopping' || state.samplers[sId].state === 'empty') SamplerManager.togglePlay(sId, time);
             }
             else if (cmd === 'OFF') {
-                if (state.samplers[sId].state === 'playing' || state.samplers[sId].state === 'armed') SamplerManager.togglePlay(sId);
+                if (state.samplers[sId].state === 'playing' || state.samplers[sId].state === 'armed') SamplerManager.togglePlay(sId, time);
             }
             return;
         }
@@ -323,9 +323,9 @@ class TrackerManager {
             if (!synth) return;
             
             if (cmd === 'ON') {
-                if (synth.state === 'stopped' || synth.state === 'stopping') DroneSynth.togglePlay(droneId, true);
+                if (synth.state === 'stopped' || synth.state === 'stopping') DroneSynth.togglePlay(droneId, true, time);
             } else if (cmd === 'OFF') {
-                if (synth.state === 'playing' || synth.state === 'armed') DroneSynth.togglePlay(droneId, true);
+                if (synth.state === 'playing' || synth.state === 'armed') DroneSynth.togglePlay(droneId, true, time);
             }
             // MUT/UNM/LOP not applicable for drones
             return;

@@ -11,6 +11,8 @@
 /**
  * Metronome Processor
  * Generates sample-accurate clicks on the audio thread.
+ * Grid-locked: beat boundaries are derived from (currentFrame - origin) * bpm,
+ * so clicks land exactly on the master transport grid and never accumulate drift.
  */
 class MetronomeProcessor extends AudioWorkletProcessor {
     static get parameterDescriptors() {
@@ -19,61 +21,56 @@ class MetronomeProcessor extends AudioWorkletProcessor {
             { name: 'playing', defaultValue: 0, minValue: 0, maxValue: 1 },
             { name: 'volume', defaultValue: 0.5, minValue: 0 },
             { name: 'beatsPerBar', defaultValue: 4, minValue: 1 },
+            { name: 'origin', defaultValue: 0, minValue: 0 },
         ];
     }
     constructor() {
         super();
-        this.beatIndex = 0;
-        this.samplesSinceLastBeat = 0;
-        this.samplesPerBeat = 22050; // Will be updated in process()
+        this.lastBeatIndex = -1;
         this.oscPhase = 0;
         this.env = 0;
         this.freq = 440;
-        this.beatPhase = 0.0; // Accumulator for 0.0 to 1.0 beat progress
     }
     process(inputs, outputs, parameters) {
         const output = outputs[0];
-        const playing = parameters.playing[0] > 0.5;
-        const bpmParam = parameters.bpm;
-        const vol = parameters.volume[0];
-        const bpb = parameters.beatsPerBar[0];
-        // Use global scope sampleRate
-        const sr = getWorkletSampleRate(); 
         if (!output || output.length === 0 || !output[0]) return true;
-
-        if (!playing) {
-            this.beatPhase = 0.0;
-            this.beatIndex = 0;
-            return true;
-        }
-        
-        // Use loop to handle sample-accurate automation or simple block processing
+        const playing = parameters.playing[0] > 0.5;
         const outputL = output[0];
         const outputR = output.length > 1 ? output[1] : null;
-        
-        for (let i = 0; i < outputL.length; i++) {
-            const currentBpm = (bpmParam.length > 1) ? bpmParam[i] : bpmParam[0];
-            
-            // Update samples per beat if BPM changed
-            const newSamplesPerBeat = Math.round((60.0 / currentBpm) * sr);
-            if (Math.abs(newSamplesPerBeat - this.samplesPerBeat) > 1) {
-                this.samplesPerBeat = newSamplesPerBeat;
+        const vol = parameters.volume[0];
+        const bpb = Math.max(1, Math.round(parameters.beatsPerBar[0]));
+        // Use global scope sampleRate
+        const sr = getWorkletSampleRate();
+        const bpmParam = parameters.bpm;
+        const originParam = parameters.origin;
+
+        if (!playing) {
+            // Re-arm so the next start clicks on the next grid boundary
+            this.lastBeatIndex = -1;
+            this.env = 0;
+            for (let i = 0; i < outputL.length; i++) {
+                outputL[i] = 0;
+                if (outputR) outputR[i] = 0;
             }
-            
-            this.samplesSinceLastBeat++;
-            
-            // Check for beat boundary using sample-accurate counting
-            if (this.samplesSinceLastBeat >= this.samplesPerBeat) {
-                this.samplesSinceLastBeat -= this.samplesPerBeat;
-            
-                this.beatIndex = (this.beatIndex + 1) % Math.round(bpb);
-                
-                // Trigger Click
+            return true;
+        }
+
+        for (let i = 0; i < outputL.length; i++) {
+            const bpm = (bpmParam.length > 1) ? bpmParam[i] : bpmParam[0];
+            const origin = (originParam.length > 1) ? originParam[i] : originParam[0];
+            const t = (currentFrame + i) / sr;
+            const beatIndex = Math.floor(((t - origin) * bpm) / 60.0);
+
+            if (this.lastBeatIndex < 0) {
+                // Arm on the current grid beat: first click lands on the next boundary
+                this.lastBeatIndex = beatIndex;
+            } else if (beatIndex > this.lastBeatIndex) {
+                this.lastBeatIndex = beatIndex;
                 this.env = 1.0;
-                this.freq = (this.beatIndex === 0) ? 2000 : 1000; // Sharper high/low click
+                this.freq = (beatIndex % bpb === 0) ? 2000 : 1000; // Sharper high/low click
                 this.oscPhase = 0;
             }
-            
+
             // Synthesis (Sine + Exp Decay)
             let sample = 0;
             if (this.env > 0.001) {
@@ -309,20 +306,28 @@ class SyncManager {
     }
 
     /**
-     * Calculates the time delay (in seconds) until the next sync point (bar).
+     * Gets one shared future audio-time boundary on the master transport grid.
+     */
+    static getNextGridTime(gridLength = state.loopLength, minimumLead = 0.03) {
+        const now = AudioEngine.currentTime;
+        if (!state.syncEnabled || !Number.isFinite(gridLength) || gridLength <= 0 || !Number.isFinite(now)) {
+            return now;
+        }
+
+        const origin = Number.isFinite(state.masterStartTime) && state.masterStartTime > 0
+            ? state.masterStartTime
+            : now;
+        const earliest = now + Math.max(0, minimumLead);
+        const steps = Math.max(0, Math.ceil((earliest - origin) / gridLength));
+        return origin + (steps * gridLength);
+    }
+
+    /**
+     * Calculates the time delay until the next master sync point.
      */
     static getQuantizeOffset() {
         if (!state.syncEnabled || state.loopLength <= 0) return 0;
-        
-        const now = AudioEngine.currentTime;
-        if (now === 0) return 0; // Not started yet
-        
-        const elapsed = now - state.masterStartTime;
-        let positionInLoop = elapsed % state.loopLength;
-        if (positionInLoop < 0) positionInLoop += state.loopLength;
-        const offset = (state.loopLength - positionInLoop) % state.loopLength;
-        
-        return offset;
+        return Math.max(0, this.getNextGridTime() - AudioEngine.currentTime);
     }
 
     /**
@@ -495,7 +500,9 @@ class MetronomeScheduler {
     static updateSettings() {
         if (!this.node || !state.audioContext) return;
         const now = state.audioContext.currentTime;
+        // bpm + origin share the same event time so a tempo re-anchor stays beat-continuous
         this.node.parameters.get('bpm').setValueAtTime(state.bpm, now);
+        this.node.parameters.get('origin').setValueAtTime(state.masterStartTime || 0, now);
         this.node.parameters.get('beatsPerBar').setValueAtTime(state.timeSig.num, now);
         this.node.parameters.get('volume').setValueAtTime(state.metronome.volume, now);
     }
