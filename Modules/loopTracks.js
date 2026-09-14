@@ -599,7 +599,7 @@ class AudioGraph {
         this.nodes.effects = {};
         
         // Process each effect in signal chain order
-        const chain = this.loop.signalChain || "QCAHTFODBVKZG";
+        const chain = this.loop.signalChain || "QCATFODBVKZG";
         for (const effectChar of chain) {
             const effectName = this._getEffectByChar(effectChar);
             if (effectName && this.loop.effects[effectName]) {
@@ -1565,7 +1565,7 @@ class Loop {
        this.peak = { value: 0, lastUpdate: 0 };
        this.visual = { rms: 0, peak: 0 }; // For smoothed ASCII meter
         // Effects
-        this.signalChain = "QCAHTFODBVKZG";
+        this.signalChain = "QCATFODBVKZG";
         this.effects = {
             reverb: false, 
             dusk: false,
@@ -1719,9 +1719,27 @@ class Loop {
     }
 
     /**
-     * Multiplies (doubles) the loop length by duplicating the audio buffer.
+     * EDP-style interactive Multiply toggle.
+     * First press on a playing loop: start capturing input to extend the loop.
+     * Second press (while multiplying): stop capture and concatenate the new material.
+     * Falls back to instant doubling if no input source is available.
      */
     multiply() {
+        if (!this.audioBuffer) return;
+        if (this.state === 'multiplying') {
+            LoopManager.stopMultiply();
+        } else if (this.state === 'playing') {
+            LoopManager.startMultiply(this.id);
+        } else {
+            // Not playing — fall back to instant doubling
+            this.multiplyInstant();
+        }
+    }
+
+    /**
+     * Instant buffer doubling (fallback when no input or loop is not playing).
+     */
+    multiplyInstant() {
         if (!this.audioBuffer) return;
         this.saveStateForUndo();
         const oldLen = this.audioBuffer.length;
@@ -1736,12 +1754,12 @@ class Loop {
         this.audioBuffer = newBuf;
         this.duration = newBuf.duration;
         this.wavePeaks = window.UIManager ? UIManager.generateWaveformPeaks(this.audioBuffer) : null;
-        
+
         const syncSource = document.getElementById('syncSource');
         if (syncSource && syncSource.value == this.id) {
             SyncManager.updateSettings();
         }
-        
+
         if (this.state === 'playing') this.restart();
         if (window.UIManager) UIManager.updateLoop(this.id);
     }
@@ -1761,7 +1779,7 @@ class Loop {
     getProgress(now) {
         if (this.state === 'empty') return 0;
         
-        if (this.state === 'armed' || this.state === 'recording' || this.state === 'overdubbing' || this.state === 'substituting') {
+        if (this.state === 'armed' || this.state === 'recording' || this.state === 'overdubbing' || this.state === 'substituting' || this.state === 'multiplying') {
             if (!this.graph || !this.graph.startTime) return 0;
             const elapsed = now - this.graph.startTime;
             if (state.syncEnabled) {
@@ -1794,7 +1812,7 @@ class Loop {
      * Sets the signal chain for this loop and rebuilds the graph if playing.
      */
     setSignalChain(chain) {
-        this.signalChain = chain || "QCAHTFODBVKZG";
+        this.signalChain = chain || "QCATFODBVKZG";
         if (this.state === 'playing' && this.graph) {
             this.graph.rebuild();
         }
@@ -1889,7 +1907,7 @@ class Loop {
      */
     stop(scheduledTime = 0) {
         // Allow stop to proceed if state is 'stopping' (scheduled stop)
-        if (this.state !== 'playing' && this.state !== 'overdubbing' && this.state !== 'substituting' && this.state !== 'stopping') return;
+        if (this.state !== 'playing' && this.state !== 'overdubbing' && this.state !== 'substituting' && this.state !== 'stopping' && this.state !== 'multiplying') return;
 
         const now = AudioEngine.currentTime;
 
@@ -1928,6 +1946,7 @@ class Loop {
     _teardown() {
         if (this.stopTimeout) clearTimeout(this.stopTimeout);
         this.stopTimeout = null;
+        this.isStuttering = false;
         
         if (this.graph && typeof this.graph.cleanup === 'function') {
             this.graph.cleanup();
@@ -1951,6 +1970,46 @@ class Loop {
     scheduleStop() {
         if (this.state !== 'playing' || !this.graph) return;
         this.stop(SyncManager.getNextGridTime());
+    }
+
+    /**
+     * Starts stutter mode: locks playback to a short fragment at the current phase.
+     * Call on mousedown/pointerdown; pair with stutterStop() on release.
+     */
+    stutterStart() {
+        if (this.state !== 'playing' || !this.graph || !this.graph.source || this.isStuttering) return;
+        this.isStuttering = true;
+
+        const now = AudioEngine.currentTime;
+        const masterElapsed = (now - this.graph.startTime) * this.effectivePlaybackRate;
+        const dur = this.duration > 0 ? this.duration : 1;
+        const phase = ((masterElapsed % dur) + dur) % dur;
+
+        const beatLen = 60 / state.bpm;
+        const fragmentBeats = 0.25;
+        let fragLen = beatLen * fragmentBeats;
+        fragLen = Math.min(fragLen, dur * 0.5);
+        fragLen = Math.max(fragLen, 0.01);
+
+        let fragEnd = phase + fragLen;
+        if (fragEnd > dur) fragEnd = dur;
+
+        this.graph.source.loopStart = phase;
+        this.graph.source.loopEnd = fragEnd;
+    }
+
+    /**
+     * Stops stutter mode and restores full-loop playback.
+     * Call on mouseup/pointerup.
+     */
+    stutterStop() {
+        if (!this.isStuttering) return;
+        this.isStuttering = false;
+
+        if (this.graph && this.graph.source) {
+            this.graph.source.loopStart = 0;
+            this.graph.source.loopEnd = this.duration;
+        }
     }
 
     /**
@@ -2162,8 +2221,13 @@ class LoopManager {
     static stopAll() {
         const now = AudioEngine.currentTime;
         state.loops.forEach(loop => {
-            if (loop.state === 'playing' || loop.state === 'overdubbing' || loop.state === 'substituting') {
+            if (loop.state === 'playing' || loop.state === 'overdubbing' || loop.state === 'substituting' || loop.state === 'multiplying') {
                 loop.stop(now + 0.015); // Minimal latency stop (15ms fade)
+            }
+            if (loop.state === 'queued' && loop.queueTimeout) {
+                clearTimeout(loop.queueTimeout);
+                loop.queueTimeout = null;
+                loop.state = 'stopped';
             }
             UIManager.updateLoop(loop.id);
         });
@@ -2175,6 +2239,8 @@ class LoopManager {
             const loop = state.loops[state.recordingLoopId];
             if (loop && (loop.state === 'overdubbing' || loop.state === 'substituting')) {
                 this.stopOverdub();
+            } else if (loop && loop.state === 'multiplying') {
+                this.stopMultiply();
             } else if (loop && (loop.state === 'recording' || loop.state === 'armed')) {
                 this.stopRecording();
             }
@@ -2246,13 +2312,35 @@ class LoopManager {
                 break;
 
             case 'stopped':
-                // Long press on stopped loop clears it
                 if (pressType === 'long') {
                     loop.clear();
                 } else {
                     if (window.TrackerManager) TrackerManager.logLiveEvent(loopId, 'ON');
-                    await loop.play();
+                    if (state.syncEnabled) {
+                        const gridTime = SyncManager.getNextGridTime();
+                        loop.state = 'queued';
+                        UIManager.updateLoop(loopId);
+                        UIManager.updateStatus();
+                        const delayMs = Math.max(0, (gridTime - AudioEngine.currentTime) * 1000 - 100);
+                        loop.queueTimeout = setTimeout(() => {
+                            loop.queueTimeout = null;
+                            loop.play(gridTime);
+                        }, delayMs);
+                    } else {
+                        await loop.play();
+                    }
                 }
+                break;
+
+            case 'queued':
+                if (loop.queueTimeout) {
+                    clearTimeout(loop.queueTimeout);
+                    loop.queueTimeout = null;
+                }
+                loop.state = 'stopped';
+                if (window.TrackerManager) TrackerManager.logLiveEvent(loopId, 'OFF');
+                UIManager.updateLoop(loopId);
+                UIManager.updateStatus();
                 break;
 
             case 'playing':
@@ -2287,7 +2375,12 @@ class LoopManager {
             case 'overdubbing':
             case 'substituting':
                 // Pressing an overdubbing loop always stops the overdub (returns to play)
-                LoopManager.stopOverdub(); 
+                LoopManager.stopOverdub();
+                break;
+
+            case 'multiplying':
+                // Pressing a multiplying loop stops the multiply capture
+                LoopManager.stopMultiply();
                 break;
             
             case 'stopping':
@@ -2972,6 +3065,165 @@ class LoopManager {
     }
 
     /**
+     * Starts interactive Multiply — captures input audio to extend the loop.
+     * EDP-style: while multiplying, input is recorded; on stop, captured audio
+     * is concatenated to the existing buffer, extending the loop by an unrounded multiple.
+     * Falls back to instant doubling if no input source is available.
+     */
+    static async startMultiply(loopId) {
+        if (state.isRecording) {
+            console.warn("Already recording/overdubbing.");
+            return;
+        }
+
+        const loop = state.loops[loopId];
+        if (loop.state !== 'playing') {
+            console.warn("Can only multiply on a playing loop.");
+            return;
+        }
+
+        // Varispeed multiply is destructive to timing
+        if (Math.abs(loop.playbackRate - 1.0) > 0.01) {
+            alert("Cannot multiply on varispeed loops. Reset speed to 1.0x first.");
+            return;
+        }
+
+        let inputNode = InputManager.getRecordingNode();
+        if (!inputNode) {
+            // No input available — fall back to instant doubling
+            loop.multiplyInstant();
+            return;
+        }
+
+        // Set state
+        state.isRecording = true;
+        state.recordingLoopId = loopId;
+        loop.state = 'multiplying';
+        state.loopRecordedChunks = [];
+
+        // Setup Recorder (Audio Worklet)
+        try {
+            state.loopRecorder = new AudioWorkletNode(state.audioContext, 'recorder-processor');
+            inputNode.connect(state.loopRecorder);
+            state.loopRecorder.connect(state.audioContext.destination);
+            state.loopRecorder.port.onmessage = (e) => {
+                if (e.data.event === 'recorded') {
+                    this.processMultiplyData(e.data.chunks, loopId);
+                }
+            };
+        } catch (e) {
+            console.error(e);
+            state.isRecording = false;
+            state.recordingLoopId = -1;
+            loop.state = 'playing';
+            return;
+        }
+
+        state.loopRecorder.port.postMessage({ command: 'start' });
+        UIManager.updateLoop(loopId);
+        UIManager.updateStatus();
+    }
+
+    /**
+     * Stops the active Multiply capture.
+     */
+    static stopMultiply() {
+        if (!state.isRecording || !state.loops[state.recordingLoopId]) return;
+        if (state.isFinishingRecording) return;
+
+        const loop = state.loops[state.recordingLoopId];
+        if (loop.state !== 'multiplying') return;
+
+        if (state.loopRecorder) {
+            try {
+                state.isFinishingRecording = true;
+                state.loopRecorder.port.postMessage({ command: 'stop' });
+            } catch (e) {
+                console.warn("Recorder port unreachable:", e);
+                this.forceCleanupRecording(loop);
+            }
+        }
+    }
+
+    /**
+     * Processes captured Multiply audio: concatenates new material to the existing buffer.
+     */
+    static async processMultiplyData(chunks, loopId) {
+        const loop = state.loops[loopId];
+        if (!loop) return;
+
+        try {
+            let capturedBuffer = this.createBufferFromChunks(chunks, state.audioContext.sampleRate);
+
+            if (!capturedBuffer || capturedBuffer.length < 128) {
+                // Too little captured — discard and restore state
+                if (loop.state === 'multiplying') loop.state = 'playing';
+            } else {
+                // Remove DC offset from captured audio
+                for (let c = 0; c < capturedBuffer.numberOfChannels; c++) {
+                    const data = capturedBuffer.getChannelData(c);
+                    let sum = 0;
+                    for (let i = 0; i < data.length; i++) sum += data[i];
+                    const mean = sum / data.length;
+                    for (let i = 0; i < data.length; i++) data[i] -= mean;
+                }
+
+                // Fade edges to prevent clicks at the splice point
+                AudioEngine.seamlessLoopCrossfade(capturedBuffer, 0.002);
+
+                loop.saveStateForUndo();
+
+                const oldLen = loop.audioBuffer.length;
+                const capturedLen = capturedBuffer.length;
+                const newLen = oldLen + capturedLen;
+                const numChannels = loop.audioBuffer.numberOfChannels;
+                const capturedChannels = capturedBuffer.numberOfChannels;
+                const newBuf = state.audioContext.createBuffer(numChannels, newLen, loop.audioBuffer.sampleRate);
+
+                for (let c = 0; c < numChannels; c++) {
+                    const oldData = loop.audioBuffer.getChannelData(c);
+                    const capturedData = capturedBuffer.getChannelData(Math.min(c, capturedChannels - 1));
+                    const newData = newBuf.getChannelData(c);
+                    newData.set(oldData, 0);
+                    newData.set(capturedData, oldLen);
+                }
+
+                loop.audioBuffer = newBuf;
+                loop.duration = newBuf.duration;
+                loop.wavePeaks = UIManager.generateWaveformPeaks(loop.audioBuffer);
+
+                // If this loop is the sync source, recalculate BPM
+                const syncSource = document.getElementById('syncSource');
+                if (syncSource && syncSource.value == loop.id) {
+                    SyncManager.updateSettings();
+                }
+
+                if (loop.state === 'multiplying') loop.state = 'playing';
+                loop.restart();
+            }
+        } catch (e) {
+            console.error("Error processing multiply audio:", e);
+            alert("Failed to process multiply audio. Loop state restored.");
+            if (loop.audioBuffer && loop.graph) loop.state = 'playing';
+        }
+
+        // Disconnect Input from Recorder
+        const inputNode = InputManager.getRecordingNode();
+        if (inputNode && state.loopRecorder) {
+            try { inputNode.disconnect(state.loopRecorder); } catch (e) {}
+        }
+        if (state.loopRecorder) state.loopRecorder.disconnect();
+
+        state.isRecording = false;
+        state.recordingLoopId = -1;
+        state.loopRecorder = null;
+        state.isFinishingRecording = false;
+
+        UIManager.updateLoop(loop.id);
+        UIManager.updateStatus();
+    }
+
+    /**
      * Toggles mute state with optional scheduling.
      */
     static toggleMute(loopId, time = 0) {
@@ -3202,7 +3454,7 @@ class UIManager {
             html += UIManager.createEffectToggleHTML(loop, index, 'reverse', 'Rvers', prefix);
         
         // Add other effects in signal chain order
-        const uniqueChain = [...new Set((loop.signalChain || "QCAHTFODBVKZG").split(''))].join('');
+        const uniqueChain = [...new Set((loop.signalChain || "QCATFODBVKZG").split(''))].join('');
         for (const char of uniqueChain) {
             const effect = effectMap[char];
             if (effect) {
@@ -3225,7 +3477,9 @@ class UIManager {
     static generateLoopHTML(loop, index) {
         const stateSymbols = {
             empty: '( )', armed: '(A)', recording: '(R)',
-            playing: '[>]', overdubbing: '(O)', substituting: '(-)', stopped: '[S]', stopping: '[.]'
+            playing: '[>]', stopped: '[S]', stopping: '[.]',
+            overdubbing: '(O)', substituting: '(-)',
+            multiplying: '(M)', queued: '[Q]'
         };
         
         const stateSymbol = stateSymbols[loop.state] || '( )';
@@ -3247,6 +3501,8 @@ class UIManager {
         else if (loop.state === 'stopped') stateColor = '#0ff';
         else if (loop.state === 'overdubbing') stateColor = '#f0f';
         else if (loop.state === 'substituting') stateColor = '#00cccc';
+        else if (loop.state === 'multiplying') stateColor = '#ffaa00';
+        else if (loop.state === 'queued') stateColor = '#0088aa';
         const presetOptions = Object.keys(state.fxPresets).map(name => 
             `<option value="${name}" ${state.fxPresets[name] === loop.signalChain ? 'selected' : ''}>${name}</option>`
         ).join('');
@@ -3341,8 +3597,9 @@ class UIManager {
                             <button class="small" onclick="event.stopPropagation(); SoloManager.toggleSolo(${index}); EffectManager.setActiveTab(${index});" style="flex:1; ${soloStyle}" title="${I18n.t('TIP_SOLO')}">SOLO</button>
                             <button class="small" onclick="event.stopPropagation(); state.loops[${index}].undo(); EffectManager.setActiveTab(${index});" title="Undo Overdub" style="flex:1;" ${loop.undoStack.length > 0 ? '' : 'disabled'}>UNDO</button>
                             <button class="small" onclick="event.stopPropagation(); state.loops[${index}].redo(); EffectManager.setActiveTab(${index});" title="Redo Overdub" style="flex:1;" ${loop.redoStack.length > 0 ? '' : 'disabled'}>REDO</button>
-                            <button class="small" onclick="event.stopPropagation(); state.loops[${index}].retrigger(); EffectManager.setActiveTab(${index});" title="Stutter / Retrigger (Instantly restart on-beat)" style="flex:1;" ${loop.audioBuffer ? '' : 'disabled'}>RTRG</button>
-                            <button class="small" onclick="event.stopPropagation(); state.loops[${index}].multiply(); EffectManager.setActiveTab(${index});" title="Multiply Length" style="flex:1;" ${loop.audioBuffer ? '' : 'disabled'}>MULT</button>
+                            <button class="small" onclick="event.stopPropagation(); state.loops[${index}].retrigger(); EffectManager.setActiveTab(${index});" title="Retrigger [\/] — Instantly restart on-beat" style="flex:1;" ${loop.audioBuffer ? '' : 'disabled'}><span style="color:#0f0">[/]</span>RTRG</button>
+                            <button class="small" onclick="event.stopPropagation(); state.loops[${index}].multiply(); EffectManager.setActiveTab(${index});" title="Multiply [\\] — press to capture, press again to extend. No input = double." style="flex:1;" ${loop.audioBuffer ? '' : 'disabled'}><span style="color:#0f0">[\\]</span>MULT</button>
+                            <button class="small" onpointerdown="event.preventDefault(); event.stopPropagation(); state.loops[${index}].stutterStart(); const b=this; const up=()=>{state.loops[${index}].stutterStop(); b.classList.remove('btn-active'); window.removeEventListener('pointerup',up); window.removeEventListener('pointercancel',up);}; window.addEventListener('pointerup',up); window.addEventListener('pointercancel',up); b.classList.add('btn-active');" title="Stutter: hold to retrigger short fragment, release to resume" style="flex:1; touch-action:none; user-select:none;" ${loop.audioBuffer ? '' : 'disabled'}>STUT</button>
                             <button class="small" onclick="event.stopPropagation(); state.loops[${index}].normalize(); UIManager.updateLoop(${index}); EffectManager.setActiveTab(${index});" title="${I18n.t('TIP_NORM')}" style="flex:1;" ${loop.audioBuffer ? '' : 'disabled'}>NORM</button>
                             <button class="small" onclick="event.stopPropagation(); ProjectManager.exportDryWet('loop', ${index}); EffectManager.setActiveTab(${index});" title="${I18n.t('TIP_SAVE')} Dry/Wet" style="flex:1;" ${loop.audioBuffer ? '' : 'disabled'}>SAVE</button>
                             <button class="danger small" onclick="event.stopPropagation(); state.loops[${index}].clear(); EffectManager.setActiveTab(${index});" title="${I18n.t('TIP_DEL')}" style="flex:1;">DEL</button>
@@ -3686,8 +3943,8 @@ class UIManager {
         // Update Global Visuals (Frames & Master Header)
         const body = document.body;
         const masterHeader = document.querySelector('#mod-master .module-header span:first-child');
-        body.classList.remove('mode-overdub', 'mode-rec-master', 'mode-substitute', 'mode-sus', 'is-recording', 'is-overdubbing', 'is-substituting');
-        
+        body.classList.remove('mode-overdub', 'mode-rec-master', 'mode-substitute', 'mode-sus', 'is-recording', 'is-overdubbing', 'is-substituting', 'is-multiplying', 'is-queued');
+
         let activeRecState = null;
         if (state.isRecording && state.recordingLoopId !== -1) {
             activeRecState = state.loops[state.recordingLoopId].state;
@@ -3698,20 +3955,26 @@ class UIManager {
             body.classList.add('is-overdubbing');
         } else if (activeRecState === 'substituting') {
             body.classList.add('is-substituting');
+        } else if (activeRecState === 'multiplying') {
+            body.classList.add('is-multiplying');
+        }
+
+        if (state.loops.some(l => l.state === 'queued')) {
+            body.classList.add('is-queued');
         }
         
         if (state.masterRecording) {
             body.classList.add('mode-rec-master');
-            if (masterHeader) masterHeader.textContent = "[MASTER] [RECORDING MASTER]";
+            if (masterHeader) masterHeader.textContent = "MASTER ● RECORDING";
         } else if (state.globalSubstituteMode) {
             body.classList.add('mode-substitute');
-            if (masterHeader) masterHeader.textContent = "[MASTER] [SUBSTITUTE MODE]";
+            if (masterHeader) masterHeader.textContent = "MASTER ● SUBSTITUTE MODE";
         } else if (state.globalSusMode) {
             body.classList.add('mode-sus');
-            if (masterHeader) masterHeader.textContent = "[MASTER] [SUS MODE]";
+            if (masterHeader) masterHeader.textContent = "MASTER ● SUSTAIN MODE";
         } else if (state.globalOverdubMode) {
             body.classList.add('mode-overdub');
-            if (masterHeader) masterHeader.textContent = "[MASTER] [OVERDUB MODE]";
+            if (masterHeader) masterHeader.textContent = "MASTER ● OVERDUB MODE";
         } else if (masterHeader) masterHeader.textContent = I18n.t('MASTER_OUTPUT');
         
         const undoBtn = document.getElementById('btnGlobalUndo');
@@ -3758,7 +4021,8 @@ class UIManager {
         const stateSymbols = {
             empty: '( )', armed: '(A)', recording: '(R)',
             playing: '[>]', stopped: '[S]', stopping: '[.]',
-            overdubbing: '(O)', substituting: '(-)'
+            overdubbing: '(O)', substituting: '(-)',
+            multiplying: '(M)', queued: '[Q]'
         };
        
         state.loops.forEach((loop, index) => {
@@ -3835,6 +4099,8 @@ class UIManager {
                     else if (loop.state === 'overdubbing') waveColor = '#f0f';
                     else if (loop.state === 'armed') waveColor = '#ff0';
                     else if (loop.state === 'substituting') waveColor = '#00cccc';
+                    else if (loop.state === 'multiplying') waveColor = '#ffaa00';
+                    else if (loop.state === 'queued') waveColor = '#0088aa';
                     else if (loop.state === 'playing') waveColor = '#0f0';
                     
                     ctx.fillStyle = waveColor;
@@ -3879,6 +4145,8 @@ class UIManager {
                 else if (loop.state === 'stopped') stateStyle = 'color:#0ff;';
                 else if (loop.state === 'overdubbing') stateStyle = 'color:#f0f;';
                 else if (loop.state === 'substituting') stateStyle = 'color:#00cccc;';
+                else if (loop.state === 'multiplying') stateStyle = 'color:#ffaa00;';
+                else if (loop.state === 'queued') stateStyle = 'color:#0088aa;';
                 else if (loop.state === 'stopping') stateStyle = 'color:#ffaa00;';
                 
                 const mutedText = loop.muted ? ' [MUTED]' : '';
@@ -4081,6 +4349,8 @@ class UIManager {
         else if (loop.state === 'stopped') stateColor = '#0ff';
         else if (loop.state === 'overdubbing') stateColor = '#f0f';
         else if (loop.state === 'substituting') stateColor = '#00cccc';
+        else if (loop.state === 'multiplying') stateColor = '#ffaa00';
+        else if (loop.state === 'queued') stateColor = '#0088aa';
 
         return `
         <div class="loop ${loop.state}" id="live-loop-${index}" style="border: 1px solid ${stateColor}; margin-bottom: 5px; height: 120px; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden;">
@@ -4115,6 +4385,8 @@ class UIManager {
         else if (loop.state === 'stopped') stateColor = '#0ff';
         else if (loop.state === 'overdubbing') stateColor = '#f0f';
         else if (loop.state === 'substituting') stateColor = '#00cccc';
+        else if (loop.state === 'multiplying') stateColor = '#ffaa00';
+        else if (loop.state === 'queued') stateColor = '#0088aa';
 
         const stateSpan = el.querySelector('.live-state-text');
         if(stateSpan) {

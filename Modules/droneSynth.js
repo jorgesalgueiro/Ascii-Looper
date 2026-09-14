@@ -28,7 +28,7 @@ class SynthInstance {
         // Analyser for clipping detection
         this.analyser = null;
         this.analyserData = null;
-        this.signalChain = "QCAHTFODBVKZG";
+        this.signalChain = "QCATFODBVKZG";
         this.fxParams = typeof DEFAULT_DRONE_FX_PARAMS !== 'undefined' ? JSON.parse(JSON.stringify(DEFAULT_DRONE_FX_PARAMS)) : {};
         this.activePresets = {};
         this.fxState = { reverb: false, machineReverb: false, delay: false, distortion: false, fuzz: false, overdrive: false, compressor: false, dusk: false, arpDelay: false, eq: false, zigZ: false, griz: false, harmony: false };
@@ -2244,7 +2244,7 @@ class DroneSynth {
                 });
             }
 
-            if (instData.signalChain) synth.signalChain = instData.signalChain || "QCAHTFODBVKZG";
+            if (instData.signalChain) synth.signalChain = instData.signalChain || "QCATFODBVKZG";
             if (instData.activePresets) synth.activePresets = instData.activePresets;
             if (instData.fxState) Object.assign(synth.fxState, instData.fxState);
             if (instData.state === 'playing' || instData.state === 'stopping') synth.state = 'playing';

@@ -1976,6 +1976,9 @@ const GRIZ_PRESETS = {
 };
 
 // mode: 0 = chromatic (degrees are semitones), 1 = major, 2 = natural minor.
+// HARMONY (H) — DISABLED from chain legend & hidden from users since v0.76.02.
+// Output sounds metallic and artificial; pitch-shift voices lack proper formant preservation.
+// TODO: Rework with formant-correct pitch-shift and better pitch-tracking before re-enabling.
 const HARMONY_PRESETS = {
     'default': { voices: 2, mode: 1, key: 0, h1: 2, h2: 4, h3: -3, h4: 6, humanize: 0.5, mix: 0.5 },
     'beach-boys': { voices: 3, mode: 1, key: 0, h1: 2, h2: 4, h3: -3, h4: 6, humanize: 0.65, mix: 0.5 },
@@ -2089,6 +2092,8 @@ const UI_CONFIG = {
             { l: 'Pan Spd', p: 'panSpeed', min: 0, max: 5, step: 0.1, def: 0 }
         ]
     },
+    // DISABLED v0.76.02 — Metallic sound quality, not production-ready. Hidden from chain legend.
+    // Re-enable when formant-preserving pitch-shift is implemented.
     'H': { key: 'harmony', title: 'HARMONY (H)', color: '#F5F5DC', presets: 'HARMONY_PRESETS',
         extraHtml: (p) => {
             const modes = ['Chromatic', 'Major', 'Minor'];
@@ -2482,7 +2487,7 @@ class EffectManager {
         const nativeMap = [
              {c:'Q', n:'EQ',   k:'eq'},
              {c:'C', n:'Comp', k:'compressor'},
-             {c:'H', n:'Harm', k:'harmony'},
+             // {c:'H', n:'Harm', k:'harmony'},  // DISABLED v0.76.02 — metallic/artificial output, needs formant-aware pitch-shift rework before re-enabling
              {c:'T', n:'Dist', k:'distortion'},
              {c:'F', n:'Fuzz', k:'fuzz'},
              {c:'O', n:'Odrv', k:'overdrive'},
@@ -3046,14 +3051,14 @@ class EffectManager {
             container.innerHTML = '<div style="padding:10px; color:#666; font-size:11px; text-align:center;">[MASTER BUS SELECTED]<br>Use the Console/Mixer in "SONG MASTER" tab for global EQ & Dynamics.</div>';
             return;
         } else if (this.activeTab === 'input-bus') {
-             chain = InputManager.masterSignalChain || "QCAHTFODBVKZG";
+             chain = InputManager.masterSignalChain || "QCATFODBVKZG";
              paramsSrc = InputManager.masterParams;
              activePresets = InputManager.activePresets;
         } else if (typeof this.activeTab === 'string' && this.activeTab.startsWith('drone-')) {
              const id = parseInt(this.activeTab.split('-')[1]);
              const synth = DroneSynth.instances[id];
              if (synth) {
-                 chain = synth.signalChain || "QCAHTFODBVKZG";
+                 chain = synth.signalChain || "QCATFODBVKZG";
                  paramsSrc = synth.fxParams;
                  activePresets = synth.activePresets;
              } else {
@@ -3063,7 +3068,7 @@ class EffectManager {
         } else {
              const loop = state.loops[this.activeTab];
              if (loop) {
-                 chain = loop.signalChain || "QCAHTFODBVKZG";
+                 chain = loop.signalChain || "QCATFODBVKZG";
                  paramsSrc = loop.params;
                  activePresets = loop.activePresets || {};
              } else return; // Safety check

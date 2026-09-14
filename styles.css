@@ -247,6 +247,8 @@ button, .std-btn, .fx-tab-btn, .main-tab-btn, .manual-tab-btn, select, input[typ
     .btn-cyan { border-color: #0ff; color: #0ff; }
     .btn-cyan:hover { background: #0ff; color: #000; }
 
+    .btn-active { background: #0ff !important; color: #000 !important; border-color: #0ff !important; }
+
     input[type="text"], input[type="number"], select { 
         background: #000; color: var(--term-green); border: 1px solid var(--term-dim); 
         padding: 4px; font-family: 'Courier New', monospace; font-size: 11px;

@@ -478,7 +478,7 @@ class ProjectManager {
             loop.playbackRate = loopData.playbackRate ?? 1.0;
             loop.feedback = loopData.feedback ?? 0.80;
             loop.startDelay = loopData.startDelay || 0.0;
-            loop.signalChain = loopData.signalChain || "QCAHTFODBVKZG";
+            loop.signalChain = loopData.signalChain || "QCATFODBVKZG";
             loop.originalBpm = loopData.originalBpm || state.bpm;
             loop.state = (loop.audioBuffer) ? 'stopped' : 'empty';
             if (loopData.activePresets) loop.activePresets = loopData.activePresets;

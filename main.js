@@ -6,7 +6,7 @@
 // MODULE 1: CONSTANTS & GLOBALS
 // =============================================
 
-const VERSION = "v0.76.01"; // Version aligned with blueprint
+const VERSION = "v0.76.02"; // Version aligned with blueprint
 let MAX_LOOPS = 10;
 const SAMPLER_HOTKEYS = ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'ç']; // Specific to Sampler Tracks
 const AUDIO_FORMATS= {
@@ -463,35 +463,39 @@ class KeyMapManager {
 
     /** Updates the User Manual "Global Hotkeys" list based on current bindings */
     static updateManual() {
-        const list = document.getElementById('manual-hotkeys-list');
-        if (!list) return;
-        
+        const ids = ['manual-hotkeys-list', 'manual-hotkeys-list-es', 'manual-hotkeys-list-pt'];
+        const labels = {
+            loops: ['Loops 1-10 (Rec/Play/Stop)', 'Loops 1-10 (Rec/Play/Stop)', 'Loops 1-10 (Rec/Play/Stop)'],
+            drones: ['Toggle Drones 1-10', 'Activar Drones 1-10', 'Ativar Drones 1-10'],
+            od: ['Toggle GLOBAL OVERDUB MODE', 'Modo GLOBAL OVERDUB', 'Modo GLOBAL OVERDUB'],
+            sub: ['Toggle GLOBAL SUBSTITUTE MODE', 'Modo GLOBAL SUBSTITUTE', 'Modo GLOBAL SUBSTITUTE'],
+            sus: ['Toggle GLOBAL SUS (Sustain) MODE', 'Modo GLOBAL SUS (Sustain)', 'Modo GLOBAL SUS (Sustain)'],
+            unmapped: ['Unmapped', 'Sin asignar', 'Sem atribuição']
+        };
         const map = state.keyMapping.kbd;
-        let html = '';
 
-        // Spacebar is hardcoded in App.handleKeyboardPress
-        html += `<li><strong>[Space]</strong>: STOP ALL (Panic)</li>`;
+        ids.forEach((id, i) => {
+            const list = document.getElementById(id);
+            if (!list) return;
+            let html = '';
 
-        // Loop Group 1 (1-10)
-        const g1 = map.slice(0, 10).filter(k => k).map(k => k.toUpperCase()).join('/');
-        if(g1) html += `<li><strong>[${g1}]</strong>: Loops 1-10 (Rec/Play/Stop)</li>`;
+            const g1 = map.slice(0, 10).filter(k => k).map(k => k.toUpperCase()).join('/');
+            if (g1) html += `<li><strong>[${g1}]</strong>: ${labels.loops[i]}</li>`;
 
-        // Drones
-        const drones = map.slice(20, 30).filter(k => k).map(k => k.toUpperCase()).join('/');
-        if(drones) html += `<li><strong>[${drones}]</strong>: Toggle Drones</li>`;
+            const drones = map.slice(20, 30).filter(k => k).map(k => k.toUpperCase()).join('/');
+            if (drones) html += `<li><strong>[${drones}]</strong>: ${labels.drones[i]}</li>`;
 
-        // Global OD
-        const odKey = map[30] ? map[30].toUpperCase() : 'Unmapped';
-        html += `<li><strong>[${odKey}]</strong>: Toggle GLOBAL OVERDUB MODE</li>`;
-        
-        const subKey = map[31] ? map[31].toUpperCase() : 'Unmapped';
-        html += `<li><strong>[${subKey}]</strong>: Toggle GLOBAL SUBSTITUTE MODE</li>`;
-        
-        const susKey = map[32] ? map[32].toUpperCase() : 'Unmapped';
-        html += `<li><strong>[${susKey}]</strong>: Toggle GLOBAL SUS (Sustain) MODE</li>`;
-        html += `<li><strong>[R]</strong>: Record Master Output (Mixdown)</li>`;
-        html += `<li><strong>[H]</strong>: Toggle Half Speed for active loop</li>`;
-        list.innerHTML = html;
+            const odKey = map[30] ? map[30].toUpperCase() : labels.unmapped[i];
+            html += `<li><strong>[${odKey}]</strong>: ${labels.od[i]}</li>`;
+
+            const subKey = map[31] ? map[31].toUpperCase() : labels.unmapped[i];
+            html += `<li><strong>[${subKey}]</strong>: ${labels.sub[i]}</li>`;
+
+            const susKey = map[32] ? map[32].toUpperCase() : labels.unmapped[i];
+            html += `<li><strong>[${susKey}]</strong>: ${labels.sus[i]}</li>`;
+
+            list.innerHTML = html;
+        });
     }
 }
 
@@ -1196,12 +1200,26 @@ class App {
         if (event.code === 'KeyX' && loopId === -1) { event.preventDefault(); LoopManager.clearAll(); return; }
         if (event.code === 'KeyN' && loopId === -1) { event.preventDefault(); MetronomeScheduler.toggle(); return; }
         if (event.code === 'KeyM' && loopId === -1) { event.preventDefault(); App.toggleMasterRecording(); return; }
-        if (event.code === 'KeyH' && loopId === -1) { 
-            event.preventDefault(); 
+        if (event.code === 'KeyH' && loopId === -1) {
+            event.preventDefault();
             if (typeof EffectManager.activeTab === 'number' && state.loops[EffectManager.activeTab]) {
                 state.loops[EffectManager.activeTab].toggleHalfSpeed();
             }
-            return; 
+            return;
+        }
+        if ((event.key === '/' || event.code === 'NumpadDivide') && loopId === -1) {
+            event.preventDefault();
+            if (typeof EffectManager.activeTab === 'number' && state.loops[EffectManager.activeTab]) {
+                state.loops[EffectManager.activeTab].retrigger();
+            }
+            return;
+        }
+        if (event.key === '\\' && loopId === -1) {
+            event.preventDefault();
+            if (typeof EffectManager.activeTab === 'number' && state.loops[EffectManager.activeTab]) {
+                state.loops[EffectManager.activeTab].multiply();
+            }
+            return;
         }
 
         if (event.repeat) return; // Ignore key repeats
@@ -2077,7 +2095,7 @@ class InputManager {
     static masterGain = null; // Final gain before recording/monitoring
     static masterChain = { nodes: {}, end: null }; // Effects nodes
     static masterParams = JSON.parse(JSON.stringify(effects)); // Global Input FX params
-    static masterSignalChain = "QCAHTFODBVKZG";
+    static masterSignalChain = "QCATFODBVKZG";
     static masterEffectsState = { 
         reverb: false, machineReverb: false, delay: false, distortion: false, 
         fuzz: false, overdrive: false, compressor: false, dusk: false, arpDelay: false, eq: false, zigZ: false, griz: false, harmony: false

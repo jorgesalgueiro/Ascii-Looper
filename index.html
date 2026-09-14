@@ -8,7 +8,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#291a0a">
     <meta name="description" content="ASCII Looper - High-performance browser-based 20-track loop station with effects and sequencing.">
-    <title>ASCII Looper v0.76.01</title>
+    <title>ASCII Looper v0.76.02</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="styles.css">
     <link rel="dns-prefetch" href="//www.google.com">
@@ -32,6 +32,8 @@
     body.is-recording { background: #2a0000 !important; }
     body.is-overdubbing, body.mode-overdub { background: #1a002a !important; }
     body.is-substituting, body.mode-substitute { background: #002a2a !important; }
+    body.is-multiplying { background: #2a1a00 !important; }
+    body.is-queued { background: #001a2a !important; }
 </style>
 </head>
 <body>
@@ -95,7 +97,7 @@
                 </div>
             </div>
             <div class="retro-module" id="mod-sync">
-                <div class="module-header"><span data-i18n="SYNC_SETTINGS">SYNC & SETTINGS</span><span data-i18n="TIMING">[TIMING]</span></div>
+                <div class="module-header"><span data-i18n="SYNC_SETTINGS">SYNC & SETTINGS</span><span data-i18n="TIMING">TIMING</span></div>
                 <div class="module-content">
                     <div style="display:flex; justify-content:space-between; align-items:center;">
                         <label for="syncLoops"><input type="checkbox" id="syncLoops" checked aria-label="Enable Sync"><span style="color:#0f0; font-weight:bold;" data-i18n="ENABLE_SYNC">ENABLE SYNC</span></label>
@@ -159,7 +161,7 @@
             </div>
 
             <div class="retro-module" id="mod-lab">
-                <div class="module-header"><span data-i18n="SAMPLE_LAB">SAMPLE LAB</span><span data-i18n="OFFLINE">[OFFLINE DSP]</span></div>
+                <div class="module-header"><span data-i18n="SAMPLE_LAB">SAMPLE LAB</span><span data-i18n="OFFLINE">OFFLINE DSP</span></div>
                 <div class="module-content">
                     <div style="display:flex; gap:5px; margin-bottom:5px;">
                         <button onclick="document.getElementById('labFile').click()" class="std-btn btn-orange" style="flex:1" data-i18n="LOAD_SAMPLER">LOAD SAMPLER</button>
@@ -206,7 +208,7 @@
             </div>
 
             <div class="retro-module" id="mod-input">
-				<div class="module-header"><span data-i18n="INPUT_MIXER">INPUT MIXER</span><span data-i18n="AUDIO_IN">[AUDIO IN]</span></div>
+				<div class="module-header"><span data-i18n="INPUT_MIXER">INPUT MIXER</span><span data-i18n="AUDIO_IN">AUDIO IN</span></div>
                 <div class="module-content">
                     <div id="inputTracksContainer" style="display:flex; flex-direction:column; gap:10px; margin-bottom:10px;">
                     </div>
@@ -218,7 +220,7 @@
 
 		<div class="sticky-top">
 		<div class="retro-module" id="mod-master" style="margin-bottom: 8px; width: 100%;">
-            <div class="module-header"><span data-i18n="MASTER_OUTPUT">MASTER OUTPUT</span><span data-i18n="MIX_REC">[MIX & REC]</span></div>
+            <div class="module-header"><span data-i18n="MASTER_OUTPUT">MASTER OUTPUT</span><span data-i18n="MIX_REC">MIX & REC</span></div>
             <div class="module-content" style="display: flex; flex-direction: column; gap: 5px;">
                 
                 <div style="position: relative; width: 100%; margin-bottom: 5px;">
@@ -376,10 +378,10 @@
                     </div>
                     <hr style="border:0; border-bottom:1px dashed #444; margin:5px 0;">
                     <div class="preset-row">
-                        <input type="text" id="effectSignalChain" value="QCAHTFODBVKZG" style="flex:2;" placeholder="Order (e.g. TF)" oninput="this.value = this.value.toUpperCase(); EffectManager.updateChainVisual(this.value)" aria-label="Effects Chain Order">
-                        <span style="font-size: 9px; color: #666;">(B,M,D,T,F,O,C,K,Q,A,Z,G,H)</span>
+                        <input type="text" id="effectSignalChain" value="QCATFODBVKZG" style="flex:2;" placeholder="Order (e.g. TF)" oninput="this.value = this.value.toUpperCase(); EffectManager.updateChainVisual(this.value)" aria-label="Effects Chain Order">
+                        <span style="font-size: 9px; color: #666;">(B,M,D,T,F,O,C,K,Q,A,Z,G)</span>
                     </div>
-                    <div id="chainVisualDisplay" class="chain-visual">eQ > Comp > Harm > Dist > Fuzz > Odrv > Dly > RevB > reVm > dusK > ArpD > ZigZ > Griz</div>
+                    <div id="chainVisualDisplay" class="chain-visual">eQ > Comp > Dist > Fuzz > Odrv > Dly > RevB > reVm > dusK > ArpD > ZigZ > Griz</div>
                     <div id="fxChainLegend" class="chain-legend" style="max-width: 100%;"></div>
                 </div>
             </div>
@@ -406,7 +408,7 @@
             </div>
 
             <div class="retro-module" id="mod-mapping">
-            <div class="module-header"><span data-i18n="INPUT_MAP">INPUT MAPPING & CONTROLS</span><span data-i18n="CONFIG">[CONFIG]</span></div>
+            <div class="module-header"><span data-i18n="INPUT_MAP">INPUT MAPPING & CONTROLS</span><span data-i18n="CONFIG">CONFIG</span></div>
             <div class="module-content">
                  <div id="keyMappingUI" class="key-mapping"></div>
                  <div id="midiStatus" style="font-size:10px; color:#888; margin-top:5px;">Checking MIDI...</div>
@@ -420,42 +422,170 @@
       <div class="section-title" style="background: linear-gradient(90deg, #222, transparent); color:#ccc; margin-bottom:10px; border-left: 4px solid #fff; padding:4px;">User Manual / Manual de Usuario / Manual do Utilizador</div>
 
       <div class="manual-tabs">
-          <button class="manual-tab-btn active" onclick="UIManager.switchManualTab('en')">[EN] English</button>
-          <button class="manual-tab-btn" onclick="UIManager.switchManualTab('es')">[ES] Español</button>
-          <button class="manual-tab-btn" onclick="UIManager.switchManualTab('pt')">[PT] Português</button>
+          <button class="manual-tab-btn active" onclick="UIManager.switchManualTab('en')">English</button>
+          <button class="manual-tab-btn" onclick="UIManager.switchManualTab('es')">Español</button>
+          <button class="manual-tab-btn" onclick="UIManager.switchManualTab('pt')">Português</button>
       </div>
 
-      <div id="manual-en" class="manual-content active">
+            <div id="manual-en" class="manual-content active">
           <h3>ASCII Looper - Comprehensive Manual</h3>
-          
-          <h4>1. Workflow & Loop Controls</h4>
+          <p style="color:#888; margin-bottom:10px;">A complete 10-track loop station with effects, synths, and sequencing — right in your browser.</p>
+
+          <h4>1. What is a Looper?</h4>
+          <p>A looper records short phrases of audio and plays them back in a continuous loop. By layering multiple loops on top of each other, you can build full arrangements in real time — beatboxing a rhythm, adding a bass line, then a melody, all by yourself.</p>
+          <p>ASCII Looper gives you <strong>10 loop tracks</strong>, a <strong>10-voice synthesizer</strong>, an <strong>effects chain</strong> per track, and a <strong>song sequencer</strong> — all controlled from your keyboard, a MIDI controller, or a gamepad.</p>
+
+          <h4>2. Getting Started</h4>
           <ul>
-              <li><strong>Setup:</strong> Ensure [ENABLE SYNC] is checked. Set BPM (e.g., 120) and Bars (e.g., 2). Press <strong>[T]</strong> to hear the metronome.</li>
-              <li><strong>Record:</strong> Press any number <strong>[1-0]</strong>. The loop arms (Yellow). Recording starts automatically at the next bar (Red).</li>
-              <li><strong>Play/Stop/Clear:</strong> Short press <strong>[1-0]</strong> to Play/Stop. <strong>Long Press</strong> on a Stopped loop to CLEAR it. Long Press on Playing loop to STOP immediately.</li>
-              <li><strong>Overdub [+]:</strong> Press <strong>[+]</strong> to toggle Overdub Mode (Magenta). Press loop number to add audio. Feedback slider controls decay.</li>
-              <li><strong>Substitute [-]:</strong> Press <strong>[-]</strong> to toggle Substitute Mode (Teal). Replaces old audio in real-time instead of adding to it.</li>
-              <li><strong>Sustain [*]:</strong> Press <strong>[*]</strong> to toggle Momentary mode. Actions (Play/Record) only happen while the key is held down.</li>
-              <li><strong>Loop Modifiers:</strong> Use UI buttons to <strong>RTRG</strong> (Retrigger on-beat), <strong>MULT</strong> (Double length), <strong>1/2</strong> (Half speed), or <strong>NORM</strong> (Normalize volume).</li>
+              <li><strong>Allow Microphone:</strong> On first launch, your browser will ask for microphone access. Click Allow. You can also capture system audio (see the Input section).</li>
+              <li><strong>Enable Sync:</strong> Check ENABLE SYNC in the Sync &amp; Settings panel. This aligns all recordings to a tempo grid so loops stay in time with each other.</li>
+              <li><strong>Set the Tempo:</strong> Enter a BPM value (e.g. 120). All loop recordings will snap to this tempo.</li>
+              <li><strong>Set Bars:</strong> Choose the loop length in bars (e.g. 2 bars). A new loop will record for this many bars before it starts repeating.</li>
+              <li><strong>Metronome:</strong> Press <strong>[N]</strong> to toggle the click track. Use it while setting up, then turn it off before performing.</li>
           </ul>
 
-          <h4>2. Modules & Workspaces</h4>
+          <h4>3. Recording Your First Loop</h4>
+          <ol>
+              <li>Press any number key <strong>[1]</strong> through <strong>[0]</strong> (where [0] = Loop 10). The loop status turns <span style="color:#ff0">YELLOW</span> — this means it is armed and waiting.</li>
+              <li>At the start of the next bar, recording begins automatically. The status turns <span style="color:#f00">RED</span>.</li>
+              <li>Play or sing into your microphone. The waveform fills in on the loop display.</li>
+              <li>When the bar count is reached (or you press the key again), recording stops and the loop begins playing back. The status turns <span style="color:#0f0">GREEN</span>.</li>
+          </ol>
+          <p>That is it — you now have your first loop playing on repeat!</p>
+
+          <h4>4. Play, Stop, and Clear</h4>
           <ul>
-              <li><strong>Input & Master Mix:</strong> Manage Mic or System Audio. Use the Console tab to mix loops, drones, and inputs. Apply global Master EQ/Comp here.</li>
-              <li><strong>FX Chain:</strong> Type letters (e.g., <code>QCATG</code>) to reorder effects natively per loop. Import <code>.afx</code> bundles to load Custom AudioWorklet effects.</li>
-              <li><strong>Drone Synth:</strong> 10 polyphonic synths. Features dual oscillators, Sub, FM, Filters, ADSR, and algorithmic rhythm generation (Euclidean/Chaos). Supports MIDI pitch-bend and mod-wheel.</li>
-              <li><strong>Song Tracker:</strong> Sequence loops and drones. Create Patterns, arrange them in Song Mode. Commands: <strong>ON</strong> (Play), <strong>OFF</strong> (Stop), <strong>MUT</strong> (Mute), <strong>UNM</strong> (Unmute), <strong>LOP</strong> (Restart pattern).</li>
-              <li><strong>Sample Lab:</strong> Offline DSP editor. Extract audio from loops, apply high-quality SoundTouch time-stretching (sync to bars) or pitch shifting, and send it back.</li>
+              <li><strong>Play / Stop:</strong> Short press a loop's number key <strong>[1]-[0]</strong>. A stopped loop turns gray; a playing loop turns green.</li>
+              <li><strong>Clear (delete):</strong> Long press the number key while the loop is stopped. This erases the audio and resets the loop to empty.</li>
+              <li><strong>Immediate Stop:</strong> Long press while the loop is playing to stop it right away (instead of waiting for the loop end).</li>
+              <li><strong>Stop All:</strong> Press <strong>[Space]</strong> to stop every loop and drone at once.</li>
+              <li><strong>Queued Start (Sync mode):</strong> When sync is enabled, starting a stopped loop queues it (status <span style="color:#ff0">YELLOW</span> with [Q] symbol). It starts automatically at the next grid boundary, keeping everything in time. Press again while queued to cancel.</li>
           </ul>
 
-          <h4>3. MIDI & Key Mapping</h4>
+          <h4>5. Overdub, Substitute, and Sustain</h4>
+          <p>These three modes change what happens when you record onto an existing loop:</p>
           <ul>
-              <li><strong>MIDI Learn:</strong> Right-click almost any slider/knob to enter "MIDI Learn" mode, then move a knob on your MIDI controller to assign it. Press [ESC] to cancel.</li>
-              <li><strong>Mappings:</strong> Use the [CONFIG] tab to manually assign Keyboard, MIDI Notes, and Gamepad buttons.</li>
-              <li><strong>Transport:</strong> Standard MIDI Play/Stop/Continue messages map automatically to the Tracker.</li>
+              <li><strong>Overdub [+]:</strong> Press <strong>[+]</strong> to toggle Overdub mode (status <span style="color:#f0f">MAGENTA</span>). The next time a loop records, new audio is <em>mixed on top</em> of the existing audio. Use the Fbk slider to control how much the old layers decay with each pass. Press <strong>[+]</strong> again to turn it off.</li>
+              <li><strong>Substitute [-]:</strong> Press <strong>[-]</strong> to toggle Substitute mode (status <span style="color:#0ff">CYAN</span>). New audio <em>replaces</em> old audio in real time — like a punch-in. Press again to turn off.</li>
+              <li><strong>Sustain [*]:</strong> Press <strong>[*]</strong> to toggle Sustain (momentary) mode. While active, recording only happens while you hold the key down. Release the key and playback continues normally. Great for capturing precise phrases.</li>
+              <li><strong>Combine:</strong> Overdub + Sustain together lets you add layers only while holding the key — perfect for call-and-response layering.</li>
           </ul>
 
-          <h4>4. Global Hotkeys</h4>
+          <h4>6. Loop Modifiers</h4>
+          <p>Each loop track has a row of action buttons:</p>
+          <ul>
+              <li><strong>MUTE / UNM:</strong> Toggle mute on/off. The button turns red when muted.</li>
+              <li><strong>SOLO:</strong> Solo this loop (mutes all others). Press again to unsolo.</li>
+              <li><strong>UNDO:</strong> Undo the last overdub or substitute pass. You can undo multiple times.</li>
+              <li><strong>REDO:</strong> Redo a previously undone pass.</li>
+              <li><strong>RTRG (Retrigger):</strong> Instantly restart the loop from the beginning, snapped to the nearest beat. Great for rhythmic stabs.</li>
+              <li><strong>MULT (Multiply):</strong> EDP-style loop extension. Press once to start capturing incoming audio (status turns orange). Press again to stop capturing — the captured audio is appended to the end of the loop, doubling (or more) its length. If sync is enabled and no input is detected, the loop is simply doubled instantly.</li>
+              <li><strong>STUT (Stutter):</strong> Hold this button to lock onto a short fragment of the current loop and retrigger it rhythmically (1/16th-note fragments). Release to resume normal playback. Great for beat-repeat effects and builds.</li>
+              <li><strong>NORM (Normalize):</strong> Boost the loop volume so its loudest peak reaches maximum level. Useful for matching levels between loops.</li>
+              <li><strong>Rvers (Reverse):</strong> Toggle (checkbox above the loop row) to play the loop backwards.</li>
+              <li><strong>1/2 (Half Speed):</strong> Toggle half-speed playback for octave-down effects.</li>
+              <li><strong>Spd (Speed):</strong> Slider to adjust playback rate from 0.25x to 2x.</li>
+              <li><strong>Start &lt; Q &gt;:</strong> Nudge the loop start point left/right, or press Q to quantize to the nearest 16th note.</li>
+              <li><strong>Pan:</strong> Pan the loop left or right in the stereo field.</li>
+              <li><strong>Vol:</strong> Volume slider (shown in dB).</li>
+              <li><strong>Fbk (Feedback):</strong> Controls how much the existing audio decays with each overdub pass. Low values = layers fade quickly. High values = layers persist.</li>
+              <li><strong>SAVE:</strong> Export this loop as a WAV file (dry and wet versions).</li>
+              <li><strong>DEL:</strong> Delete the loop (same as long-press on a stopped loop).</li>
+          </ul>
+
+          <h4>7. Effects Chain</h4>
+          <p>Every loop has its own effects chain — a sequence of audio processors the signal passes through. Type the chain letters into the FX Chain text box to add/remove/reorder effects. For example, typing <code>QCTFODBVK</code> gives you EQ, Compressor, Distortion, Fuzz, Overdrive, Delay, Reverb, Machine Reverb, Dusk.</p>
+          <p><strong>Available Effects (12):</strong></p>
+          <ul>
+              <li><strong>Q</strong> — eQ: 8-band parametric equalizer with low/high cuts, shelves, and 6 peaking bands.</li>
+              <li><strong>C</strong> — Comp: Compressor with threshold, ratio, knee, attack, release, and makeup gain.</li>
+              <li><strong>A</strong> — Arpd: Arpeggiated delay that creates rhythmic melodic patterns. Controls for scale, humanize, and range.</li>
+              <li><strong>T</strong> — disTr: Distortion with waveshaping, tone control, and mix.</li>
+              <li><strong>F</strong> — Fuzz: Aggressive fuzz distortion with gain and tone.</li>
+              <li><strong>O</strong> — Odrv: Smooth overdrive with drive, tone, and volume.</li>
+              <li><strong>D</strong> — Dlay: Tempo-synced delay with feedback, damping, and stereo panning.</li>
+              <li><strong>B</strong> — revB: Convolution reverb with room size, decay, damping, and pre-delay.</li>
+              <li><strong>V</strong> — reVm: Algorithmic "machine" reverb with warping character.</li>
+              <li><strong>K</strong> — dusK: Granular shimmer effect with grain size, haunt, and shimmer controls. Creates vast ambient textures.</li>
+              <li><strong>Z</strong> — zigZ: LFO modulator (tremolo/auto-pan) with rate, depth, and phase.</li>
+              <li><strong>G</strong> — Griz: Envelope follower + filter with drive. Produces wah-like, gritty textures.</li>
+          </ul>
+          <p><strong>Default chain:</strong> <code>QCATFODBVKZG</code>. Reorder the letters to change the signal path — putting distortion before reverb sounds very different from reverb before distortion!</p>
+          <p><strong>FX Presets:</strong> Use the preset dropdown above the chain to load factory chains (Vocal Air, Shoegaze, Dub Echo, Lo-Fi Tape, Metal Lead, and more).</p>
+          <p><strong>Global Presets:</strong> Full effect-chain presets (Init/Clean, Voice Lead, Drums Punch, Bass Solid, Guitar Acoustic/Rock/Psychedelic/Noise, etc.).</p>
+          <p><strong>Custom Effects:</strong> Import <code>.afx</code> bundles to add AudioWorklet-based custom effects to the chain.</p>
+          <p><strong>Merge:</strong> Use the MERGE dropdown + GO button to mix audio from another loop into this one.</p>
+
+          <h4>8. Drone Synth</h4>
+          <p>The Drone Synth tab (<strong>Tab</strong> to switch) contains 10 independent polyphonic synthesizer voices, playable via hotkeys <strong>[Q]-[P]</strong> or MIDI.</p>
+          <ul>
+              <li><strong>Oscillators:</strong> Dual oscillators (OSC1 + OSC2) with sine, triangle, sawtooth, and square waves. OSC2 has detune. A Unison layer adds width.</li>
+              <li><strong>Sub Oscillator:</strong> Extra low-end layer (triangle or square) with mix control.</li>
+              <li><strong>Noise Generator:</strong> White or pink noise with mix control.</li>
+              <li><strong>Filter (VCF):</strong> Lowpass, highpass, bandpass, or notch filter with cutoff, resonance, and envelope modulation.</li>
+              <li><strong>ADSR Envelope:</strong> Attack, Decay, Sustain, Release controls with a Punch parameter for percussive transients.</li>
+              <li><strong>FM Synthesis:</strong> Frequency modulation for metallic and bell-like tones.</li>
+              <li><strong>LFO &amp; Vibrato:</strong> Low-frequency oscillator for filter sweeps, plus dedicated vibrato with rate and depth.</li>
+              <li><strong>Step Sequencer:</strong> Up to 64 steps with pitch, gate, and velocity per step. Adjustable rate.</li>
+              <li><strong>Rhythm Generators:</strong> 7 algorithmic pattern types — Harmonic, Dissonant, Random, Euclidean 4, Techno, Chaos, Fill. Press EVL to evolve the current sequence.</li>
+              <li><strong>Presets:</strong> Ambient (Goth Pad, Witch Lead, Cinematic, Deep Space), Rhythm (Dark Kick, Syn Tom, Industrial Snare), Bass (Cold Bass, Acid Rain), and more.</li>
+              <li><strong>MIDI:</strong> Supports pitch-bend and mod-wheel. Each drone has its own FX chain.</li>
+              <li><strong>Save/Load:</strong> Drone presets are saved as <code>.ald</code> files.</li>
+          </ul>
+
+          <h4>9. Sample Lab</h4>
+          <p>The Sample Lab is an offline audio editor (always visible above the workspace tabs):</p>
+          <ul>
+              <li><strong>GET:</strong> Import audio from any loop track, sampler track, or load an audio file from disk.</li>
+              <li><strong>Record:</strong> Record directly from your input into the lab.</li>
+              <li><strong>Time-Stretch:</strong> High-quality SoundTouch stretching. Enter a target number of bars to auto-calculate the stretch ratio and sync to your tempo.</li>
+              <li><strong>Pitch Shift:</strong> Shift pitch up or down in semitones (-12 to +12).</li>
+              <li><strong>Reverse:</strong> Flip the audio backwards.</li>
+              <li><strong>Normalize:</strong> Boost to peak level.</li>
+              <li><strong>Trim:</strong> Use the Start and End sliders to select a region of the audio.</li>
+              <li><strong>Preview:</strong> Listen to the processed result before committing.</li>
+              <li><strong>PUT:</strong> Send the processed audio back to a loop track or sampler track (with overwrite confirmation).</li>
+              <li><strong>Save:</strong> Export as WAV file.</li>
+          </ul>
+
+          <h4>10. Song Tracker</h4>
+          <p>The Song Tracker (in the SONG TRACKER workspace tab) lets you sequence loops and drones into full arrangements:</p>
+          <ul>
+              <li><strong>Cells:</strong> Each cell is one step in the sequence. Commands: ON (start loop), OFF (stop), MUT (mute), UNM (unmute), LOP (restart pattern).</li>
+              <li><strong>Patterns:</strong> Group cells into patterns (intro, verse, chorus, etc.), then arrange patterns into a song.</li>
+              <li><strong>Pattern Length:</strong> Set how many steps per pattern.</li>
+              <li><strong>Song Mode:</strong> Chain patterns in order and press Play to run the full arrangement.</li>
+              <li><strong>Sampler Tracks (S1-S10):</strong> 10 additional tracks for one-shot samples. Hotkeys <strong>[A], [S], [D], [F], [G], [H], [J], [K], [L], [;]</strong>.</li>
+              <li><strong>Master Mix Console:</strong> Adjust volume, pan, EQ, and compression for the entire output. Record the master output as a WAV file.</li>
+              <li><strong>Save/Load:</strong> Tracker sequences saved as <code>.trk</code> files.</li>
+          </ul>
+
+          <h4>11. Input &amp; Sync Settings</h4>
+          <ul>
+              <li><strong>Audio Input:</strong> Choose between microphone or system audio capture (INPUT MIXER panel). Adjust input gain and mono/stereo toggle.</li>
+              <li><strong>Sync:</strong> BPM, bars, and metronome settings. Enable sync to lock all loops to a shared tempo grid. When enabled, loop starts are quantized to bar boundaries.</li>
+              <li><strong>Latency Calibration:</strong> Run the PING TEST to auto-measure and compensate for audio roundtrip latency. Play with speakers on for accurate results.</li>
+          </ul>
+
+          <h4>12. MIDI, Gamepad &amp; Key Mapping</h4>
+          <ul>
+              <li><strong>MIDI Learn:</strong> Right-click almost any slider or knob. The control highlights, waiting for input. Move a knob or fader on your MIDI controller to assign it. Press <strong>[ESC]</strong> to cancel.</li>
+              <li><strong>Key/Gamepad Mapping:</strong> Use the CONFIG tab to manually assign keyboard keys, MIDI notes, or gamepad buttons to any loop or drone action.</li>
+              <li><strong>MIDI Transport:</strong> Standard MIDI Play/Stop/Continue messages are auto-mapped to the Song Tracker transport.</li>
+              <li><strong>Gamepad:</strong> Connect a gamepad and assign buttons in the CONFIG tab. Useful for hands-free loop control.</li>
+          </ul>
+
+          <h4>13. Workspace Tabs</h4>
+          <p>Press <strong>[Tab]</strong> to cycle through the four workspace tabs:</p>
+          <ul>
+              <li><strong>Loop Tracks:</strong> Your 10 loop tracks with all controls.</li>
+              <li><strong>Drone Synth:</strong> The synthesizer rack.</li>
+              <li><strong>Song Tracker:</strong> Sequencer, sampler tracks, and master console.</li>
+              <li><strong>Live Performance:</strong> A compact view with live mix controls — ideal for performing.</li>
+          </ul>
+
+          <h4>14. Hotkeys Reference</h4>
+          <ul id="manual-hotkeys-list" style="list-style:none; padding:0; margin:5px 0; border:1px dashed #333; padding:8px; font-size:11px; color:#0f0;"></ul>
           <table style="width:100%; border-collapse: collapse; font-size: 11px; margin-top: 5px;">
               <tr style="border-top: 1px dashed #333;">
                   <td style="padding: 4px; color: #0f0;">[1]-[0]</td>
@@ -466,205 +596,587 @@
               <tr>
                   <td style="padding: 4px; color: #0f0;">[Q]-[P]</td>
                   <td style="padding: 4px;">Drones 1-10</td>
-                  <td style="padding: 4px; color: #0f0;">[R]</td>
-                  <td style="padding: 4px;">Record Master</td>
+                  <td style="padding: 4px; color: #0f0;">[M]</td>
+                  <td style="padding: 4px;">Master Rec Toggle</td>
               </tr>
               <tr style="border-top: 1px dashed #333;">
-                  <td style="padding: 4px; color: #0f0;">[+] / [-] / [*]</td>
-                  <td style="padding: 4px;">Overdub / Sub / Sus</td>
-                  <td style="padding: 4px; color: #0f0;">[H]</td>
-                  <td style="padding: 4px;">Half Speed</td>
+                  <td style="padding: 4px; color: #0f0;">[+]</td>
+                  <td style="padding: 4px;">Overdub Mode</td>
+                  <td style="padding: 4px; color: #0f0;">[N]</td>
+                  <td style="padding: 4px;">Metronome Toggle</td>
               </tr>
               <tr>
-                  <td style="padding: 4px; color: #0f0;">[Z] / [Sh]+[Z]</td>
-                  <td style="padding: 4px;">Undo / Redo</td>
-                  <td style="padding: 4px; color: #0f0;">[M] / [N]</td>
-                  <td style="padding: 4px;">Master Rec / Metronome</td>
+                  <td style="padding: 4px; color: #0f0;">[-]</td>
+                  <td style="padding: 4px;">Substitute Mode</td>
+                  <td style="padding: 4px; color: #0f0;">[H]</td>
+                  <td style="padding: 4px;">Half Speed Active Loop</td>
+              </tr>
+              <tr style="border-top: 1px dashed #333;">
+                  <td style="padding: 4px; color: #0f0;">[*]</td>
+                  <td style="padding: 4px;">Sustain</td>
+                  <td style="padding: 4px; color: #0f0;">[/]</td>
+                  <td style="padding: 4px;">Retrigger Active Loop</td>
+              </tr>
+              <tr>
+                  <td style="padding: 4px; color: #0f0;">[\]</td>
+                  <td style="padding: 4px;">Multiply Active Loop</td>
+                  <td></td>
+                  <td></td>
+              </tr>
+              <tr>
+                  <td style="padding: 4px; color: #0f0;">[Z]</td>
+                  <td style="padding: 4px;">Undo</td>
+                  <td style="padding: 4px; color: #0f0;">[L]</td>
+                  <td style="padding: 4px;">Load Project</td>
+              </tr>
+              <tr style="border-top: 1px dashed #333;">
+                  <td style="padding: 4px; color: #0f0;">[Shift]+[Z]</td>
+                  <td style="padding: 4px;">Redo</td>
+                  <td style="padding: 4px; color: #0f0;">[Tab]</td>
+                  <td style="padding: 4px;">Switch Workspace Tab</td>
+              </tr>
+              <tr>
+                  <td style="padding: 4px; color: #0f0;">[ESC]</td>
+                  <td style="padding: 4px;">Cancel MIDI Learn</td>
+                  <td style="padding: 4px; color: #0f0;">[R]</td>
+                  <td style="padding: 4px;">Save Project</td>
+              </tr>
+              <tr style="border-top: 1px dashed #333;">
+                  <td style="padding: 4px; color: #0f0;">[X]</td>
+                  <td style="padding: 4px;">Clear All Loops</td>
+                  <td style="padding: 4px;"></td>
+                  <td style="padding: 4px;"></td>
               </tr>
           </table>
+          <p style="color:#666; font-size:10px; margin-top:5px;">Note: Loop and Drone keys take priority. Fallback hotkeys (H, R, L, X) only fire when not mapped to a loop or drone.</p>
 
-          <h4>5. File Types</h4>
+          <h4>15. File Types</h4>
           <ul>
-              <li><strong>.alp</strong>: Project File (Contains settings & audio).</li>
-              <li><strong>.wav</strong>: Exported Audio (Loops, Mixes, Samples).</li>
-              <li><strong>.trk</strong>: Tracker Song Sequence.</li>
-              <li><strong>.afx</strong>: Custom AudioWorklet & Preset Bundle.</li>
-              <li><strong>.acp / .agp / .ald</strong>: FX Chain, Global, and Drone Presets.</li>
+              <li><strong>.alp</strong> — Project file. Saves all settings, loop audio, and state.</li>
+              <li><strong>.wav</strong> — Exported audio (individual loops, master mix, or samples).</li>
+              <li><strong>.trk</strong> — Song Tracker sequence.</li>
+              <li><strong>.afx</strong> — Custom AudioWorklet effect bundle.</li>
+              <li><strong>.acp</strong> — FX Chain preset (effect order only).</li>
+              <li><strong>.agp</strong> — Global preset (full effect chain with parameters).</li>
+              <li><strong>.ald</strong> — Drone synth preset.</li>
           </ul>
 
-          <h4>6. Credits & License</h4>
+          <h4>16. Pro Tips</h4>
+          <ul>
+              <li><strong>Always calibrate latency</strong> before performing — run the PING TEST with your speakers on.</li>
+              <li><strong>Reorder effects freely</strong> — distortion into reverb sounds completely different from reverb into distortion.</li>
+              <li><strong>Layer gradually:</strong> Record a rhythm loop first, then add bass, then melody. Use the Fbk slider to control how layers blend.</li>
+              <li><strong>Stutter + Multiply:</strong> Use Stutter for a build-up, then release and hit Multiply to extend the loop into a new section.</li>
+              <li><strong>Quantized switching:</strong> With sync enabled, starting a loop queues it for the next bar boundary — use this to switch loops perfectly in time.</li>
+          </ul>
+
+          <h4>17. Credits &amp; License</h4>
           <ul>
               <li>Licensed under <a href="https://www.gnu.org/licenses/old-licenses/gpl-2.0.html" target="_blank" style="color: #464;">GPL 2.0</a>.</li>
-              <li>Inspired by <a href="https://github.com/free-wheeling/freewheeling" target="_blank" style="color: #464;">Freewheeling Looper</a>.</li>
+              <li>Inspired by <a href="https://github.com/free-wheeling/freewheeling" target="_blank" style="color: #464;">Freewheeling Looper</a> and the EDP LoopIII.</li>
               <li>SoundTouchJS by Olli Parviainen.</li>
-          </ul>
-
-          <h4>7. Pro Tips</h4>
-          <ul>
-              <li><strong>Latency Calibration:</strong> Always run the PING TEST in the [TIMING] tab with your speakers on to auto-calibrate roundtrip latency.</li>
-              <li><strong>Effect Reordering:</strong> Type letters directly into the FX Chain box (e.g., "D" before "T" for delay into distortion) to radically change the sound.</li>
           </ul>
       </div>
 
-      <div id="manual-es" class="manual-content">
+            <div id="manual-es" class="manual-content">
           <h3>ASCII Looper - Manual Completo</h3>
-          
-          <h4>1. Flujo de Trabajo y Controles de Loop</h4>
+          <p style="color:#888; margin-bottom:10px;">Una estación de loops completa de 10 pistas con efectos, sintetizadores y secuenciador — directamente en tu navegador.</p>
+
+          <h4>1. ¿Qué es un Looper?</h4>
+          <p>Un looper graba frases cortas de audio y las reproduce en bucle continuo. Al superponer varios loops, puedes crear arreglos completos en tiempo real — beatbox para el ritmo, una línea de bajo, una melodía, todo hecho por ti solo.</p>
+          <p>ASCII Looper te da <strong>10 pistas de loop</strong>, un <strong>sintetizador de 10 voces</strong>, una <strong>cadena de efectos</strong> por pista y un <strong>secuenciador de canciones</strong> — todo controlable desde el teclado, un controlador MIDI o un gamepad.</p>
+
+          <h4>2. Primeros Pasos</h4>
           <ul>
-              <li><strong>Configuración:</strong> Active [ENABLE SYNC]. Ajuste los BPM y Compases (Bars). Pulse [T] o el Metrónomo para escuchar la claqueta.</li>
-              <li><strong>Grabar:</strong> Pulse un número <strong>[1-0]</strong>. El loop se arma (Amarillo) y graba al inicio del compás (Rojo).</li>
-              <li><strong>Play/Parar/Borrar:</strong> Pulsación corta para Play/Stop. <strong>Pulsación Larga</strong> en loop Parado borra la pista. Pulsación Larga en loop sonando hace un corte de inmediato.</li>
-              <li><strong>Overdub [+]:</strong> Pulse <strong>[+]</strong> (Magenta). Añade audio sobre la capa existente. El nivel de decaimiento se controla con el slider "Fbk".</li>
-              <li><strong>Sustituir [-]:</strong> Pulse <strong>[-]</strong> (Turquesa). Reemplaza el audio antiguo en tiempo real en lugar de sumar (Punch-in destructivo).</li>
-              <li><strong>Sustain [*]:</strong> Pulse <strong>[*]</strong>. Las acciones de Grabar/Play solo ocurren mientras mantenga la tecla presionada (Momentary).</li>
-              <li><strong>Modificadores:</strong> Use los botones de la interfaz para <strong>RTRG</strong> (Reiniciar a tiempo), <strong>MULT</strong> (Doblar duración), <strong>1/2</strong> (Media velocidad), o <strong>NORM</strong> (Normalizar volumen).</li>
+              <li><strong>Permitir Micrófono:</strong> Al iniciar, el navegador pedirá acceso al micrófono. Haz clic en Permitir. También puedes capturar audio del sistema (ver sección de Entrada).</li>
+              <li><strong>Activar Sync:</strong> Marca ENABLE SYNC en el panel Sync &amp; Settings. Esto alinea todas las grabaciones a una cuadrícula de tempo para que los loops se mantengan en tiempo.</li>
+              <li><strong>Ajustar Tempo:</strong> Introduce un valor BPM (ej. 120). Todas las grabaciones se ajustarán a este tempo.</li>
+              <li><strong>Ajustar Compases:</strong> Elige la duración del loop en compases (ej. 2 compases). Un loop nuevo grabará durante esa cantidad antes de empezar a repetirse.</li>
+              <li><strong>Metrónomo:</strong> Pulsa <strong>[N]</strong> para activar/desactivar el clic. Úsalo mientras configuras, luego desactívalo antes de actuar.</li>
           </ul>
 
-          <h4>2. Módulos y Espacios de Trabajo</h4>
+          <h4>3. Grabar Tu Primer Loop</h4>
+          <ol>
+              <li>Pulsa cualquier tecla numérica <strong>[1]</strong> a <strong>[0]</strong> (donde [0] = Loop 10). El estado del loop se pone <span style="color:#ff0">AMARILLO</span> — armado y esperando.</li>
+              <li>Al inicio del siguiente compás, la grabación comienza automáticamente. El estado se pone <span style="color:#f00">ROJO</span>.</li>
+              <li>Toca o canta en tu micrófono. La forma de onda se llena en la pantalla del loop.</li>
+              <li>Cuando se alcanza el número de compases (o pulsas la tecla de nuevo), la grabación se detiene y el loop comienza a reproducirse. El estado se pone <span style="color:#0f0">VERDE</span>.</li>
+          </ol>
+          <p>¡Eso es todo — ya tienes tu primer loop sonando en bucle!</p>
+
+          <h4>4. Play, Stop y Borrar</h4>
           <ul>
-              <li><strong>Input & Master Mix:</strong> Administre entradas de Micrófono o Sistema. Use la consola maestra para mezclar pistas, drones y ecualizar globalmente.</li>
-              <li><strong>FX Chain:</strong> Escriba letras (ej. <code>QCATG</code>) para reordenar efectos. Importe paquetes <code>.afx</code> para cargar efectos personalizados basados en AudioWorklets.</li>
-              <li><strong>Drone Synth:</strong> 10 Sintetizadores polifónicos. Incluye osciladores duales, Sub, FM, ADSR y generación rítmica Euclidiana/Caos. Soporta rueda de modulación y Pitch Bend MIDI.</li>
-              <li><strong>Song Tracker:</strong> Secuencie loops y drones de forma automática. Comandos de celda: <strong>ON</strong> (Tocar), <strong>OFF</strong> (Parar), <strong>MUT</strong> (Mutear), <strong>UNM</strong> (Desmutear), <strong>LOP</strong> (Reiniciar patrón).</li>
-              <li><strong>Sample Lab:</strong> Editor DSP Offline. Extraiga audio de un loop, aplique Time-Stretch de alta calidad (SoundTouch) sincronizado a compases o cambie el tono, y envíelo de vuelta.</li>
+              <li><strong>Play / Stop:</strong> Pulsación corta en la tecla numérica del loop <strong>[1]-[0]</strong>. Un loop detenido se muestra gris; uno en reproducción, verde.</li>
+              <li><strong>Borrar:</strong> Pulsación larga en la tecla mientras el loop está detenido. Esto borra el audio y reinicia el loop.</li>
+              <li><strong>Stop Inmediato:</strong> Pulsación larga mientras suena para pararlo de inmediato (en vez de esperar al final del loop).</li>
+              <li><strong>Parar Todo:</strong> Pulsa <strong>[Espacio]</strong> para detener todos los loops y drones a la vez.</li>
+              <li><strong>Inicio en Cola (modo Sync):</strong> Con sync activado, iniciar un loop detenido lo pone en cola (estado <span style="color:#ff0">AMARILLO</span> con símbolo [Q]). Arranca automáticamente en el siguiente boundary de compás. Pulsa de nuevo mientras está en cola para cancelar.</li>
           </ul>
 
-          <h4>3. MIDI y Mapeo</h4>
+          <h4>5. Overdub, Substitute y Sustain</h4>
+          <p>Estos tres modos cambian lo que ocurre al grabar sobre un loop existente:</p>
           <ul>
-              <li><strong>MIDI Learn:</strong> Haga clic derecho en casi cualquier control deslizante para entrar en modo "MIDI Learn", luego mueva una perilla en su controlador MIDI para asignarla. Pulse [ESC] para cancelar.</li>
-              <li><strong>Mapeo:</strong> Use la pestaña [CONFIG] para asignar Teclado, Notas MIDI o botones de Gamepad manualmente.</li>
-              <li><strong>Transporte:</strong> Mensajes estándar MIDI de Play/Stop/Continuar mapean automáticamente al Secuenciador (Tracker).</li>
+              <li><strong>Overdub [+]:</strong> Pulsa <strong>[+]</strong> para activar el modo Overdub (estado <span style="color:#f0f">MAGENTA</span>). La próxima vez que un loop grabe, el audio nuevo se <em>mezcla encima</em> del existente. Usa el slider Fbk para controlar cuánto decaen las capas antiguas. Pulsa <strong>[+]</strong> de nuevo para desactivar.</li>
+              <li><strong>Substitute [-]:</strong> Pulsa <strong>[-]</strong> para activar el modo Substitute (estado <span style="color:#0ff">CIAN</span>). El audio nuevo <em>reemplaza</em> al antiguo en tiempo real — como un punch-in. Pulsa de nuevo para desactivar.</li>
+              <li><strong>Sustain [*]:</strong> Pulsa <strong>[*]</strong> para activar el modo Sustain (momentáneo). Mientras está activo, la grabación solo ocurre mientras mantienes la tecla pulsada. Suelta y la reproducción continúa normalmente. Ideal para capturar frases precisas.</li>
+              <li><strong>Combinar:</strong> Overdub + Sustain juntos te permiten añadir capas solo mientras mantienes la tecla — perfecto para capas de llamada y respuesta.</li>
           </ul>
 
-          <h4>4. Teclas Rápidas Globales</h4>
+          <h4>6. Modificadores de Loop</h4>
+          <p>Cada pista de loop tiene una fila de botones de acción:</p>
+          <ul>
+              <li><strong>MUTE / UNM:</strong> Silenciar/activar. El botón se pone rojo cuando está silenciado.</li>
+              <li><strong>SOLO:</strong> Solo este loop (silencia los demás). Pulsa de nuevo para desactivar.</li>
+              <li><strong>UNDO:</strong> Deshacer la última pasada de overdub o substitute. Puedes deshacer varias veces.</li>
+              <li><strong>REDO:</strong> Rehacer una pasada previamente deshecha.</li>
+              <li><strong>RTRG (Retrigger):</strong> Reinicia el loop desde el inicio, ajustado al beat más cercano. Ideal para stabs rítmicos.</li>
+              <li><strong>MULT (Multiply):</strong> Extensión de loop estilo EDP. Pulsa una vez para empezar a capturar audio entrante (estado naranja). Pulsa de nuevo para detener la captura — el audio capturado se añade al final del loop, duplicando (o más) su duración. Con sync activado y sin entrada detectada, el loop simplemente se duplica al instante.</li>
+              <li><strong>STUT (Stutter):</strong> Mantén este botón para fijar un fragmento corto del loop y retrigger rítmicamente (fragmentos de semicorchea). Suelta para reanudar la reproducción normal. Ideal para efectos de beat-repeat y subidas.</li>
+              <li><strong>NORM (Normalizar):</strong> Sube el volumen del loop hasta que su pico más alto alcance el nivel máximo. Útil para igualar niveles entre loops.</li>
+              <li><strong>Rvers (Reverse):</strong> Casilla de verificación para reproducir el loop al revés.</li>
+              <li><strong>1/2 (Media Velocidad):</strong> Activa la reproducción a media velocidad para efectos de octava abajo.</li>
+              <li><strong>Spd (Velocidad):</strong> Slider para ajustar la velocidad de reproducción de 0.25x a 2x.</li>
+              <li><strong>Start &lt; Q &gt;:</strong> Ajusta el punto de inicio del loop izquierda/derecha, o pulsa Q para cuantizar a la semicorchea más cercana.</li>
+              <li><strong>Pan:</strong> Panorama izquierda/derecha en el campo estéreo.</li>
+              <li><strong>Vol:</strong> Slider de volumen (mostrado en dB).</li>
+              <li><strong>Fbk (Feedback):</strong> Controla cuánto decae el audio existente con cada pasada de overdub. Valores bajos = las capas se desvanecen rápido. Valores altos = las capas persisten.</li>
+              <li><strong>SAVE:</strong> Exporta este loop como WAV (versiones seca y procesada).</li>
+              <li><strong>DEL:</strong> Borra el loop (igual que pulsación larga en un loop detenido).</li>
+          </ul>
+
+          <h4>7. Cadena de Efectos</h4>
+          <p>Cada loop tiene su propia cadena de efectos — una secuencia de procesadores de audio por los que pasa la señal. Escribe las letras de la cadena en el cuadro de texto FX Chain para añadir/eliminar/reordenar efectos. Por ejemplo, <code>QCTFODBVK</code> te da EQ, Compresor, Distorsión, Fuzz, Overdrive, Delay, Reverb, Machine Reverb, Dusk.</p>
+          <p><strong>Efectos Disponibles (12):</strong></p>
+          <ul>
+              <li><strong>Q</strong> — eQ: Ecualizador paramétrico de 8 bandas con cortes bajo/alto, shelves y 6 bandas peak.</li>
+              <li><strong>C</strong> — Comp: Compresor con umbral, ratio, knee, ataque, release y ganancia.</li>
+              <li><strong>A</strong> — Arpd: Delay arpegiado que crea patrones melódicos rítmicos. Controles de escala, humanize y rango.</li>
+              <li><strong>T</strong> — disTr: Distorsión con waveshaping, control de tono y mezcla.</li>
+              <li><strong>F</strong> — Fuzz: Distorsión fuzz agresiva con ganancia y tono.</li>
+              <li><strong>O</strong> — Odrv: Overdrive suave con drive, tono y volumen.</li>
+              <li><strong>D</strong> — Dlay: Delay sincronizado al tempo con feedback, damping y paneo estéreo.</li>
+              <li><strong>B</strong> — revB: Reverb de convolución con tamaño de sala, decay, damping y pre-delay.</li>
+              <li><strong>V</strong> — reVm: Reverb algorítmica "machine" con carácter de warping.</li>
+              <li><strong>K</strong> — dusK: Efecto granular shimmer con tamaño de grano, haunt y shimmer. Crea vastas texturas ambientales.</li>
+              <li><strong>Z</strong> — zigZ: Modulador LFO (tremolo/auto-pan) con rate, depth y phase.</li>
+              <li><strong>G</strong> — Griz: Seguidor de envolvente + filtro con drive. Produce texturas wah y arenosas.</li>
+          </ul>
+          <p><strong>Cadena por defecto:</strong> <code>QCATFODBVKZG</code>. Reordena las letras para cambiar la ruta de señal — ¡distorsión antes de reverb suena muy diferente a reverb antes de distorsión!</p>
+          <p><strong>Presets FX:</strong> Usa el desplegable de presets para cargar cadenas de fábrica (Vocal Air, Shoegaze, Dub Echo, Lo-Fi Tape, Metal Lead, etc.).</p>
+          <p><strong>Presets Globales:</strong> Presets completos de cadena de efectos (Init/Clean, Voice Lead, Drums Punch, Bass Solid, Guitar Acoustic/Rock/Psychedelic/Noise, etc.).</p>
+          <p><strong>Efectos Personalizados:</strong> Importa paquetes <code>.afx</code> para añadir efectos AudioWorklet personalizados a la cadena.</p>
+          <p><strong>Merge:</strong> Usa el desplegable MERGE + botón GO para mezclar audio de otro loop en este.</p>
+
+          <h4>8. Sintetizador Drone</h4>
+          <p>La pestaña Drone Synth (usa <strong>Tab</strong> para cambiar) contiene 10 voces de sintetizador polifónico independientes, tocables con las teclas <strong>[Q]-[P]</strong> o MIDI.</p>
+          <ul>
+              <li><strong>Osciladores:</strong> Osciladores duales (OSC1 + OSC2) con ondas sinusoidal, triangular, sierra y cuadrada. OSC2 tiene desafinación. Una capa Unison añade anchura.</li>
+              <li><strong>Sub Oscilador:</strong> Capa extra de graves (triangular o cuadrada) con control de mezcla.</li>
+              <li><strong>Generador de Ruido:</strong> Ruido blanco o rosa con control de mezcla.</li>
+              <li><strong>Filtro (VCF):</strong> Filtro lowpass, highpass, bandpass o notch con corte, resonancia y modulación de envolvente.</li>
+              <li><strong>Envolvente ADSR:</strong> Controles de Ataque, Decaimiento, Sostenimiento y Relajación con parámetro Punch para transitorios percusivos.</li>
+              <li><strong>Síntesis FM:</strong> Modulación de frecuencia para tonos metálicos y de campana.</li>
+              <li><strong>LFO y Vibrato:</strong> Oscilador de baja frecuencia para sweeps de filtro, más vibrato dedicado con rate y depth.</li>
+              <li><strong>Secuenciador por Pasos:</strong> Hasta 64 pasos con pitch, gate y velocity por paso. Rate ajustable.</li>
+              <li><strong>Generadores Rítmicos:</strong> 7 tipos de patrones algorítmicos — Harmonic, Dissonant, Random, Euclidean 4, Techno, Chaos, Fill. Pulsa EVL para evolucionar la secuencia actual.</li>
+              <li><strong>Presets:</strong> Ambient (Goth Pad, Witch Lead, Cinematic, Deep Space), Rhythm (Dark Kick, Syn Tom, Industrial Snare), Bass (Cold Bass, Acid Rain) y más.</li>
+              <li><strong>MIDI:</strong> Soporta pitch-bend y mod-wheel. Cada drone tiene su propia cadena de efectos.</li>
+              <li><strong>Guardar/Cargar:</strong> Los presets de drone se guardan como archivos <code>.ald</code>.</li>
+          </ul>
+
+          <h4>9. Sample Lab</h4>
+          <p>El Sample Lab es un editor de audio offline (siempre visible encima de las pestañas de workspace):</p>
+          <ul>
+              <li><strong>GET:</strong> Importa audio de cualquier pista de loop, pista de sampler o carga un archivo de audio del disco.</li>
+              <li><strong>Record:</strong> Graba directamente desde tu entrada en el lab.</li>
+              <li><strong>Time-Stretch:</strong> Estiramiento SoundTouch de alta calidad. Introduce un número de compases objetivo para calcular automáticamente el ratio y sincronizar al tempo.</li>
+              <li><strong>Pitch Shift:</strong> Desplaza el tono arriba o abajo en semitonos (-12 a +12).</li>
+              <li><strong>Reverse:</strong> Invierte el audio.</li>
+              <li><strong>Normalize:</strong> Sube al nivel de pico.</li>
+              <li><strong>Trim:</strong> Usa los sliders Start y End para seleccionar una región del audio.</li>
+              <li><strong>Preview:</strong> Escucha el resultado procesado antes de confirmar.</li>
+              <li><strong>PUT:</strong> Envía el audio procesado de vuelta a una pista de loop o sampler (con confirmación de sobrescritura).</li>
+              <li><strong>Save:</strong> Exporta como archivo WAV.</li>
+          </ul>
+
+          <h4>10. Song Tracker</h4>
+          <p>El Song Tracker (en la pestaña SONG TRACKER) te permite secuenciar loops y drones en arreglos completos:</p>
+          <ul>
+              <li><strong>Celdas:</strong> Cada celda es un paso en la secuencia. Comandos: ON (iniciar loop), OFF (parar), MUT (silenciar), UNM (des-silenciar), LOP (reiniciar patrón).</li>
+              <li><strong>Patrones:</strong> Agrupa celdas en patrones (intro, verso, estribillo, etc.), luego organiza patrones en una canción.</li>
+              <li><strong>Duración del Patrón:</strong> Ajusta cuántos pasos por patrón.</li>
+              <li><strong>Modo Canción:</strong> Encadena patrones en orden y pulsa Play para ejecutar el arreglo completo.</li>
+              <li><strong>Pistas de Sampler (S1-S10):</strong> 10 pistas adicionales para samples one-shot. Teclas <strong>[A], [S], [D], [F], [G], [H], [J], [K], [L], [;]</strong>.</li>
+              <li><strong>Consola Master Mix:</strong> Ajusta volumen, pan, EQ y compresión para toda la salida. Graba la salida master como WAV.</li>
+              <li><strong>Guardar/Cargar:</strong> Secuencias de tracker guardadas como archivos <code>.trk</code>.</li>
+          </ul>
+
+          <h4>11. Entrada y Ajustes de Sync</h4>
+          <ul>
+              <li><strong>Entrada de Audio:</strong> Elige entre captura de micrófono o audio del sistema (panel INPUT MIXER). Ajusta ganancia de entrada y toggle mono/estéreo.</li>
+              <li><strong>Sync:</strong> Ajustes de BPM, compases y metrónomo. Activa sync para bloquear todos los loops a una cuadrícula de tempo compartida. Cuando está activado, los inicios de loop se cuantizan a los boundaries de compás.</li>
+              <li><strong>Calibración de Latencia:</strong> Ejecuta el PING TEST para medir y compensar automáticamente la latencia de audio. Toca con altavoces encendidos para resultados precisos.</li>
+          </ul>
+
+          <h4>12. MIDI, Gamepad y Mapeo de Teclas</h4>
+          <ul>
+              <li><strong>MIDI Learn:</strong> Clic derecho en casi cualquier slider o knob. El control se resalta, esperando entrada. Mueve un knob o fader en tu controlador MIDI para asignarlo. Pulsa <strong>[ESC]</strong> para cancelar.</li>
+              <li><strong>Mapeo de Teclas/Gamepad:</strong> Usa la pestaña CONFIG para asignar manualmente teclas, notas MIDI o botones de gamepad a cualquier acción de loop o drone.</li>
+              <li><strong>Transporte MIDI:</strong> Los mensajes estándar MIDI de Play/Stop/Continue se mapean automáticamente al transporte del Song Tracker.</li>
+              <li><strong>Gamepad:</strong> Conecta un gamepad y asigna botones en la pestaña CONFIG. Útil para control de loops con manos libres.</li>
+          </ul>
+
+          <h4>13. Pestañas de Workspace</h4>
+          <p>Pulsa <strong>[Tab]</strong> para ciclar entre las cuatro pestañas de workspace:</p>
+          <ul>
+              <li><strong>Loop Tracks:</strong> Tus 10 pistas de loop con todos los controles.</li>
+              <li><strong>Drone Synth:</strong> El rack de sintetizadores.</li>
+              <li><strong>Song Tracker:</strong> Secuenciador, pistas de sampler y consola master.</li>
+              <li><strong>Live Performance:</strong> Vista compacta con controles de mezcla en vivo — ideal para actuar.</li>
+          </ul>
+
+          <h4>14. Referencia de Teclas Rápidas</h4>
+          <ul id="manual-hotkeys-list-es" style="list-style:none; padding:0; margin:5px 0; border:1px dashed #333; padding:8px; font-size:11px; color:#0f0;"></ul>
           <table style="width:100%; border-collapse: collapse; font-size: 11px; margin-top: 5px;">
               <tr style="border-top: 1px dashed #333;">
                   <td style="padding: 4px; color: #0f0;">[1]-[0]</td>
                   <td style="padding: 4px;">Loops 1-10</td>
-                  <td style="padding: 4px; color: #0f0;">[Space]</td>
+                  <td style="padding: 4px; color: #0f0;">[Espacio]</td>
                   <td style="padding: 4px;">Parar Todo</td>
               </tr>
               <tr>
                   <td style="padding: 4px; color: #0f0;">[Q]-[P]</td>
                   <td style="padding: 4px;">Drones 1-10</td>
-                  <td style="padding: 4px; color: #0f0;">[R]</td>
+                  <td style="padding: 4px; color: #0f0;">[M]</td>
                   <td style="padding: 4px;">Grabar Master</td>
               </tr>
               <tr style="border-top: 1px dashed #333;">
-                  <td style="padding: 4px; color: #0f0;">[+] / [-] / [*]</td>
-                  <td style="padding: 4px;">Overdub / Sub / Sus</td>
+                  <td style="padding: 4px; color: #0f0;">[+]</td>
+                  <td style="padding: 4px;">Modo Overdub</td>
+                  <td style="padding: 4px; color: #0f0;">[N]</td>
+                  <td style="padding: 4px;">Metrónomo</td>
+              </tr>
+              <tr>
+                  <td style="padding: 4px; color: #0f0;">[-]</td>
+                  <td style="padding: 4px;">Modo Substitute</td>
                   <td style="padding: 4px; color: #0f0;">[H]</td>
                   <td style="padding: 4px;">Media Velocidad</td>
               </tr>
+              <tr style="border-top: 1px dashed #333;">
+                  <td style="padding: 4px; color: #0f0;">[*]</td>
+                  <td style="padding: 4px;">Sustain</td>
+                  <td style="padding: 4px; color: #0f0;">[/]</td>
+                  <td style="padding: 4px;">Reactivar Loop Activo</td>
+              </tr>
               <tr>
-                  <td style="padding: 4px; color: #0f0;">[Z] / [Sh]+[Z]</td>
-                  <td style="padding: 4px;">Deshacer / Rehacer</td>
-                  <td style="padding: 4px; color: #0f0;">[M] / [N]</td>
-                  <td style="padding: 4px;">Grab Master / Metrónomo</td>
+                  <td style="padding: 4px; color: #0f0;">[\]</td>
+                  <td style="padding: 4px;">Multiplicar Loop Activo</td>
+                  <td></td>
+                  <td></td>
+              </tr>
+              <tr>
+                  <td style="padding: 4px; color: #0f0;">[Z]</td>
+                  <td style="padding: 4px;">Deshacer</td>
+                  <td style="padding: 4px; color: #0f0;">[L]</td>
+                  <td style="padding: 4px;">Cargar Proyecto</td>
+              </tr>
+              <tr style="border-top: 1px dashed #333;">
+                  <td style="padding: 4px; color: #0f0;">[Shift]+[Z]</td>
+                  <td style="padding: 4px;">Rehacer</td>
+                  <td style="padding: 4px; color: #0f0;">[Tab]</td>
+                  <td style="padding: 4px;">Cambiar Pestaña</td>
+              </tr>
+              <tr>
+                  <td style="padding: 4px; color: #0f0;">[ESC]</td>
+                  <td style="padding: 4px;">Cancelar MIDI Learn</td>
+                  <td style="padding: 4px; color: #0f0;">[R]</td>
+                  <td style="padding: 4px;">Guardar Proyecto</td>
+              </tr>
+              <tr style="border-top: 1px dashed #333;">
+                  <td style="padding: 4px; color: #0f0;">[X]</td>
+                  <td style="padding: 4px;">Borrar Todo</td>
+                  <td style="padding: 4px;"></td>
+                  <td style="padding: 4px;"></td>
               </tr>
           </table>
+          <p style="color:#666; font-size:10px; margin-top:5px;">Nota: Las teclas de Loop y Drone tienen prioridad. Las teclas alternativas (H, R, L, X) solo funcionan cuando no están asignadas a un loop o drone.</p>
 
-          <h4>5. Tipos de Archivo</h4>
+          <h4>15. Tipos de Archivo</h4>
           <ul>
-              <li><strong>.alp</strong>: Proyecto (Guarda configuración y audio codificado).</li>
-              <li><strong>.wav</strong>: Exportación (Pistas individuales o Master Mix).</li>
-              <li><strong>.trk</strong>: Secuencia de Canción (Tracker).</li>
-              <li><strong>.afx</strong>: Efecto Personalizado / Paquete de Presets.</li>
-              <li><strong>.acp / .agp / .ald</strong>: Presets de FX Chain, Globales y Drones.</li>
+              <li><strong>.alp</strong> — Archivo de proyecto. Guarda todos los ajustes, audio de loops y estado.</li>
+              <li><strong>.wav</strong> — Audio exportado (loops individuales, mezcla master o samples).</li>
+              <li><strong>.trk</strong> — Secuencia de Song Tracker.</li>
+              <li><strong>.afx</strong> — Paquete de efecto AudioWorklet personalizado.</li>
+              <li><strong>.acp</strong> — Preset de cadena FX (solo orden de efectos).</li>
+              <li><strong>.agp</strong> — Preset global (cadena completa con parámetros).</li>
+              <li><strong>.ald</strong> — Preset de sintetizador drone.</li>
           </ul>
 
-          <h4>6. Créditos y Licencia</h4>
+          <h4>16. Consejos Pro</h4>
+          <ul>
+              <li><strong>Calibra siempre la latencia</strong> antes de actuar — ejecuta el PING TEST con los altavoces encendidos.</li>
+              <li><strong>Reordena efectos libremente</strong> — distorsión hacia reverb suena completamente diferente a reverb hacia distorsión.</li>
+              <li><strong>Capas graduales:</strong> Graba primero un loop de ritmo, luego bajo, luego melodía. Usa el slider Fbk para controlar cómo se mezclan las capas.</li>
+              <li><strong>Stutter + Multiply:</strong> Usa Stutter para una subida, luego suelta y pulsa Multiply para extender el loop en una nueva sección.</li>
+              <li><strong>Cambio cuantizado:</strong> Con sync activado, iniciar un loop lo pone en cola para el siguiente boundary de compás — úsalo para cambiar loops perfectamente a tiempo.</li>
+          </ul>
+
+          <h4>17. Créditos y Licencia</h4>
           <ul>
               <li>Licencia <a href="https://www.gnu.org/licenses/old-licenses/gpl-2.0.html" target="_blank" style="color: #464;">GPL 2.0</a>.</li>
-              <li>Inspirado en <a href="https://github.com/free-wheeling/freewheeling" target="_blank" style="color: #464;">Freewheeling Looper</a>.</li>
+              <li>Inspirado en <a href="https://github.com/free-wheeling/freewheeling" target="_blank" style="color: #464;">Freewheeling Looper</a> y el EDP LoopIII.</li>
               <li>SoundTouchJS por Olli Parviainen.</li>
-          </ul>
-
-          <h4>7. Atajos Avanzados</h4>
-          <ul>
-              <li><strong>Calibración de Latencia:</strong> Ejecute siempre el PING TEST en la pestaña [SYNC] con los altavoces encendidos para autocalibrar la latencia.</li>
-              <li><strong>Reordenar Efectos:</strong> Escriba las letras en la caja FX Chain (ej. "D" antes de "T") para alterar radicalmente el procesamiento de la señal.</li>
           </ul>
       </div>
 
-      <div id="manual-pt" class="manual-content">
+            <div id="manual-pt" class="manual-content">
           <h3>ASCII Looper - Manual Completo</h3>
-          
-          <h4>1. Fluxo de Trabalho e Controlos de Loop</h4>
+          <p style="color:#888; margin-bottom:10px;">Uma estação de loops completa de 10 pistas com efeitos, sintetizadores e sequenciador — diretamente no teu navegador.</p>
+
+          <h4>1. O Que é um Looper?</h4>
+          <p>Um looper grava frases curtas de áudio e reprodu-las em ciclo contínuo. Ao sobrepor vários loops, podes criar arranjos completos em tempo real — beatbox para o ritmo, uma linha de baixo, uma melodia, tudo feito por ti.</p>
+          <p>O ASCII Looper dá-te <strong>10 pistas de loop</strong>, um <strong>sintetizador de 10 vozes</strong>, uma <strong>cadeia de efeitos</strong> por pista e um <strong>sequenciador de músicas</strong> — tudo controlável pelo teclado, um controlador MIDI ou um gamepad.</p>
+
+          <h4>2. Primeiros Passos</h4>
           <ul>
-              <li><strong>Configuração:</strong> Ative [ENABLE SYNC]. Ajuste o BPM e os Compassos (Bars). Prima [T] ou o Metrónomo para ouvir a marcação de tempo.</li>
-              <li><strong>Gravar:</strong> Prima um número <strong>[1-0]</strong>. O loop é armado (Amarelo) e começa a gravar no compasso seguinte (Vermelho).</li>
-              <li><strong>Tocar/Parar/Limpar:</strong> Pressão curta para Play/Stop. <strong>Pressão Longa</strong> num loop parado limpa-o. Pressão Longa num loop a tocar para-o imediatamente.</li>
-              <li><strong>Overdub [+]:</strong> Prima <strong>[+]</strong> (Magenta). Adiciona áudio por cima da gravação existente. O decay é controlado pelo slider "Fbk".</li>
-              <li><strong>Substituir [-]:</strong> Prima <strong>[-]</strong> (Ciano). Substitui o áudio antigo em tempo real em vez de o somar (Punch-in destrutivo).</li>
-              <li><strong>Sustain [*]:</strong> Prima <strong>[*]</strong>. As ações de gravação/reprodução apenas ocorrem enquanto a tecla estiver premida (Momentary).</li>
-              <li><strong>Modificadores:</strong> Use os botões da interface para <strong>RTRG</strong> (Reiniciar no tempo), <strong>MULT</strong> (Dobrar duração), <strong>1/2</strong> (Meia velocidade), ou <strong>NORM</strong> (Normalizar volume).</li>
+              <li><strong>Permitir Microfone:</strong> Ao iniciar, o navegador pede acesso ao microfone. Clica em Permitir. Também podes capturar áudio do sistema (ver secção de Entrada).</li>
+              <li><strong>Ativar Sync:</strong> Marca ENABLE SYNC no painel Sync &amp; Settings. Isto alinha todas as gravações a uma grelha de tempo para que os loops se mantenham sincronizados.</li>
+              <li><strong>Ajustar Tempo:</strong> Introduz um valor BPM (ex. 120). Todas as gravações se ajustam a este tempo.</li>
+              <li><strong>Ajustar Compassos:</strong> Escolhe a duração do loop em compassos (ex. 2 compassos). Um loop novo grava durante essa quantidade antes de começar a repetir.</li>
+              <li><strong>Metrónomo:</strong> Prime <strong>[N]</strong> para ativar/desativar o clique. Usa-o enquanto configuras, depois desativa antes de atuar.</li>
           </ul>
 
-          <h4>2. Módulos e Espaços de Trabalho</h4>
+          <h4>3. Gravar o Teu Primeiro Loop</h4>
+          <ol>
+              <li>Prime qualquer tecla numérica <strong>[1]</strong> a <strong>[0]</strong> (onde [0] = Loop 10). O estado do loop fica <span style="color:#ff0">AMARELO</span> — armado e à espera.</li>
+              <li>No início do compasso seguinte, a gravação começa automaticamente. O estado fica <span style="color:#f00">VERMELHO</span>.</li>
+              <li>Toca ou canta no microfone. A forma de onda preenche-se no ecrã do loop.</li>
+              <li>Quando o número de compassos é atingido (ou primes a tecla novamente), a gravação para e o loop começa a reproduzir. O estado fica <span style="color:#0f0">VERDE</span>.</li>
+          </ol>
+          <p>É isso — já tens o teu primeiro loop a tocar em ciclo!</p>
+
+          <h4>4. Play, Stop e Limpar</h4>
           <ul>
-              <li><strong>Input & Master Mix:</strong> Gira as entradas de Microfone ou Sistema. Use a aba "Console" para misturar loops, drones e equalizar a saída master globalmente.</li>
-              <li><strong>FX Chain:</strong> Escreva letras (ex: <code>QCATG</code>) para reordenar efeitos. Importe pacotes <code>.afx</code> para carregar efeitos personalizados baseados em AudioWorklets.</li>
-              <li><strong>Drone Synth:</strong> 10 Sintetizadores polifónicos. Inclui Osciladores duplos, Sub, FM, ADSR e geração de ritmo Euclidiana/Caos. Suporta Pitch Bend e Mod Wheel via MIDI.</li>
-              <li><strong>Song Tracker:</strong> Sequencie loops e drones automaticamente. Comandos: <strong>ON</strong> (Tocar), <strong>OFF</strong> (Parar), <strong>MUT</strong> (Mute), <strong>UNM</strong> (Unmute), <strong>LOP</strong> (Reiniciar padrão).</li>
-              <li><strong>Sample Lab:</strong> Editor DSP Offline. Extraia áudio de um loop, aplique Time-Stretch de alta qualidade (SoundTouch) sincronizado com os compassos ou Pitch Shift, e envie-o de volta.</li>
+              <li><strong>Play / Stop:</strong> Pressão curta na tecla numérica do loop <strong>[1]-[0]</strong>. Um loop parado fica cinzento; um em reprodução, verde.</li>
+              <li><strong>Limpar:</strong> Pressão longa na tecla enquanto o loop está parado. Isto apaga o áudio e reinicia o loop.</li>
+              <li><strong>Stop Imediato:</strong> Pressão longa enquanto toca para parar imediatamente (em vez de esperar o fim do loop).</li>
+              <li><strong>Parar Tudo:</strong> Prime <strong>[Espaço]</strong> para parar todos os loops e drones de uma vez.</li>
+              <li><strong>Início em Fila (modo Sync):</strong> Com sync ativado, iniciar um loop parado coloca-o em fila (estado <span style="color:#ff0">AMARELO</span> com símbolo [Q]). Arranca automaticamente no próximo boundary de compasso. Prime novamente enquanto em fila para cancelar.</li>
           </ul>
 
-          <h4>3. MIDI e Mapeamento</h4>
+          <h4>5. Overdub, Substitute e Sustain</h4>
+          <p>Estes três modos mudam o que acontece ao gravar sobre um loop existente:</p>
           <ul>
-              <li><strong>MIDI Learn:</strong> Clique com o botão direito em quase qualquer controlo deslizante, depois mova um botão no seu comando MIDI para o atribuir. Prima [ESC] para cancelar.</li>
-              <li><strong>Mapeamento:</strong> Use a aba [CONFIG] para atribuir manualmente botões do Teclado, Notas MIDI ou Gamepad.</li>
-              <li><strong>Transporte:</strong> Mensagens padrão MIDI de Play/Stop/Continuar mapeiam automaticamente para o Sequenciador (Tracker).</li>
+              <li><strong>Overdub [+]:</strong> Prime <strong>[+]</strong> para ativar o modo Overdub (estado <span style="color:#f0f">MAGENTA</span>). Da próxima vez que um loop gravar, o áudio novo é <em>misturado por cima</em> do existente. Usa o slider Fbk para controlar quanto as camadas antigas decaem. Prime <strong>[+]</strong> novamente para desativar.</li>
+              <li><strong>Substitute [-]:</strong> Prime <strong>[-]</strong> para ativar o modo Substitute (estado <span style="color:#0ff">CIANO</span>). O áudio novo <em>substitui</em> o antigo em tempo real — como um punch-in. Prime novamente para desativar.</li>
+              <li><strong>Sustain [*]:</strong> Prime <strong>[*]</strong> para ativar o modo Sustain (momentâneo). Enquanto ativo, a gravação só ocorre enquanto manténs a tecla premida. Solta e a reprodução continua normalmente. Ótimo para capturar frases precisas.</li>
+              <li><strong>Combinar:</strong> Overdub + Sustain juntos permitem adicionar camadas apenas enquanto manténs a tecla — perfeito para camadas de chamada e resposta.</li>
           </ul>
 
-          <h4>4. Teclas de Atalho Globais</h4>
+          <h4>6. Modificadores de Loop</h4>
+          <p>Cada pista de loop tem uma fila de botões de ação:</p>
+          <ul>
+              <li><strong>MUTE / UNM:</strong> Silenciar/ativar. O botão fica vermelho quando silenciado.</li>
+              <li><strong>SOLO:</strong> Solo neste loop (silencia os outros). Prime novamente para desativar.</li>
+              <li><strong>UNDO:</strong> Desfazer a última passada de overdub ou substitute. Podes desfazer várias vezes.</li>
+              <li><strong>REDO:</strong> Refazer uma passada anteriormente desfeita.</li>
+              <li><strong>RTRG (Retrigger):</strong> Reinicia o loop desde o início, ajustado ao beat mais próximo. Ótimo para stabs rítmicos.</li>
+              <li><strong>MULT (Multiply):</strong> Extensão de loop estilo EDP. Prime uma vez para começar a captar áudio (estado laranja). Prime novamente para parar a captura — o áudio capturado é acrescentado ao fim do loop, duplicando (ou mais) a sua duração. Com sync ativado e sem entrada detetada, o loop é simplesmente duplicado instantaneamente.</li>
+              <li><strong>STUT (Stutter):</strong> Mantém este botão premido para fixar um fragmento curto do loop e retrigger ritmicamente (fragmentos de semicolcheia). Solta para retomar a reprodução normal. Ótimo para efeitos de beat-repeat e subidas.</li>
+              <li><strong>NORM (Normalizar):</strong> Aumenta o volume do loop até que o seu pico mais alto atinja o nível máximo. Útil para igualar níveis entre loops.</li>
+              <li><strong>Rvers (Reverse):</strong> Caixa de verificação para reproduzir o loop ao contrário.</li>
+              <li><strong>1/2 (Meia Velocidade):</strong> Ativa a reprodução a meia velocidade para efeitos de oitava abaixo.</li>
+              <li><strong>Spd (Velocidade):</strong> Slider para ajustar a velocidade de reprodução de 0.25x a 2x.</li>
+              <li><strong>Start &lt; Q &gt;:</strong> Ajusta o ponto de início do loop esquerda/direita, ou prime Q para quantizar à semicolcheia mais próxima.</li>
+              <li><strong>Pan:</strong> Panorama esquerda/direita no campo estéreo.</li>
+              <li><strong>Vol:</strong> Slider de volume (mostrado em dB).</li>
+              <li><strong>Fbk (Feedback):</strong> Controla quanto o áudio existente decai com cada passada de overdub. Valores baixos = as camadas desvanecem depressa. Valores altos = as camadas persistem.</li>
+              <li><strong>SAVE:</strong> Exporta este loop como WAV (versões seca e processada).</li>
+              <li><strong>DEL:</strong> Apaga o loop (igual a pressão longa num loop parado).</li>
+          </ul>
+
+          <h4>7. Cadeia de Efeitos</h4>
+          <p>Cada loop tem a sua própria cadeia de efeitos — uma sequência de processadores de áudio por onde o sinal passa. Escreve as letras da cadeia na caixa de texto FX Chain para adicionar/remover/reordenar efeitos. Por exemplo, <code>QCTFODBVK</code> dá-te EQ, Compressor, Distorção, Fuzz, Overdrive, Delay, Reverb, Machine Reverb, Dusk.</p>
+          <p><strong>Efeitos Disponíveis (12):</strong></p>
+          <ul>
+              <li><strong>Q</strong> — eQ: Equalizador paramétrico de 8 bandas com cortes baixo/alto, shelves e 6 bandas peaking.</li>
+              <li><strong>C</strong> — Comp: Compressor com threshold, ratio, knee, ataque, release e ganho.</li>
+              <li><strong>A</strong> — Arpd: Delay arpejado que cria padrões melódicos rítmicos. Controlos de escala, humanize e alcance.</li>
+              <li><strong>T</strong> — disTr: Distorção com waveshaping, controlo de tom e mistura.</li>
+              <li><strong>F</strong> — Fuzz: Distorção fuzz agressiva com ganho e tom.</li>
+              <li><strong>O</strong> — Odrv: Overdrive suave com drive, tom e volume.</li>
+              <li><strong>D</strong> — Dlay: Delay sincronizado ao tempo com feedback, damping e pan estéreo.</li>
+              <li><strong>B</strong> — revB: Reverb de convolução com tamanho de sala, decay, damping e pre-delay.</li>
+              <li><strong>V</strong> — reVm: Reverb algorítmica "machine" com carácter de warping.</li>
+              <li><strong>K</strong> — dusK: Efeito granular shimmer com tamanho de grão, haunt e shimmer. Cria vastas texturas ambientais.</li>
+              <li><strong>Z</strong> — zigZ: Modulador LFO (tremolo/auto-pan) com rate, depth e phase.</li>
+              <li><strong>G</strong> — Griz: Seguidor de envelope + filtro com drive. Produz texturas tipo wah e arenosas.</li>
+          </ul>
+          <p><strong>Cadeia por defeito:</strong> <code>QCATFODBVKZG</code>. Reordena as letras para mudar o caminho do sinal — distorção antes de reverb soa muito diferente de reverb antes de distorção!</p>
+          <p><strong>Presets FX:</strong> Usa o dropdown de presets para carregar cadeias de fábrica (Vocal Air, Shoegaze, Dub Echo, Lo-Fi Tape, Metal Lead, etc.).</p>
+          <p><strong>Presets Globais:</strong> Presets completos de cadeia de efeitos (Init/Clean, Voice Lead, Drums Punch, Bass Solid, Guitar Acoustic/Rock/Psychedelic/Noise, etc.).</p>
+          <p><strong>Efeitos Personalizados:</strong> Importa pacotes <code>.afx</code> para adicionar efeitos AudioWorklet personalizados à cadeia.</p>
+          <p><strong>Merge:</strong> Usa o dropdown MERGE + botão GO para misturar áudio de outro loop neste.</p>
+
+          <h4>8. Sintetizador Drone</h4>
+          <p>O separador Drone Synth (usa <strong>Tab</strong> para mudar) contém 10 vozes de sintetizador polifónico independentes, tocáveis com as teclas <strong>[Q]-[P]</strong> ou MIDI.</p>
+          <ul>
+              <li><strong>Osciladores:</strong> Osciladores duplos (OSC1 + OSC2) com ondas sinusoidal, triangular, serra e quadrada. OSC2 tem desafinação. Uma camada Unison adiciona largura.</li>
+              <li><strong>Sub Oscilador:</strong> Camada extra de graves (triangular ou quadrada) com controlo de mistura.</li>
+              <li><strong>Gerador de Ruído:</strong> Ruído branco ou rosa com controlo de mistura.</li>
+              <li><strong>Filtro (VCF):</strong> Filtro lowpass, highpass, bandpass ou notch com corte, ressonância e modulação de envelope.</li>
+              <li><strong>Envelope ADSR:</strong> Controlos de Ataque, Decaimento, Sustentação e Relaxamento com parâmetro Punch para transitórios percussivos.</li>
+              <li><strong>Síntese FM:</strong> Modulação de frequência para tons metálicos e de sino.</li>
+              <li><strong>LFO e Vibrato:</strong> Oscilador de baixa frequência para sweeps de filtro, mais vibrato dedicado com rate e depth.</li>
+              <li><strong>Sequenciador por Passos:</strong> Até 64 passos com pitch, gate e velocity por passo. Rate ajustável.</li>
+              <li><strong>Geradores Rítmicos:</strong> 7 tipos de padrões algorítmicos — Harmonic, Dissonant, Random, Euclidean 4, Techno, Chaos, Fill. Prime EVL para evoluir a sequência atual.</li>
+              <li><strong>Presets:</strong> Ambient (Goth Pad, Witch Lead, Cinematic, Deep Space), Rhythm (Dark Kick, Syn Tom, Industrial Snare), Bass (Cold Bass, Acid Rain) e mais.</li>
+              <li><strong>MIDI:</strong> Suporta pitch-bend e mod-wheel. Cada drone tem a sua própria cadeia de efeitos.</li>
+              <li><strong>Guardar/Carregar:</strong> Os presets de drone são guardados como ficheiros <code>.ald</code>.</li>
+          </ul>
+
+          <h4>9. Sample Lab</h4>
+          <p>O Sample Lab é um editor de áudio offline (sempre visível acima dos separadores de workspace):</p>
+          <ul>
+              <li><strong>GET:</strong> Importa áudio de qualquer pista de loop, pista de sampler ou carrega um ficheiro de áudio do disco.</li>
+              <li><strong>Record:</strong> Grava diretamente da tua entrada no lab.</li>
+              <li><strong>Time-Stretch:</strong> Esticamento SoundTouch de alta qualidade. Introduz um número de compassos alvo para calcular automaticamente o rácio e sincronizar ao tempo.</li>
+              <li><strong>Pitch Shift:</strong> Desloca o tom para cima ou para baixo em semitons (-12 a +12).</li>
+              <li><strong>Reverse:</strong> Inverte o áudio.</li>
+              <li><strong>Normalize:</strong> Aumenta até ao nível de pico.</li>
+              <li><strong>Trim:</strong> Usa os sliders Start e End para selecionar uma região do áudio.</li>
+              <li><strong>Preview:</strong> Ouve o resultado processado antes de confirmar.</li>
+              <li><strong>PUT:</strong> Envia o áudio processado de volta para uma pista de loop ou sampler (com confirmação de sobrescrita).</li>
+              <li><strong>Save:</strong> Exporta como ficheiro WAV.</li>
+          </ul>
+
+          <h4>10. Song Tracker</h4>
+          <p>O Song Tracker (no separador SONG TRACKER) permite-te sequenciar loops e drones em arranjos completos:</p>
+          <ul>
+              <li><strong>Células:</strong> Cada célula é um passo na sequência. Comandos: ON (iniciar loop), OFF (parar), MUT (silenciar), UNM (des-silenciar), LOP (reiniciar padrão).</li>
+              <li><strong>Padrões:</strong> Agrupa células em padrões (intro, verso, refrão, etc.), depois organiza padrões numa música.</li>
+              <li><strong>Duração do Padrão:</strong> Define quantos passos por padrão.</li>
+              <li><strong>Modo Música:</strong> Encadeia padrões em ordem e prime Play para executar o arranjo completo.</li>
+              <li><strong>Pistas de Sampler (S1-S10):</strong> 10 pistas adicionais para samples one-shot. Teclas <strong>[A], [S], [D], [F], [G], [H], [J], [K], [L], [;]</strong>.</li>
+              <li><strong>Consola Master Mix:</strong> Ajusta volume, pan, EQ e compressão para toda a saída. Grava a saída master como WAV.</li>
+              <li><strong>Guardar/Carregar:</strong> Sequências de tracker guardadas como ficheiros <code>.trk</code>.</li>
+          </ul>
+
+          <h4>11. Entrada e Definições de Sync</h4>
+          <ul>
+              <li><strong>Entrada de Áudio:</strong> Escolhe entre captura de microfone ou áudio do sistema (painel INPUT MIXER). Ajusta ganho de entrada e toggle mono/estéreo.</li>
+              <li><strong>Sync:</strong> Definições de BPM, compassos e metrónomo. Ativa sync para bloquear todos os loops a uma grelha de tempo partilhada. Quando ativado, os inícios de loop são quantizados aos boundaries de compasso.</li>
+              <li><strong>Calibração de Latência:</strong> Executa o PING TEST para medir e compensar automaticamente a latência de áudio. Toca com monitores ligados para resultados precisos.</li>
+          </ul>
+
+          <h4>12. MIDI, Gamepad e Mapeamento de Teclas</h4>
+          <ul>
+              <li><strong>MIDI Learn:</strong> Clica com o botão direito em quase qualquer slider ou knob. O controlo destaca-se, à espera de entrada. Move um knob ou fader no teu controlador MIDI para o atribuir. Prime <strong>[ESC]</strong> para cancelar.</li>
+              <li><strong>Mapeamento de Teclas/Gamepad:</strong> Usa o separador CONFIG para atribuir manualmente teclas, notas MIDI ou botões de gamepad a qualquer ação de loop ou drone.</li>
+              <li><strong>Transporte MIDI:</strong> As mensagens padrão MIDI de Play/Stop/Continue são mapeadas automaticamente para o transporte do Song Tracker.</li>
+              <li><strong>Gamepad:</strong> Liga um gamepad e atribui botões no separador CONFIG. Útil para controlo de loops mãos-livres.</li>
+          </ul>
+
+          <h4>13. Separadores de Workspace</h4>
+          <p>Prime <strong>[Tab]</strong> para percorrer os quatro separadores de workspace:</p>
+          <ul>
+              <li><strong>Loop Tracks:</strong> As tuas 10 pistas de loop com todos os controlos.</li>
+              <li><strong>Drone Synth:</strong> O rack de sintetizadores.</li>
+              <li><strong>Song Tracker:</strong> Sequenciador, pistas de sampler e consola master.</li>
+              <li><strong>Live Performance:</strong> Vista compacta com controlos de mistura ao vivo — ideal para atuar.</li>
+          </ul>
+
+          <h4>14. Referência de Teclas de Atalho</h4>
+          <ul id="manual-hotkeys-list-pt" style="list-style:none; padding:0; margin:5px 0; border:1px dashed #333; padding:8px; font-size:11px; color:#0f0;"></ul>
           <table style="width:100%; border-collapse: collapse; font-size: 11px; margin-top: 5px;">
               <tr style="border-top: 1px dashed #333;">
                   <td style="padding: 4px; color: #0f0;">[1]-[0]</td>
                   <td style="padding: 4px;">Loops 1-10</td>
-                  <td style="padding: 4px; color: #0f0;">[Space]</td>
+                  <td style="padding: 4px; color: #0f0;">[Espaço]</td>
                   <td style="padding: 4px;">Parar Tudo</td>
               </tr>
               <tr>
                   <td style="padding: 4px; color: #0f0;">[Q]-[P]</td>
                   <td style="padding: 4px;">Drones 1-10</td>
-                  <td style="padding: 4px; color: #0f0;">[R]</td>
+                  <td style="padding: 4px; color: #0f0;">[M]</td>
                   <td style="padding: 4px;">Gravar Master</td>
               </tr>
               <tr style="border-top: 1px dashed #333;">
-                  <td style="padding: 4px; color: #0f0;">[+] / [-] / [*]</td>
-                  <td style="padding: 4px;">Overdub / Sub / Sus</td>
+                  <td style="padding: 4px; color: #0f0;">[+]</td>
+                  <td style="padding: 4px;">Modo Overdub</td>
+                  <td style="padding: 4px; color: #0f0;">[N]</td>
+                  <td style="padding: 4px;">Metrónomo</td>
+              </tr>
+              <tr>
+                  <td style="padding: 4px; color: #0f0;">[-]</td>
+                  <td style="padding: 4px;">Modo Substitute</td>
                   <td style="padding: 4px; color: #0f0;">[H]</td>
                   <td style="padding: 4px;">Meia Velocidade</td>
               </tr>
+              <tr style="border-top: 1px dashed #333;">
+                  <td style="padding: 4px; color: #0f0;">[*]</td>
+                  <td style="padding: 4px;">Sustain</td>
+                  <td style="padding: 4px; color: #0f0;">[/]</td>
+                  <td style="padding: 4px;">Reativar Loop Ativo</td>
+              </tr>
               <tr>
-                  <td style="padding: 4px; color: #0f0;">[Z] / [Sh]+[Z]</td>
-                  <td style="padding: 4px;">Desfazer / Refazer</td>
-                  <td style="padding: 4px; color: #0f0;">[M] / [N]</td>
-                  <td style="padding: 4px;">Grav Master / Metrónomo</td>
+                  <td style="padding: 4px; color: #0f0;">[\]</td>
+                  <td style="padding: 4px;">Multiplicar Loop Ativo</td>
+                  <td></td>
+                  <td></td>
+              </tr>
+              <tr>
+                  <td style="padding: 4px; color: #0f0;">[Z]</td>
+                  <td style="padding: 4px;">Desfazer</td>
+                  <td style="padding: 4px; color: #0f0;">[L]</td>
+                  <td style="padding: 4px;">Carregar Projeto</td>
+              </tr>
+              <tr style="border-top: 1px dashed #333;">
+                  <td style="padding: 4px; color: #0f0;">[Shift]+[Z]</td>
+                  <td style="padding: 4px;">Refazer</td>
+                  <td style="padding: 4px; color: #0f0;">[Tab]</td>
+                  <td style="padding: 4px;">Mudar Separador</td>
+              </tr>
+              <tr>
+                  <td style="padding: 4px; color: #0f0;">[ESC]</td>
+                  <td style="padding: 4px;">Cancelar MIDI Learn</td>
+                  <td style="padding: 4px; color: #0f0;">[R]</td>
+                  <td style="padding: 4px;">Guardar Projeto</td>
+              </tr>
+              <tr style="border-top: 1px dashed #333;">
+                  <td style="padding: 4px; color: #0f0;">[X]</td>
+                  <td style="padding: 4px;">Limpar Tudo</td>
+                  <td style="padding: 4px;"></td>
+                  <td style="padding: 4px;"></td>
               </tr>
           </table>
+          <p style="color:#666; font-size:10px; margin-top:5px;">Nota: As teclas de Loop e Drone têm prioridade. As teclas alternativas (H, R, L, X) só funcionam quando não estão atribuídas a um loop ou drone.</p>
 
-          <h4>5. Tipos de Ficheiro</h4>
+          <h4>15. Tipos de Ficheiro</h4>
           <ul>
-              <li><strong>.alp</strong>: Ficheiro de Projeto (Definições e áudio).</li>
-              <li><strong>.wav</strong>: Áudio Exportado (Loops, Misturas).</li>
-              <li><strong>.trk</strong>: Sequência de Música (Tracker).</li>
-              <li><strong>.afx</strong>: Efeito Personalizado / Pacote de Presets.</li>
-              <li><strong>.acp / .agp / .ald</strong>: Presets de FX Chain, Globais e Drones.</li>
+              <li><strong>.alp</strong> — Ficheiro de projeto. Guarda todas as definições, áudio de loops e estado.</li>
+              <li><strong>.wav</strong> — Áudio exportado (loops individuais, mistura master ou samples).</li>
+              <li><strong>.trk</strong> — Sequência de Song Tracker.</li>
+              <li><strong>.afx</strong> — Pacote de efeito AudioWorklet personalizado.</li>
+              <li><strong>.acp</strong> — Preset de cadeia FX (apenas ordem de efeitos).</li>
+              <li><strong>.agp</strong> — Preset global (cadeia completa com parâmetros).</li>
+              <li><strong>.ald</strong> — Preset de sintetizador drone.</li>
           </ul>
 
-          <h4>6. Créditos e Licença</h4>
+          <h4>16. Dicas Pro</h4>
+          <ul>
+              <li><strong>Calibra sempre a latência</strong> antes de atuar — executa o PING TEST com os monitores ligados.</li>
+              <li><strong>Reordena efeitos livremente</strong> — distorção para reverb soa completamente diferente de reverb para distorção.</li>
+              <li><strong>Camadas graduais:</strong> Grava primeiro um loop de ritmo, depois baixo, depois melodia. Usa o slider Fbk para controlar como as camadas se misturam.</li>
+              <li><strong>Stutter + Multiply:</strong> Usa Stutter para uma subida, depois solta e prime Multiply para estender o loop numa nova secção.</li>
+              <li><strong>Mudança quantizada:</strong> Com sync ativado, iniciar um loop coloca-o em fila para o próximo boundary de compasso — usa isto para mudar loops perfeitamente a tempo.</li>
+          </ul>
+
+          <h4>17. Créditos e Licença</h4>
           <ul>
               <li>Licenciado sob <a href="https://www.gnu.org/licenses/old-licenses/gpl-2.0.html" target="_blank" style="color: #464;">GPL 2.0</a>.</li>
-              <li>Inspirado em <a href="https://github.com/free-wheeling/freewheeling" target="_blank" style="color: #464;">Freewheeling Looper</a>.</li>
+              <li>Inspirado no <a href="https://github.com/free-wheeling/freewheeling" target="_blank" style="color: #464;">Freewheeling Looper</a> e no EDP LoopIII.</li>
               <li>SoundTouchJS por Olli Parviainen.</li>
-          </ul>
-
-          <h4>7. Dicas Pro</h4>
-          <ul>
-              <li><strong>Calibração de Latência:</strong> Execute sempre o PING TEST no painel [SYNC] com os monitores ligados para calibrar a latência do sistema.</li>
-              <li><strong>Reordenar Efeitos:</strong> Digite as letras na caixa FX Chain (ex. "D" antes de "T") para modificar drasticamente a cadeia de sinal.</li>
           </ul>
       </div>
     </div>
