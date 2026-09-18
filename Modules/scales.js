@@ -347,7 +347,8 @@ class SyncManager {
 
     static async runPingTest() {
         const btn = document.getElementById('pingTestBtn');
-        if(btn) { btn.textContent = "LISTENING..."; btn.disabled = true; }
+        const label = (key, fallback) => typeof I18n !== 'undefined' ? I18n.t(key) : fallback;
+        if(btn) { btn.textContent = label('PING_LISTENING', 'LISTENING...'); btn.disabled = true; }
         
         try {
             if (!state.audioContext || state.audioContext.state !== 'running') await AudioEngine.resume();
@@ -399,7 +400,7 @@ class SyncManager {
                             SyncManager.updateSettings();
                         }
                     }
-                    if(btn) { btn.textContent = "PING TEST (AUTO-CALIBRATE)"; btn.disabled = false; }
+                    if(btn) { btn.textContent = label('PING_TEST', 'PING TEST (AUTO-CALIBRATE)'); btn.disabled = false; }
                 }
             };
             
@@ -408,7 +409,7 @@ class SyncManager {
             
         } catch(e) {
             alert("Ping Test Error: " + e.message);
-            if(btn) { btn.textContent = "PING TEST (AUTO-CALIBRATE)"; btn.disabled = false; }
+            if(btn) { btn.textContent = label('PING_TEST', 'PING TEST (AUTO-CALIBRATE)'); btn.disabled = false; }
         }
     }
 }
@@ -440,9 +441,10 @@ class MetronomeScheduler {
         
         const btn = document.getElementById('metronomeBtn');
         if (btn) {
+            const label = typeof I18n !== 'undefined' ? I18n.t('METRONOME') : 'Metro[N]ome';
             btn.style.color = state.metronome.enabled ? '#0f0' : 'inherit';
             btn.style.borderColor = state.metronome.enabled ? '#0f0' : 'currentColor';
-            btn.innerHTML = state.metronome.enabled ? 'Metro[N]ome <span style="font-size:9px;">[ON]</span>' : 'Metro[N]ome';
+            btn.textContent = state.metronome.enabled ? `${label} [ON]` : label;
         }
 
         if (state.metronome.enabled) {

@@ -72,6 +72,7 @@ class SamplerTrack {
         this.muted = false;
         this.isMutedBySolo = false;
         this.source = null;
+        this.activeSources = new Set();
         this.gain = null;
         this.panNode = null;
         this.wavePeaks = null;
@@ -97,6 +98,7 @@ class SamplerTrack {
         panNode.pan.value = (this.pan / 5.0) - 1.0;
 
         source.onended = () => {
+            this.activeSources.delete(source);
             try { source.disconnect(); } catch(e) {}
             try { gain.disconnect(); } catch(e) {}
             try { panNode.disconnect(); } catch(e) {}
@@ -107,7 +109,7 @@ class SamplerTrack {
             if (this.startTimeout) { clearTimeout(this.startTimeout); this.startTimeout = null; }
             if (this.stopTimeout) { clearTimeout(this.stopTimeout); this.stopTimeout = null; }
             this.state = 'stopped';
-            SamplerManager.renderUI();
+            SamplerManager.updateTrackUI(this.id);
         };
 
         source.connect(gain);
@@ -115,6 +117,7 @@ class SamplerTrack {
         AudioEngine.connectToMaster(panNode);
         source.start(t);
 
+        this.activeSources.add(source);
         this.source = source;
         this.gain = gain;
         this.panNode = panNode;
@@ -124,9 +127,9 @@ class SamplerTrack {
     stop(time = 0) {
         const now = state.audioContext ? state.audioContext.currentTime : 0;
         const t = time > 0 ? time : now;
-        if (this.source) {
-            try { this.source.stop(t); } catch(e) {}
-        }
+        this.activeSources.forEach(source => {
+            try { source.stop(t); } catch(e) {}
+        });
         this.state = t > now + 0.001 ? 'stopping' : 'stopped';
     }
 }
@@ -162,47 +165,127 @@ class SamplerManager {
         };
         input.click();
     }
+    static getStateMeta(sampler) {
+        if (!sampler.buffer || sampler.state === 'empty') return { label: 'EMPTY', color: '#555', action: 'PLAY' };
+        if (sampler.state === 'armed') return { label: 'QUEUED', color: '#ff0', action: 'STOP' };
+        if (sampler.state === 'playing') return { label: 'PLAYING', color: '#0f0', action: 'STOP' };
+        if (sampler.state === 'stopping') return { label: 'STOPPING', color: '#ff9a00', action: 'PLAY' };
+        return { label: 'READY', color: '#08f', action: 'PLAY' };
+    }
+    static escapeHTML(value) {
+        return String(value).replace(/[&<>"']/g, char => ({
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#39;'
+        })[char]);
+    }
+    static getDurationLabel(sampler) {
+        return sampler.buffer ? `${sampler.buffer.duration.toFixed(2)} SEC` : 'NO SAMPLE';
+    }
+    static setName(id, value) {
+        const sampler = state.samplers[id];
+        if (!sampler) return;
+        sampler.name = String(value).trim().slice(0, 48) || `Sampler ${id + 1}`;
+        this.updateTrackUI(id);
+    }
+    static updateTrackUI(id) {
+        const sampler = state.samplers[id];
+        if (!sampler) return;
+
+        const meta = this.getStateMeta(sampler);
+        const track = document.getElementById(`sampler-track-${id}`);
+        if (track) {
+            const isActive = sampler.state === 'playing' || sampler.state === 'armed';
+            track.dataset.state = sampler.state;
+            track.style.setProperty('--sampler-color', meta.color);
+            track.classList.toggle('is-muted', sampler.muted);
+            track.classList.toggle('is-solo', SamplerManager.soloId === id);
+
+            const status = track.querySelector('[data-sampler-status]');
+            if (status) status.textContent = meta.label;
+            const action = track.querySelector('[data-sampler-action]');
+            if (action) {
+                action.textContent = meta.action;
+                action.disabled = !sampler.buffer;
+                action.setAttribute('aria-label', `${meta.action} sampler ${id + 1}`);
+                action.setAttribute('aria-pressed', String(isActive));
+            }
+            const name = track.querySelector('[data-sampler-name]');
+            if (name && document.activeElement !== name) name.value = sampler.name;
+            const duration = track.querySelector('[data-sampler-duration]');
+            if (duration) duration.textContent = this.getDurationLabel(sampler);
+            const loopBadge = track.querySelector('[data-sampler-loop-badge]');
+            if (loopBadge) loopBadge.hidden = !sampler.isLooping;
+
+            const muteButton = track.querySelector('[data-sampler-mute]');
+            if (muteButton) {
+                muteButton.classList.toggle('is-active', sampler.muted);
+                muteButton.setAttribute('aria-pressed', String(sampler.muted));
+                muteButton.textContent = sampler.muted ? 'UNMUTE' : 'MUTE';
+            }
+            const soloButton = track.querySelector('[data-sampler-solo]');
+            if (soloButton) {
+                soloButton.classList.toggle('is-active', SamplerManager.soloId === id);
+                soloButton.setAttribute('aria-pressed', String(SamplerManager.soloId === id));
+            }
+            const loopButton = track.querySelector('[data-sampler-loop]');
+            if (loopButton) {
+                loopButton.classList.toggle('is-active', sampler.isLooping);
+                loopButton.setAttribute('aria-pressed', String(sampler.isLooping));
+            }
+            this.drawWaveform(id);
+        }
+
+        if (window.UIManager) {
+            UIManager.updateLiveSampler(id);
+            UIManager.updateLivePerformanceState();
+        }
+    }
     static setSpeed(id, val) {
-        state.samplers[id].speed = parseFloat(val);
+        const sampler = state.samplers[id];
+        sampler.speed = parseFloat(val);
         const disp = document.getElementById(`samp_spd_${id}`);
-        if (disp) disp.textContent = state.samplers[id].speed.toFixed(2);
-        if (state.samplers[id].source && state.samplers[id].state === 'playing' && state.audioContext) {
-            state.samplers[id].source.playbackRate.setValueAtTime(state.samplers[id].speed, state.audioContext.currentTime);
+        if (disp) disp.textContent = sampler.speed.toFixed(2);
+        if (sampler.source && state.audioContext) {
+            sampler.source.playbackRate.setValueAtTime(sampler.speed, state.audioContext.currentTime);
         }
     }
     static setVolume(id, val) {
-        state.samplers[id].volume = parseFloat(val);
+        const sampler = state.samplers[id];
+        sampler.volume = parseFloat(val);
         this.updateVolumeGraph(id);
         const disp = document.getElementById(`samp_vol_${id}`);
-        if (disp) disp.textContent = state.samplers[id].volume.toFixed(2);
+        if (disp) disp.textContent = sampler.volume.toFixed(2);
         const normSlider = document.querySelector(`#samplers-content input[oninput*="SamplerManager.setVolume(${id}"]`);
-        if (normSlider && document.activeElement !== normSlider) normSlider.value = state.samplers[id].volume;
-        if (window.MasterMixManager) MasterMixManager.updateFader('s', id, state.samplers[id].volume);
+        if (normSlider && document.activeElement !== normSlider) normSlider.value = sampler.volume;
+        if (window.MasterMixManager) MasterMixManager.updateFader('s', id, sampler.volume);
     }
     static setPan(id, val) {
-        state.samplers[id].pan = parseInt(val);
-        if (state.samplers[id].panNode && state.samplers[id].state === 'playing' && state.audioContext) {
-            const panPosition = (state.samplers[id].pan / 5.0) - 1.0;
-            state.samplers[id].panNode.pan.setValueAtTime(panPosition, state.audioContext.currentTime);
+        const sampler = state.samplers[id];
+        sampler.pan = parseInt(val);
+        if (sampler.panNode && state.audioContext) {
+            const panPosition = (sampler.pan / 5.0) - 1.0;
+            sampler.panNode.pan.setValueAtTime(panPosition, state.audioContext.currentTime);
         }
         const disp = document.getElementById(`samp_pan_${id}`);
-        if (disp) disp.textContent = state.samplers[id].pan;
+        if (disp) disp.textContent = sampler.pan;
     }
     static toggleMute(id) {
-        const s = state.samplers[id];
-        s.muted = !s.muted;
+        const sampler = state.samplers[id];
+        sampler.muted = !sampler.muted;
         this.updateVolumeGraph(id);
-        this.renderUI();
+        this.updateTrackUI(id);
         if (window.MasterMixManager) MasterMixManager.updateMuteSoloUI();
     }
     static toggleSolo(id) {
-        if (this.soloId === id) this.soloId = -1;
-        else this.soloId = id;
-        state.samplers.forEach(s => {
-            s.isMutedBySolo = (this.soloId !== -1 && this.soloId !== s.id);
-            this.updateVolumeGraph(s.id);
+        this.soloId = this.soloId === id ? -1 : id;
+        state.samplers.forEach(sampler => {
+            sampler.isMutedBySolo = this.soloId !== -1 && this.soloId !== sampler.id;
+            this.updateVolumeGraph(sampler.id);
+            this.updateTrackUI(sampler.id);
         });
-        this.renderUI();
         if (window.MasterMixManager) MasterMixManager.updateMuteSoloUI();
     }
     static updateVolumeGraph(id) {
@@ -221,71 +304,66 @@ class SamplerManager {
         }
     }
     static togglePlay(id, scheduledTime = 0) {
-        const s = state.samplers[id];
-        if (!s.buffer) return;
+        const sampler = state.samplers[id];
+        if (!sampler.buffer) return;
 
         const now = AudioEngine.currentTime;
         const targetTime = scheduledTime > now
             ? scheduledTime
             : (state.syncEnabled ? SyncManager.getNextGridTime() : now);
 
-        if (s.state === 'playing' || s.state === 'armed') {
-            if (s.state === 'armed') {
-                this._stopSampler(id);
-            } else {
-                this._stopSampler(id, targetTime);
-            }
-        } else if (s.state === 'stopped' || s.state === 'stopping' || s.state === 'empty') {
+        if (sampler.state === 'playing' || sampler.state === 'armed') {
+            this._stopSampler(id, sampler.state === 'armed' ? 0 : targetTime);
+        } else if (sampler.state === 'stopped' || sampler.state === 'stopping' || sampler.state === 'empty') {
             this._startSampler(id, targetTime);
         }
-        this.renderUI();
     }
     static _startSampler(id, scheduledTime = 0) {
-        const s = state.samplers[id];
-        if (s.startTimeout) { clearTimeout(s.startTimeout); s.startTimeout = null; }
-        if (s.stopTimeout) { clearTimeout(s.stopTimeout); s.stopTimeout = null; }
+        const sampler = state.samplers[id];
+        if (sampler.startTimeout) { clearTimeout(sampler.startTimeout); sampler.startTimeout = null; }
+        if (sampler.stopTimeout) { clearTimeout(sampler.stopTimeout); sampler.stopTimeout = null; }
 
         const now = AudioEngine.currentTime;
         const targetTime = scheduledTime > now ? scheduledTime : now;
-        s.play(targetTime);
+        sampler.play(targetTime);
+        this.updateTrackUI(id);
 
-        if (s.state === 'armed') {
-            s.startTimeout = setTimeout(() => {
-                if (s.state !== 'armed' || s.startTime !== targetTime) return;
-                s.state = 'playing';
-                s.startTimeout = null;
-                this.renderUI();
+        if (sampler.state === 'armed') {
+            sampler.startTimeout = setTimeout(() => {
+                if (sampler.state !== 'armed' || sampler.startTime !== targetTime) return;
+                sampler.state = 'playing';
+                sampler.startTimeout = null;
+                this.updateTrackUI(id);
             }, Math.max(0, targetTime - now) * 1000);
         }
-        this.renderUI();
     }
     static _stopSampler(id, scheduledTime = 0) {
-        const s = state.samplers[id];
-        if (s.startTimeout) { clearTimeout(s.startTimeout); s.startTimeout = null; }
-        if (s.stopTimeout) { clearTimeout(s.stopTimeout); s.stopTimeout = null; }
+        const sampler = state.samplers[id];
+        if (sampler.startTimeout) { clearTimeout(sampler.startTimeout); sampler.startTimeout = null; }
+        if (sampler.stopTimeout) { clearTimeout(sampler.stopTimeout); sampler.stopTimeout = null; }
 
         const now = AudioEngine.currentTime;
         const targetTime = scheduledTime > now ? scheduledTime : now;
-        s.stop(targetTime);
-        this.renderUI();
+        sampler.stop(targetTime);
+        this.updateTrackUI(id);
     }
     static toggleLoop(id) {
-        const s = state.samplers[id];
-        s.isLooping = !s.isLooping;
-        if (s.source) s.source.loop = s.isLooping;
-        this.renderUI();
+        const sampler = state.samplers[id];
+        sampler.isLooping = !sampler.isLooping;
+        if (sampler.source) sampler.source.loop = sampler.isLooping;
+        this.updateTrackUI(id);
     }
     static reverse(id) {
-        const s = state.samplers[id];
-        if (!s.buffer) return;
-        s.buffer = AudioEngine.getReversedBuffer(s.buffer);
+        const sampler = state.samplers[id];
+        if (!sampler.buffer) return;
+        sampler.buffer = AudioEngine.getReversedBuffer(sampler.buffer);
         if (window.UIManager && UIManager.generateWaveformPeaks) {
-            s.wavePeaks = UIManager.generateWaveformPeaks(s.buffer);
+            sampler.wavePeaks = UIManager.generateWaveformPeaks(sampler.buffer);
         }
         this.drawWaveform(id);
     }
-    static play(id, time) { state.samplers[id].play(time); }
-    static stop(id, time) { state.samplers[id].stop(time); }
+    static play(id, time) { this._startSampler(id, time); }
+    static stop(id, time) { this._stopSampler(id, time); }
     
     static drawWaveform(id, now = 0) {
         const s = state.samplers[id];
@@ -335,56 +413,49 @@ class SamplerManager {
     static renderUI() {
         const container = document.getElementById('samplers-content');
         if (!container) return;
-        let html = '';
-        state.samplers.forEach(s => {
-            const isAct = (s.state === 'playing' || s.state === 'stopping');
-            const isArm = (s.state === 'armed');
-            const borderColor = isAct ? '#0f0' : (isArm ? '#ff0' : (s.buffer ? '#08f' : '#444'));
-            const muteStyle = s.muted ? 'background:#f00; color:#000; border-color:#f00;' : '';
-            const soloStyle = (SamplerManager.soloId === s.id) ? 'background:#ff0; color:#000; border-color:#ff0;' : '';
-            const loopStyle = s.isLooping ? 'background:#80f; color:#fff; border-color:#80f;' : '';
-            
-            let stateLabel = '[STOPPED]';
-            if (s.state === 'playing') stateLabel = '[PLAYING]';
-            else if (s.state === 'armed') stateLabel = '[ARMED]';
-            else if (s.state === 'stopping') stateLabel = '[STOPPING]';
-            else if (s.state === 'empty') stateLabel = '[EMPTY]';
 
-            html += `<div style="border:1px solid ${borderColor}; background:#001111; padding:0; display:flex; flex-direction:column; gap:0;">
-                <div class="loop-header" onclick="SamplerManager.togglePlay(${s.id})" style="display:flex; justify-content:space-between; align-items:center; background:rgba(0,20,20,0.6); padding:4px 8px; border-bottom:1px dashed ${borderColor}; cursor:pointer;">
-                    <strong style="color:#0ff; pointer-events:none;">[${SAMPLER_HOTKEYS[s.id].toUpperCase()}]</strong>
-                    <input type="text" value="${s.name}" onclick="event.stopPropagation()" onchange="state.samplers[${s.id}].name=this.value" style="width:70px; font-size:9px; background:#000; color:#0f0; border:1px solid #333;" aria-label="Sampler Name">
-                    <button onclick="event.stopPropagation(); SamplerManager.loadFile(${s.id})" class="small btn-orange" style="padding:2px 6px; margin-left:4px;" title="Load Audio">LOAD</button>
-                    <span style="font-size:10px; color:${isAct?'#f0f':(isArm?'#ff0':'#0ff')}; font-weight:bold; pointer-events:none; margin-left:4px;">${stateLabel}</span>
-                </div>
-                <div style="padding:6px; display:flex; flex-direction:column; gap:6px;">
-                <canvas id="samp-wave-${s.id}" width="180" height="20" style="width:100%; height:24px; background:rgba(0,0,0,0.5); border:1px solid #333; border-radius:2px; margin-bottom: 4px;"></canvas>
-                <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;">
-                    <div style="display:flex; flex-direction:column; gap:4px;">
-                        <label style="font-size:9px; color:#888;">Vol <span id="samp_vol_${s.id}">${s.volume.toFixed(2)}</span></label>
-                        <input type="range" min="0" max="2" step="0.01" value="${s.volume}" oninput="SamplerManager.setVolume(${s.id}, this.value)" style="margin:0;">
+        container.innerHTML = state.samplers.map(sampler => {
+            const meta = this.getStateMeta(sampler);
+            const isActive = sampler.state === 'playing' || sampler.state === 'armed';
+            const name = this.escapeHTML(sampler.name);
+            const disabled = sampler.buffer ? '' : 'disabled';
+            const key = SAMPLER_HOTKEYS[sampler.id].toUpperCase();
+
+            return `<article class="sampler-track" id="sampler-track-${sampler.id}" data-state="${sampler.state}" style="--sampler-color:${meta.color};">
+                <header class="sampler-track-header">
+                    <button type="button" class="sampler-play-toggle" data-sampler-action onclick="SamplerManager.togglePlay(${sampler.id})" ${disabled} aria-label="${meta.action} sampler ${sampler.id + 1}" aria-pressed="${isActive}">${meta.action}</button>
+                    <div class="sampler-track-identity">
+                        <input type="text" data-sampler-name value="${name}" maxlength="48" onchange="SamplerManager.setName(${sampler.id}, this.value)" aria-label="Sampler ${sampler.id + 1} name">
                     </div>
-                    <div style="display:flex; flex-direction:column; gap:4px;">
-                        <label style="font-size:9px; color:#888;">Pan <span id="samp_pan_${s.id}">${s.pan}</span></label>
-                        <input type="range" min="0" max="10" step="1" value="${s.pan}" oninput="SamplerManager.setPan(${s.id}, this.value)" style="margin:0;">
+                    <button type="button" onclick="SamplerManager.loadFile(${sampler.id})" class="small btn-orange sampler-load-button" title="Load audio into sampler ${sampler.id + 1}">LOAD</button>
+                    <div class="sampler-track-status" aria-live="polite"><span class="sampler-key">[S${sampler.id + 1} · ${key}]</span><span>STATE</span><strong data-sampler-status>${meta.label}</strong></div>
+                </header>
+                <div class="sampler-track-body">
+                    <div class="sampler-wave-wrap">
+                        <canvas id="samp-wave-${sampler.id}" width="180" height="24" aria-label="Sampler ${sampler.id + 1} waveform"></canvas>
+                        <div class="sampler-wave-meta"><span data-sampler-duration>${this.getDurationLabel(sampler)}</span><span class="sampler-loop-badge" data-sampler-loop-badge ${sampler.isLooping ? '' : 'hidden'}>LOOP</span></div>
                     </div>
-                    <div style="display:flex; flex-direction:column; gap:4px;">
-                        <label style="font-size:9px; color:#888;">Spd <span id="samp_spd_${s.id}">${s.speed.toFixed(2)}</span></label>
-                        <input type="range" min="0.1" max="4.0" step="0.01" value="${s.speed}" oninput="SamplerManager.setSpeed(${s.id}, this.value)" style="margin:0;">
+                    <div class="sampler-parameter-grid">
+                        <label class="sampler-parameter">VOL <output id="samp_vol_${sampler.id}">${sampler.volume.toFixed(2)}</output><input type="range" min="0" max="2" step="0.01" value="${sampler.volume}" oninput="SamplerManager.setVolume(${sampler.id}, this.value)" aria-label="Sampler ${sampler.id + 1} volume"></label>
+                        <label class="sampler-parameter">PAN <output id="samp_pan_${sampler.id}">${sampler.pan}</output><input type="range" min="0" max="10" step="1" value="${sampler.pan}" oninput="SamplerManager.setPan(${sampler.id}, this.value)" aria-label="Sampler ${sampler.id + 1} pan"></label>
+                        <label class="sampler-parameter">SPEED <output id="samp_spd_${sampler.id}">${sampler.speed.toFixed(2)}</output><input type="range" min="0.1" max="4.0" step="0.01" value="${sampler.speed}" oninput="SamplerManager.setSpeed(${sampler.id}, this.value)" aria-label="Sampler ${sampler.id + 1} speed"></label>
+                    </div>
+                    <div class="sampler-action-grid">
+                        <button type="button" class="small sampler-mode-control ${sampler.muted ? 'is-active' : ''}" data-sampler-mute onclick="SamplerManager.toggleMute(${sampler.id})" aria-pressed="${sampler.muted}">${sampler.muted ? 'UNMUTE' : 'MUTE'}</button>
+                        <button type="button" class="small sampler-mode-control ${SamplerManager.soloId === sampler.id ? 'is-active' : ''}" data-sampler-solo onclick="SamplerManager.toggleSolo(${sampler.id})" aria-pressed="${SamplerManager.soloId === sampler.id}">SOLO</button>
+                        <button type="button" class="small sampler-mode-control ${sampler.isLooping ? 'is-active' : ''}" data-sampler-loop onclick="SamplerManager.toggleLoop(${sampler.id})" ${disabled} aria-pressed="${sampler.isLooping}">LOOP</button>
+                        <button type="button" class="small sampler-transform-button" onclick="SamplerManager.reverse(${sampler.id})" ${disabled}>REVERSE</button>
+                        <button type="button" class="small sampler-transform-button" onclick="SamplerManager.normalize(${sampler.id})" ${disabled}>NORMALIZE</button>
                     </div>
                 </div>
-                <div style="display:flex; gap:2px; justify-content:space-between; margin-top:4px;">
-                    <button onclick="SamplerManager.toggleMute(${s.id})" class="small" style="flex:1; ${muteStyle}">MUTE</button>
-                    <button onclick="SamplerManager.toggleSolo(${s.id})" class="small" style="flex:1; ${soloStyle}">SOLO</button>
-                    <button onclick="SamplerManager.toggleLoop(${s.id})" class="small" style="flex:1; ${loopStyle}" ${!s.buffer ? 'disabled' : ''}>LOOP</button>
-                    <button onclick="SamplerManager.reverse(${s.id})" class="small btn-yellow" style="flex:1;" ${!s.buffer ? 'disabled' : ''}>REV</button>
-                    <button onclick="SamplerManager.normalize(${s.id})" class="small btn-yellow" style="flex:1;" ${!s.buffer ? 'disabled' : ''}>NORM</button>
-                </div>
-                </div>
-            </div>`;
+            </article>`;
+        }).join('');
+
+        state.samplers.forEach(sampler => {
+            this.drawWaveform(sampler.id);
+            if (window.UIManager) UIManager.updateLiveSampler(sampler.id);
         });
-        container.innerHTML = html;
-        state.samplers.forEach(s => SamplerManager.drawWaveform(s.id));
+        if (window.UIManager) UIManager.updateLivePerformanceState();
     }
 }
 
@@ -1549,6 +1620,7 @@ class Loop {
         this.originalBpm = null;
         
         this.stopTimeout = null; // Store stop timeout to prevent race conditions
+        this.playRequest = 0;
         // Loop Parameters
         this.undoStack = [];
         this.redoStack = [];
@@ -1851,11 +1923,14 @@ class Loop {
         }
         if (this.state === 'playing') return;
 
+        const request = ++this.playRequest;
+        const generation = LoopManager.transportGeneration;
         // CRITICAL: Resume AudioContext on user action
         if (startTime === 0 && !await AudioEngine.resume()) {
             console.warn('Could not resume audio context for playback');
             return;
         }
+        if (request !== this.playRequest || generation !== LoopManager.transportGeneration || !this.audioBuffer) return;
 
         this.state = 'playing';
         this.graph = new AudioGraph(this, startTime);
@@ -1906,6 +1981,7 @@ class Loop {
      * Stops playback of the loop. Can be scheduled.
      */
     stop(scheduledTime = 0) {
+        this.playRequest++;
         // Allow stop to proceed if state is 'stopping' (scheduled stop)
         if (this.state !== 'playing' && this.state !== 'overdubbing' && this.state !== 'substituting' && this.state !== 'stopping' && this.state !== 'multiplying') return;
 
@@ -2016,6 +2092,7 @@ class Loop {
      * Stops and clears all data from the loop.
      */
     clear() {
+        this.playRequest++;
         // 0. Safety: If this loop is the current Sync Source, revert to Master
         const syncSrc = document.getElementById('syncSource');
         if (syncSrc && syncSrc.value == this.id) {
@@ -2111,6 +2188,8 @@ class Loop {
  * Manages the collection of loops and recording operations.
  */
 class LoopManager {
+    static transportGeneration = 0;
+
     /**
      * Saves the current state of a loop to the global undo stack.
      */
@@ -2219,12 +2298,22 @@ class LoopManager {
      * Stops all playing loops and any active recording.
      */
     static stopAll() {
+        if (window.TrackerManager && state.tracker.isPlaying) {
+            TrackerManager.stop();
+            return;
+        }
+        this.transportGeneration++;
+        if (state.isRecording) this.stopRecording();
+
         const now = AudioEngine.currentTime;
+        state.samplers.forEach(sampler => {
+            if (sampler.state !== 'empty') SamplerManager.stop(sampler.id, now);
+        });
         state.loops.forEach(loop => {
-            if (loop.state === 'playing' || loop.state === 'overdubbing' || loop.state === 'substituting' || loop.state === 'multiplying') {
+            if (loop.state === 'playing' || loop.state === 'overdubbing' || loop.state === 'substituting' || loop.state === 'multiplying' || loop.state === 'stopping') {
                 loop.stop(now + 0.015); // Minimal latency stop (15ms fade)
             }
-            if (loop.state === 'queued' && loop.queueTimeout) {
+            if (loop.state === 'queued') {
                 clearTimeout(loop.queueTimeout);
                 loop.queueTimeout = null;
                 loop.state = 'stopped';
@@ -2232,19 +2321,7 @@ class LoopManager {
             UIManager.updateLoop(loop.id);
         });
 
-        if (window.TrackerManager && state.tracker.isPlaying) TrackerManager.stop();
         if (window.DroneSynth) DroneSynth.stopAll();
-
-        if (state.isRecording) {
-            const loop = state.loops[state.recordingLoopId];
-            if (loop && (loop.state === 'overdubbing' || loop.state === 'substituting')) {
-                this.stopOverdub();
-            } else if (loop && loop.state === 'multiplying') {
-                this.stopMultiply();
-            } else if (loop && (loop.state === 'recording' || loop.state === 'armed')) {
-                this.stopRecording();
-            }
-        }
 
         if (state.recordingStartTimeout) clearTimeout(state.recordingStartTimeout);
         if (state.recordingTimeout) clearTimeout(state.recordingTimeout);
@@ -2281,18 +2358,20 @@ class LoopManager {
         
     /** Central dispatcher for all loop inputs. */
     static async handleAction(loopId, pressType) {
+        const loop = state.loops[loopId];
+        if (!loop) return;
+        const request = loop.playRequest;
+        const generation = this.transportGeneration;
         // Must resume context *before* any action
         if (!await AudioEngine.resume()) {
             return;
         }
-        
+        if (generation !== this.transportGeneration || request !== loop.playRequest || loop !== state.loops[loopId]) return;
+
         // Switch Effect Tab to this loop on interaction
         if (EffectManager && typeof EffectManager.setActiveTab === 'function') {
             EffectManager.setActiveTab(loopId);
         }
-
-        const loop = state.loops[loopId];
-        if (!loop) return;
 
         const action = { state: loop.state, press: pressType };
 
@@ -2428,13 +2507,16 @@ class LoopManager {
             console.warn("Already recording a loop. Stop current recording first.");
             return; // Abort to prevent race conditions and data corruption
         }
+        const loop = state.loops[loopId];
+        const request = loop.playRequest;
+        const generation = this.transportGeneration;
         // AudioContext must be running to record
         if (!await AudioEngine.resume()) {
             console.warn('Could not resume audio context for recording');
             return;
         }
-        
-        const loop = state.loops[loopId];
+        if (generation !== this.transportGeneration || request !== loop.playRequest || loop !== state.loops[loopId] || state.isRecording) return;
+
         if (loop.state !== 'empty') {
             return; // Prevent re-arming a dirty loop
         }
@@ -2460,9 +2542,11 @@ class LoopManager {
             return;
         }
 
-        state.loopRecorder.port.onmessage = (e) => {
-            if (e.data.event === 'recorded') {
-                this.processRecordedData(e.data.chunks, loopId, e.data.startFrame);
+        const recorder = state.loopRecorder;
+        recorder.port.onmessage = (e) => {
+            if (e.data.event === 'recorded' && state.loopRecorder === recorder && state.recordingLoopId === loopId) {
+                recorder.port.onmessage = null;
+                return this.processRecordedData(e.data.chunks, loopId, e.data.startFrame, generation);
             }
         };
 
@@ -2702,14 +2786,10 @@ class LoopManager {
      * Callback for when the Recorder Worklet stops.
      * Processes the recorded audio chunks.
      */
-    static async processRecordedData(chunks, loopId, startFrame = -1) {
+    static async processRecordedData(chunks, loopId, startFrame = -1, generation) {
         const loop = state.loops[loopId];
-        
-        if (!loop || (state.recordingLoopId === -1 && !state.isFinishingRecording)) {
-            console.warn("Dropped recorded data for aborted loop", loopId);
-            state.isFinishingRecording = false;
-            return;
-        }
+        const recorder = state.loopRecorder;
+        if (!loop || !recorder || state.recordingLoopId !== loopId) return;
        
         try {
             const rawBuffer = (chunks && chunks.length > 0) ? this.createBufferFromChunks(chunks, state.audioContext.sampleRate) : null;
@@ -2814,26 +2894,22 @@ class LoopManager {
         loop.playbackRate = 1.0; // Reset rate to prevent varispeed artifacts on fresh record
             loop.wavePeaks = UIManager.generateWaveformPeaks(loop.audioBuffer);
 
-            // Auto-play
-            if (state.autoPlayAfterRecord) {
-                await loop.play(); // Use Tape Logic to align phase with Master Clock
-            } else {
-                loop.state = 'stopped';
-            }
-            
+            loop.state = 'stopped';
+            loop.graph = null;
+
             // If this loop controls sync, update global settings immediately
             const syncSource = document.getElementById('syncSource');
             if (syncSource && syncSource.value == loop.id) {
                 SyncManager.updateSettings();
             }
-            if (!state.autoPlayAfterRecord) loop.graph = null; // Clear temp graph only if not playing
 
         } catch (e) {
             console.error("Error processing recorded audio:", e);
             alert("Failed to process recorded audio. Loop will be cleared.");
             loop.clear();
         }
-        
+        if (state.loopRecorder !== recorder || state.recordingLoopId !== loopId) return;
+
         // Disconnect input from recorder to prevent graph leaks
         const inputNode = InputManager.getRecordingNode();
         if (inputNode && state.loopRecorder) {
@@ -2859,8 +2935,12 @@ class LoopManager {
 
         state.isFinishingRecording = false; // Release lock after cleanup
 
+        if (state.autoPlayAfterRecord && generation === this.transportGeneration) {
+            await loop.play();
+        }
+
         // --- Cascade Record Mode (NextLoop) ---
-        if (state.autoRecordNext) {
+        if (state.autoRecordNext && generation === this.transportGeneration) {
             let nextId = -1;
             for (let i = loopId + 1; i < MAX_LOOPS; i++) {
                 if (state.loops[i].state === 'empty') { nextId = i; break; }
@@ -2871,7 +2951,9 @@ class LoopManager {
                 }
             }
             if (nextId !== -1) {
-                setTimeout(() => LoopManager.startRecording(nextId), 50);
+                setTimeout(() => {
+                    if (generation === this.transportGeneration && state.autoRecordNext) return this.startRecording(nextId);
+                }, 50);
             }
         }
     }
@@ -2917,13 +2999,17 @@ class LoopManager {
             inputNode.connect(state.loopRecorder);
             state.loopRecorder.connect(state.audioContext.destination); // Keep alive
 
-            state.loopRecorder.port.onmessage = (e) => {
-                if (e.data.event === 'recorded') {
-                    this.processOverdubData(e.data.chunks, loopId);
+            const recorder = state.loopRecorder;
+            recorder.port.onmessage = (e) => {
+                if (e.data.event === 'recorded' && state.loopRecorder === recorder && state.recordingLoopId === loopId) {
+                    recorder.port.onmessage = null;
+                    return this.processOverdubData(e.data.chunks, loopId, isSubstitute);
                 }
             };
         } catch (e) {
-            console.error(e); return;
+            console.error(e);
+            this.forceCleanupRecording(loop);
+            return;
         }
 
         // InputNode is already connected to Master via InputManager. Avoid double monitoring.
@@ -2964,17 +3050,15 @@ class LoopManager {
         const loopId = state.recordingLoopId;
         const loop = state.loops[loopId];
         
+        if (!state.loopRecorder) {
+            this.forceCleanupRecording(loop);
+            return;
+        }
         try {
-            if (state.loopRecorder) {
-                try {
-                    state.isFinishingRecording = true;
-                    state.loopRecorder.port.postMessage({ command: 'stop' });
-                } catch(e) {
-                    console.warn("Recorder port unreachable:", e);
-                }
-            }
+            state.isFinishingRecording = true;
+            state.loopRecorder.port.postMessage({ command: 'stop' });
         } catch(e) {
-            console.error("Overdub stop error, forcing cleanup:", e);
+            console.warn("Recorder port unreachable:", e);
             this.forceCleanupRecording(loop);
         }
     }
@@ -2983,14 +3067,33 @@ class LoopManager {
      * Emergency cleanup for failed recording states
      */
     static forceCleanupRecording(loop) {
+        const recorder = state.loopRecorder;
+        if (recorder) {
+            recorder.port.onmessage = null;
+            const inputNode = InputManager.getRecordingNode();
+            if (inputNode) { try { inputNode.disconnect(recorder); } catch(e) {} }
+            try { recorder.disconnect(); } catch(e) {}
+        }
+        clearTimeout(state.recordingStartTimeout);
+        clearTimeout(state.recordingTimeout);
+        state.recordingStartTimeout = null;
+        state.recordingTimeout = null;
+        state.loopRecorder = null;
         if (loop) {
-            if (loop.audioBuffer && loop.graph && loop.graph.nodes) loop.state = 'playing';
-            else loop.state = loop.audioBuffer ? 'stopped' : 'empty';
+            if (['armed', 'recording', 'overdubbing', 'substituting', 'multiplying'].includes(loop.state)) {
+                if (loop.audioBuffer && loop.graph && loop.graph.nodes) loop.state = 'playing';
+                else {
+                    loop.state = loop.audioBuffer ? 'stopped' : 'empty';
+                    loop.graph = null;
+                }
+            }
             UIManager.updateLoop(loop.id);
         }
         state.isRecording = false;
         state.recordingLoopId = -1;
         state.isFinishingRecording = false;
+        state.recordingStartOffset = 0;
+        state.recordingActualStartTime = 0;
         if (window.UIManager) UIManager.updateStatus();
     }
 
@@ -2998,9 +3101,10 @@ class LoopManager {
      * Callback for when the Overdub Worklet stops.
      * Processes the recorded chunks and mixes them.
      */
-    static async processOverdubData(chunks, loopId) {
+    static async processOverdubData(chunks, loopId, isSubstitute) {
         const loop = state.loops[loopId];
-        if (!loop) return;
+        const recorder = state.loopRecorder;
+        if (!loop || !recorder || state.recordingLoopId !== loopId) return;
         
         try {
             let rawOverdubBuffer = this.createBufferFromChunks(chunks, state.audioContext.sampleRate);
@@ -3024,12 +3128,12 @@ class LoopManager {
             const overdubOffset = state.recordingStartOffset || 0;
             state.recordingStartOffset = 0; // Clear offset
             
-            const isSubstitute = loop.state === 'substituting';
             LoopManager.pushUndoState(loopId);
 
             // Mix in-place circularly (If substituting, feedback is forced to 0 for pure replacement)
             await AudioEngine.mixBuffersCircular(loop.audioBuffer, overdubAudioBuffer, overdubOffset, isSubstitute ? 0 : loop.feedback);
-            
+            if (state.loopRecorder !== recorder || state.recordingLoopId !== loopId) return;
+
             loop.wavePeaks = UIManager.generateWaveformPeaks(loop.audioBuffer);
             
             // Restore playback state only if the loop wasn't stopped while mixing
@@ -3041,10 +3145,13 @@ class LoopManager {
             UIManager.updateLoopDisplays();
 
         } catch (e) {
+            if (state.loopRecorder !== recorder || state.recordingLoopId !== loopId) return;
             console.error("Error processing overdubbed audio:", e);
-            alert("Failed to process overdubbed audio. Loop will be cleared.");
-            loop.clear(); // Drastic, but safe
+            this.forceCleanupRecording(loop);
+            alert("Failed to process overdubbed audio. Existing loop retained.");
+            return;
         }
+        if (state.loopRecorder !== recorder || state.recordingLoopId !== loopId) return;
 
         // Disconnect Input from Recorder to prevent graph leaks
         const inputNode = InputManager.getRecordingNode();
@@ -3106,9 +3213,11 @@ class LoopManager {
             state.loopRecorder = new AudioWorkletNode(state.audioContext, 'recorder-processor');
             inputNode.connect(state.loopRecorder);
             state.loopRecorder.connect(state.audioContext.destination);
-            state.loopRecorder.port.onmessage = (e) => {
-                if (e.data.event === 'recorded') {
-                    this.processMultiplyData(e.data.chunks, loopId);
+            const recorder = state.loopRecorder;
+            recorder.port.onmessage = (e) => {
+                if (e.data.event === 'recorded' && state.loopRecorder === recorder && state.recordingLoopId === loopId) {
+                    recorder.port.onmessage = null;
+                    return this.processMultiplyData(e.data.chunks, loopId);
                 }
             };
         } catch (e) {
@@ -3336,7 +3445,7 @@ class LoopManager {
  * Manages all rendering and UI event handling.
  */
 class UIManager {
-    static currentWorkspace = 'live';
+    static currentWorkspace = 'loops';
     /**
      * Generates waveform peaks for visualization cache.
      */
@@ -3504,7 +3613,7 @@ class UIManager {
         else if (loop.state === 'multiplying') stateColor = '#ffaa00';
         else if (loop.state === 'queued') stateColor = '#0088aa';
         const presetOptions = Object.keys(state.fxPresets).map(name => 
-            `<option value="${name}" ${state.fxPresets[name] === loop.signalChain ? 'selected' : ''}>${name}</option>`
+            `<option value="${name}" ${state.fxPresets[name] === loop.signalChain ? 'selected' : ''}>[CHAIN] ${name}</option>`
         ).join('');
         
         const mergeOptions = state.loops.map((l, i) => 
@@ -3523,10 +3632,10 @@ class UIManager {
                                onclick="event.stopPropagation(); EffectManager.setActiveTab(${index});"
                                style="background: #000; border: 1px solid ${stateColor}; color: ${stateColor}; font-size: 11px; font-family: 'Courier New', monospace; width: 80px; padding: 2px;" aria-label="Loop Name">
                      
-                        <select onchange="event.stopPropagation(); EffectManager.applyPresetToLoop(${index}, this.value)"
-                                onclick="event.stopPropagation(); EffectManager.setActiveTab(${index});" style="width: 15px; height: 18px; border:none; background:#000; color:${stateColor}; cursor:pointer;" title="Load Global Preset" aria-label="Load Loop Preset">
-                            <option value="">&#9776;</option>
-                            ${Object.keys(state.globalPresets).map(name => `<option value="GLOBAL:${name}">[PRESET] ${name}</option>`).join('')}
+                        <select class="preset-menu-trigger" onchange="event.stopPropagation(); EffectManager.applyPresetToLoop(${index}, this.value)"
+                                onclick="event.stopPropagation(); EffectManager.setActiveTab(${index});" style="height: 18px; color:${stateColor};" title="Load Complete FX-State Preset" aria-label="Load Complete Loop FX Preset">
+                            <option value="">FULL</option>
+                            ${Object.keys(state.globalPresets).map(name => `<option value="GLOBAL:${name}">[FULL] ${name}</option>`).join('')}
                         </select>
                      
                         <span id="loop-state-symbol-${index}" style="color: ${stateColor}; font-weight:bold;">${stateSymbol}</span>
@@ -4011,6 +4120,31 @@ class UIManager {
                 masterBtn.innerHTML = `${I18n.t('MASTER_REC')} <span id="masterRecStatus" style="font-size:9px;">(${statusText})</span>`;
             }
         }
+
+        this.updateLivePerformanceState();
+    }
+
+    /**
+     * Paints the LIVE PERFORMANCE panel background by the current global
+     * transport state: recording > armed > playing > stopped.
+     */
+    static updateLivePerformanceState() {
+        const panel = document.getElementById('ws-live');
+        if (!panel) return;
+        let mode = 'stopped';
+        const recStates = ['recording', 'overdubbing', 'substituting', 'multiplying'];
+        const anyRec = state.masterRecording || state.loops.some(l => l && recStates.includes(l.state))
+            || (typeof DroneSynth !== 'undefined' && DroneSynth.instances && DroneSynth.instances.some(d => d.isRecording));
+        const anyArmed = state.loops.some(l => l && (l.state === 'armed' || l.state === 'queued'))
+            || state.samplers.some(s => s.state === 'armed');
+        const anyPlaying = state.loops.some(l => l && l.state === 'playing')
+            || (typeof DroneSynth !== 'undefined' && DroneSynth.instances && DroneSynth.instances.some(d => d.state === 'playing'))
+            || state.samplers.some(s => s.state === 'playing' || s.state === 'stopping');
+        if (anyRec) mode = 'recording';
+        else if (anyArmed) mode = 'armed';
+        else if (anyPlaying) mode = 'playing';
+        panel.classList.remove('live-recording', 'live-armed', 'live-playing', 'live-stopped');
+        panel.classList.add('live-' + mode);
     }
     /**
      * Updates dynamic elements for all loops (progress bars, state text).
@@ -4339,6 +4473,8 @@ class UIManager {
         if(samplersContainer) {
             samplersContainer.innerHTML = state.samplers.map((s, i) => UIManager.generateLiveSamplerHTML(s, i)).join('');
         }
+
+        UIManager.updateLivePerformanceState();
     }
 
     static generateLiveLoopHTML(loop, index) {
@@ -4414,7 +4550,7 @@ class UIManager {
         const stateColor = DroneSynth.getStateColor(synth.state, synth.isRecording);
         
         return `
-        <div class="synth-instance-wrapper" id="live-drone-inst-${id}" style="border: 1px solid ${stateColor}; margin-bottom: 5px; height: 120px; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden;">
+        <div class="synth-instance-wrapper" data-state="${DroneSynth.getStateKey(synth.state, synth.isRecording)}" id="live-drone-inst-${id}" style="border: 1px solid ${stateColor}; margin-bottom: 5px; height: 120px; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden;">
             <div style="display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0;">
                 <div class="loop-header" 
                      onclick="DroneSynth.togglePlay(${id})"
@@ -4443,6 +4579,7 @@ class UIManager {
         
         const stateColor = DroneSynth.getStateColor(synth.state, synth.isRecording);
         el.style.borderColor = stateColor;
+        el.dataset.state = DroneSynth.getStateKey(synth.state, synth.isRecording);
 
         const stateSpan = el.querySelector('.live-state-text');
         if(stateSpan) {
@@ -4465,25 +4602,19 @@ class UIManager {
     }
 
     static generateLiveSamplerHTML(sampler, index) {
-        const isAct = (sampler.state === 'playing' || sampler.state === 'stopping');
-        const isArm = (sampler.state === 'armed');
-        const stateColor = isAct ? '#0f0' : (isArm ? '#ff0' : (sampler.buffer ? '#08f' : '#444'));
-        
-        let stateLabel = '[STOPPED]';
-        if (sampler.state === 'playing') stateLabel = '[PLAYING]';
-        else if (sampler.state === 'armed') stateLabel = '[ARMED]';
-        else if (sampler.state === 'stopping') stateLabel = '[STOPPING]';
-        else if (sampler.state === 'empty') stateLabel = '[EMPTY]';
+        const meta = SamplerManager.getStateMeta(sampler);
+        const stateColor = meta.color;
+        const stateLabel = `[${meta.label}]`;
 
         return `
-        <div class="synth-instance-wrapper" id="live-sampler-inst-${index}" style="border: 1px solid ${stateColor}; margin-bottom: 5px; height: 120px; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden;">
+        <div class="synth-instance-wrapper" data-state="${sampler.state}" id="live-sampler-inst-${index}" style="border: 1px solid ${stateColor}; margin-bottom: 5px; height: 120px; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden;">
             <div style="display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0;">
                 <div class="loop-header" 
                      onclick="SamplerManager.togglePlay(${index})"
                      style="display:flex; justify-content:space-between; align-items:center; padding: 8px; min-height: 44px; background: rgba(0,20,20,0.6); border-bottom: 1px dashed ${stateColor}; cursor: pointer;">
                     <div style="display:flex; align-items:center; gap: 8px; overflow: hidden; flex: 1;">
                         <strong style="color:${stateColor}; font-size:12px; pointer-events:none;">[S${index+1}]</strong>
-                        <span style="color: ${stateColor}; font-size: 11px; font-family: 'Courier New', monospace; pointer-events:none;">${(sampler.name || `Sampler ${index+1}`).replace(/"/g, '&quot;')}</span>
+                        <span style="color: ${stateColor}; font-size: 11px; font-family: 'Courier New', monospace; pointer-events:none;">${SamplerManager.escapeHTML(sampler.name || `Sampler ${index + 1}`)}</span>
                     </div>
                     <span class="live-state-text" style="color: ${stateColor}; font-size: 10px; font-weight:bold; pointer-events:none;">${stateLabel}</span>
                 </div>
@@ -4499,19 +4630,14 @@ class UIManager {
         const el = document.getElementById(`live-sampler-inst-${id}`);
         if(!el) return;
         
-        const isAct = (sampler.state === 'playing' || sampler.state === 'stopping');
-        const isArm = (sampler.state === 'armed');
-        const stateColor = isAct ? '#0f0' : (isArm ? '#ff0' : (sampler.buffer ? '#08f' : '#444'));
+        el.dataset.state = sampler.state;
+        const meta = SamplerManager.getStateMeta(sampler);
+        const stateColor = meta.color;
+        const stateLabel = `[${meta.label}]`;
         el.style.borderColor = stateColor;
         
         const header = el.querySelector('.loop-header');
         if (header) header.style.borderBottomColor = stateColor;
-
-        let stateLabel = '[STOPPED]';
-        if (sampler.state === 'playing') stateLabel = '[PLAYING]';
-        else if (sampler.state === 'armed') stateLabel = '[ARMED]';
-        else if (sampler.state === 'stopping') stateLabel = '[STOPPING]';
-        else if (sampler.state === 'empty') stateLabel = '[EMPTY]';
 
         const stateSpan = el.querySelector('.live-state-text');
         if(stateSpan) {
@@ -4522,7 +4648,7 @@ class UIManager {
             const nameSpan = el.querySelector('.loop-header span:not(.live-state-text)');
             if(nameSpan) {
                 nameSpan.style.color = stateColor;
-                nameSpan.textContent = (sampler.name || `Sampler ${id+1}`).replace(/"/g, '&quot;');
+                nameSpan.textContent = sampler.name || `Sampler ${id + 1}`;
             }
         }
     }

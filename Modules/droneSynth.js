@@ -88,6 +88,17 @@ class DroneSynth {
         return '#444';
     }
 
+    // State key for CSS data-state backgrounds — same precedence as getStateColor,
+    // but keyed to the loop-track palette (rec > armed > playing > stopping > stopped > idle).
+    static getStateKey(state, isRecording) {
+        if (isRecording) return 'recording';
+        if (state === 'armed') return 'armed';
+        if (state === 'playing') return 'playing';
+        if (state === 'stopping') return 'stopping';
+        if (state === 'stopped') return 'stopped';
+        return 'empty';
+    }
+
     static getNoteName(offset) {
         const noteMap = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
         const midi = 36 + offset;
@@ -202,13 +213,7 @@ class DroneSynth {
     static stopAll() {
         this.instances.forEach(synth => {
             if (!synth) return;
-            synth.state = 'stopped';
-            // Kill all voices immediately
-            if (synth.voices) {
-                Object.keys(synth.voices).forEach(k => {
-                    try { this.noteOff(synth.id, k, true); } catch(e) {}
-                });
-            }
+            this._finishStopSynth(synth.id);
         });
         this.renderAll();
     }
@@ -228,6 +233,7 @@ class DroneSynth {
 
             div.style.border = `1px solid ${stateColor}`;
             div.style.boxShadow = (synth.state === 'playing') ? `0 0 4px ${stateColor}` : 'none';
+            div.dataset.state = DroneSynth.getStateKey(synth.state, synth.isRecording);
 
             div.innerHTML = this.getSynthHtml(synth);
             container.appendChild(div);
@@ -1063,6 +1069,7 @@ class DroneSynth {
 
         const stateColor = DroneSynth.getStateColor(synth.state, synth.isRecording);
         div.style.border = `1px solid ${stateColor}`;
+        div.dataset.state = DroneSynth.getStateKey(synth.state, synth.isRecording);
         div.style.boxShadow = (synth.state === 'playing') ? `0 0 4px ${stateColor}` : 'none';
 
         const header = div.querySelector('.loop-header');

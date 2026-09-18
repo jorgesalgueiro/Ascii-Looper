@@ -2499,19 +2499,22 @@ class EffectManager {
              {c:'Z', n:'zigZ', k:'zigZ'},
              {c:'G', n:'Griz', k:'griz'},
         ];
+        const fragment = document.createDocumentFragment();
+        const appendEntry = (code, name, color) => {
+            const entry = document.createElement('span');
+            entry.style.color = color;
+            const key = document.createElement('b');
+            key.textContent = code;
+            entry.append(key, document.createTextNode(`:${name}`));
+            fragment.appendChild(entry);
+        };
         
-        let html = '';
-        
-        nativeMap.forEach(fx => {
-             const color = effectColors[fx.k] || '#888';
-             html += `<span style="color:${color}"><b>${fx.c}</b>:${fx.n}</span>`;
-        });
-        
+        nativeMap.forEach(fx => appendEntry(fx.c, fx.n, effectColors[fx.k] || '#888'));
         Object.values(state.customEffects).forEach(fx => {
-             html += `<span style="color:${fx.color || '#fff'}"><b>${fx.code}</b>:${fx.name.substring(0,5)}</span>`;
+            appendEntry(fx.code, String(fx.name || '').slice(0, 5), fx.color || '#fff');
         });
         
-        el.innerHTML = html;
+        el.replaceChildren(fragment);
     }
 
     // --- CUSTOM EFFECTS HANDLING ---
@@ -3132,8 +3135,8 @@ class EffectManager {
             const conf = EffectManager.UI_CONFIG[char];
             if (conf) {
                 const p = paramsSrc[conf.key] || effects[conf.key] || {};
-                    html += `<div class="preset-row"><label>Preset:</label>
-                    <select onchange="EffectManager.applyGenericPreset('${conf.key}', this.value)" style="width: 100%; margin-bottom: 5px;" id="sel_${conf.key}" aria-label="${conf.title} Preset">
+                    html += `<div class="preset-row effect-preset-row"><label>Preset:</label>
+                    <select class="effect-preset-select" onchange="EffectManager.applyGenericPreset('${conf.key}', this.value)" id="sel_${conf.key}" aria-label="${conf.title} Preset">
                         <option value="">-- Select --</option>
                         ${Object.keys(EffectManager[conf.presets]).map(k => `<option value="${k}" ${getSel(conf.key) === k ? 'selected' : ''}>${k}</option>`).join('')}
                     </select></div>`;
@@ -3165,8 +3168,8 @@ class EffectManager {
                     title = "ARP DELAY (A)"; color = "#e0f";
                     const currentScale = EffectManager.ARPDELAY_SCALES[Math.floor(p.scale)] || "Unknown";
                     
-                    html += `<div class="preset-row"><label>Preset:</label>
-                    <select onchange="EffectManager.applyGenericPreset('arpDelay', this.value)" style="width: 100%; margin-bottom: 5px;" id="sel_arpDelay" aria-label="Arp Delay Preset">
+                    html += `<div class="preset-row effect-preset-row"><label>Preset:</label>
+                    <select class="effect-preset-select" onchange="EffectManager.applyGenericPreset('arpDelay', this.value)" id="sel_arpDelay" aria-label="Arp Delay Preset">
                         <option value="">-- Select --</option>
                         ${Object.keys(EffectManager.ARPDELAY_PRESETS).map(k => `<option value="${k}" ${getSel('arpDelay') === k ? 'selected' : ''}>${k}</option>`).join('')}
                     </select></div>`;
@@ -3189,8 +3192,8 @@ class EffectManager {
                     const p = paramsSrc.compressor || effects.compressor || {};
                     title = "COMPRESSOR (C)";
                     color = "lightgreen";
-                    html += `<div class="preset-row"><label>Preset:</label>
-                        <select onchange="EffectManager.applyCompressorPreset(this.value)" style="width: 100%; margin-bottom: 5px;" id="sel_compressor" aria-label="Compressor Preset">
+                    html += `<div class="preset-row effect-preset-row"><label>Preset:</label>
+                        <select class="effect-preset-select" onchange="EffectManager.applyCompressorPreset(this.value)" id="sel_compressor" aria-label="Compressor Preset">
                             <option value="">-- Select Preset --</option>
                             ${Object.keys(EffectManager.COMPRESSOR_PRESETS).map(k => `<option value="${k}" ${getSel('compressor') === k ? 'selected' : ''}>${k}</option>`).join('')}
                         </select></div>`;
@@ -3210,8 +3213,8 @@ class EffectManager {
                         const p = paramsSrc.eq || effects.eq || {};
                         title = "EQ (10-Band) (Q)"; color = "#4fd";
                         // Preset Dropdown
-                        html += `<div style="margin-bottom:5px;">
-                        <select onchange="EffectManager.updateEQPreset(this.value)" style="width:100%; font-size:10px;" id="sel_eq" aria-label="EQ Preset">
+                        html += `<div class="effect-preset-row effect-preset-row-wide">
+                        <select class="effect-preset-select" onchange="EffectManager.updateEQPreset(this.value)" id="sel_eq" aria-label="EQ Preset">
                             <option value="">Load Preset...</option>
                             ${Object.keys(EffectManager.EQ_PRESETS).map(k => `<option value="${k}" ${getSel('eq') === k ? 'selected' : ''}>${k}</option>`).join('')}
                         </select>
@@ -3444,6 +3447,9 @@ class EffectManager {
 
     // Update Visual Chain
     static updateChainVisual(val) {
+        const el = document.getElementById('chainVisualDisplay');
+        if (!el) return;
+
         const names = { 
             B:'revB', V:'reVm', D:'Dlay', T:'disTr', F:'Fuzz', 
             O:'Odrv', C:'Comp', H:'Harm', K:'dusK', Q:'eQ', A:'Arpd', Z:'zigZ', G:'Griz'
@@ -3454,28 +3460,24 @@ class EffectManager {
             'B': 'reverb', 'V': 'machineReverb', 'D': 'delay', 'T': 'distortion', 
             'F': 'fuzz', 'O': 'overdrive', 'C': 'compressor', 'H': 'harmony', 'K': 'dusk', 'Q': 'eq', 'A': 'arpDelay', 'Z': 'zigZ', 'G': 'griz'
         };
-        
-        let html = "";
+        const customEffects = Object.values(state.customEffects);
+        const fragment = document.createDocumentFragment();
         const chars = val.toUpperCase().split('');
-        chars.forEach((c, i) => {
-            const name = names[c] || c;
-            const colorKey = colorMap[c];
-            const color = (colorKey && effectColors[colorKey]) ? effectColors[colorKey] : '#888';
-            
-            // Check custom colors
-            for(const fx of Object.values(state.customEffects)) {
-                if (fx.code === c) html += `<span style="color:${fx.color}">${fx.name.substring(0,4)}</span>`;
-            }
 
-            if (!Object.values(state.customEffects).some(e=>e.code===c)) {
-                html += `<span style="color:${color}">${name}</span>`;
-            }
-            if (i < chars.length - 1) {
-                html += ' > ';
-            }
+        chars.forEach((code, index) => {
+            const customEffect = customEffects.find(fx => fx.code === code);
+            const label = customEffect ? String(customEffect.name || '').slice(0, 4) : (names[code] || code);
+            const colorKey = colorMap[code];
+            const color = customEffect ? (customEffect.color || '#fff') : ((colorKey && effectColors[colorKey]) ? effectColors[colorKey] : '#888');
+            const entry = document.createElement('span');
+            entry.style.color = color;
+            entry.textContent = label;
+            fragment.appendChild(entry);
+
+            if (index < chars.length - 1) fragment.appendChild(document.createTextNode(' > '));
         });
 
-        document.getElementById('chainVisualDisplay').innerHTML = html;
+        el.replaceChildren(fragment);
     }
     
     // Save Preset
@@ -3492,76 +3494,100 @@ class EffectManager {
 
     // Refresh the preset dropdowns in Input and Editor modules
     static refreshPresetDropdowns() {
-        const populate = (id, includeManual) => {
-            const sel = document.getElementById(id);
-            if(!sel) return;
-            const current = sel.value;
-            sel.innerHTML = includeManual ? '<option value="">-- Manual --</option>' : '<option value="">Load Existing</option>';
-            // Populate GLOBAL Presets
-            if (state.globalPresets) {
-                Object.keys(state.globalPresets).forEach(k => {
-                    const opt = document.createElement('option');
-                    opt.value = "GLOBAL:" + k;
-                    opt.textContent = "[PRESET] " + k;
-                    opt.style.color = "#0f0";
-                    sel.appendChild(opt);
+        const appendOption = (select, value, label, color) => {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = label;
+            if (color) option.style.color = color;
+            select.appendChild(option);
+        };
+        const populateSelect = (select, { placeholder, includeGlobal = true, includeChain = true }) => {
+            if (!select) return;
+            const current = select.value;
+            select.replaceChildren();
+            appendOption(select, '', placeholder);
+
+            if (includeGlobal) {
+                Object.keys(state.globalPresets || {}).sort().forEach(name => {
+                    appendOption(select, `GLOBAL:${name}`, `[FULL] ${name}`, '#0f0');
                 });
             }
-            
-            Object.keys(state.fxPresets).forEach(k => {
-                const opt = document.createElement('option');
-                opt.value = k;
-                opt.textContent = k;
-                sel.appendChild(opt);
-            });
-            sel.value = current; // Try to keep selection
+            if (includeChain) {
+                Object.keys(state.fxPresets || {}).sort().forEach(name => {
+                    appendOption(select, name, `[CHAIN] ${name}`);
+                });
+            }
+
+            select.value = current;
         };
-        populate('editorPresetSelect', false);
-        
-        // Drone FX Preset Select
-        const droneSel = document.getElementById('droneFxPresetSelect');
-        if(droneSel) {
-            const curr = droneSel.value;
-            droneSel.innerHTML = '<option value="">-- Presets --</option>';
-            // Add Global
-            Object.keys(state.globalPresets).forEach(k => {
-                droneSel.innerHTML += `<option value="GLOBAL:${k}" style="color:#0f0;">[GLOBAL] ${k}</option>`;
-            });
-            // Add FX Presets
-            Object.keys(state.fxPresets).forEach(k => droneSel.innerHTML += `<option value="${k}">${k}</option>`);
-            droneSel.value = curr;
-        }
+        const populate = (id, options) => populateSelect(document.getElementById(id), options);
+
+        populate('editorPresetSelect', {
+            placeholder: 'Load chain preset...',
+            includeGlobal: false,
+            includeChain: true
+        });
+        populate('inputFxPresetSelect', { placeholder: '-- Custom --' });
+        document.querySelectorAll('[id^="droneFxPresetSelect_"]').forEach(select => {
+            populateSelect(select, { placeholder: '-- Custom --' });
+        });
 
         // Global Preset Editor Populate
         const sourceSel = document.getElementById('presetSourceSelect');
         if (sourceSel) {
             const current = sourceSel.value;
-            sourceSel.innerHTML = '<option value="input">Input Bus</option>';
+            sourceSel.replaceChildren();
+            appendOption(sourceSel, 'input', 'Input Bus');
             
-            // Loops
-            state.loops.forEach((l, i) => {
-                sourceSel.innerHTML += `<option value="${i}">Loop ${i+1} ${l.name ? '('+l.name+')' : ''}</option>`;
+            state.loops.forEach((loop, index) => {
+                const name = loop.name ? ` (${loop.name})` : '';
+                appendOption(sourceSel, index, `Loop ${index + 1}${name}`);
             });
             
-            // Drones
             if (window.DroneSynth && DroneSynth.instances) {
-                DroneSynth.instances.forEach((d, i) => {
-                    const mappedKey = (d.id < 10 && state.keyMapping.kbd[20 + d.id]) ? state.keyMapping.kbd[20 + d.id].toUpperCase() : (d.id+1);
-                    sourceSel.innerHTML += `<option value="drone-${d.id}">Drone ${mappedKey} ${d.name ? '('+d.name+')' : ''}</option>`;
+                DroneSynth.instances.forEach(drone => {
+                    const mappedKey = (drone.id < 10 && state.keyMapping.kbd[20 + drone.id]) ? state.keyMapping.kbd[20 + drone.id].toUpperCase() : (drone.id + 1);
+                    const name = drone.name ? ` (${drone.name})` : '';
+                    appendOption(sourceSel, `drone-${drone.id}`, `Drone ${mappedKey}${name}`);
                 });
             }
 
-            if(current) sourceSel.value = current;
+            sourceSel.value = current;
         }
+
         const delSel = document.getElementById('editorDeleteSelect');
-        if(delSel) {
+        if (delSel) {
             const current = delSel.value;
-            delSel.innerHTML = '';
-            Object.keys(state.globalPresets).sort().forEach(k => {
-                delSel.innerHTML += `<option value="${k}">[PRESET] ${k}</option>`;
+            delSel.replaceChildren();
+            Object.keys(state.globalPresets || {}).sort().forEach(name => {
+                appendOption(delSel, name, `[FULL] ${name}`);
             });
-            if(current) delSel.value = current;
+            if (current && Object.hasOwn(state.globalPresets || {}, current)) delSel.value = current;
+            else if (delSel.options.length) delSel.selectedIndex = 0;
         }
+
+        this.updateGlobalPresetLibraryInfo();
+    }
+
+    static updateGlobalPresetLibraryInfo() {
+        const presets = state.globalPresets || {};
+        const count = Object.keys(presets).length;
+        const translate = key => typeof I18n !== 'undefined' ? I18n.t(key) : key;
+        const countEl = document.getElementById('globalPresetCount');
+        const summaryEl = document.getElementById('globalPresetSummary');
+        const selectedName = document.getElementById('editorDeleteSelect')?.value;
+        const preset = selectedName ? presets[selectedName] : null;
+
+        if (countEl) countEl.textContent = `${count} ${translate('FULL_PRESETS')}`;
+        if (!summaryEl) return;
+
+        if (!preset || typeof preset !== 'object') {
+            summaryEl.textContent = translate('GLOBAL_PRESET_LIBRARY_EMPTY');
+            return;
+        }
+
+        const activeCount = Object.values(preset.active || {}).filter(Boolean).length;
+        summaryEl.textContent = `${translate('PRESET_CHAIN')}: ${preset.chain || '—'} · ${activeCount} ${translate('ACTIVE_EFFECTS')}`;
     }
 
     // Load preset string into editor input
@@ -3660,11 +3686,26 @@ class EffectManager {
         const reader = new FileReader();
         reader.onload = (e) => {
             try {
-                const newPresets = JSON.parse(e.target.result);
-                state.globalPresets = { ...state.globalPresets, ...newPresets };
+                const parsedPresets = JSON.parse(e.target.result);
+                if (!parsedPresets || typeof parsedPresets !== 'object' || Array.isArray(parsedPresets)) throw new Error('Invalid preset library');
+
+                const newPresets = Object.fromEntries(Object.entries(parsedPresets).filter(([name, preset]) =>
+                    typeof name === 'string' && name.trim() &&
+                    preset && typeof preset === 'object' && !Array.isArray(preset) &&
+                    typeof preset.chain === 'string' &&
+                    preset.active && typeof preset.active === 'object' && !Array.isArray(preset.active) &&
+                    preset.params && typeof preset.params === 'object' && !Array.isArray(preset.params)
+                ));
+                const importedNames = Object.keys(newPresets);
+                if (!importedNames.length) throw new Error('No valid presets');
+
+                const overwriteCount = importedNames.filter(name => Object.hasOwn(state.globalPresets || {}, name)).length;
+                if (overwriteCount && !confirm(`Replace ${overwriteCount} existing global preset${overwriteCount === 1 ? '' : 's'}?`)) return;
+
+                state.globalPresets = { ...(state.globalPresets || {}), ...newPresets };
                 this.refreshPresetDropdowns();
                 UIManager.renderLoops();
-                alert("Global Presets loaded!");
+                alert(`${importedNames.length} global preset${importedNames.length === 1 ? '' : 's'} loaded!`);
             } catch(err) {
                 alert("Invalid global preset file");
             }
@@ -3679,7 +3720,11 @@ class EffectManager {
     static applyGlobalPreset(targetId, presetName) {
         const presetKey = presetName.replace("GLOBAL:", "");
         const preset = state.globalPresets[presetKey];
-        if (!preset) return;
+        const isObject = value => value && typeof value === 'object' && !Array.isArray(value);
+        if (!preset || typeof preset.chain !== 'string' || !isObject(preset.active) || !isObject(preset.params)) {
+            alert("Invalid global preset");
+            return;
+        }
 
         // Deep copy params, merging with safe defaults to prevent legacy missing keys from breaking logic
         const newParams = JSON.parse(JSON.stringify(preset.params));
@@ -3742,9 +3787,11 @@ class EffectManager {
     }
 
     static saveGlobalPreset() {
-        const name = document.getElementById('newGlobalPresetName').value.trim();
+        const nameInput = document.getElementById('newGlobalPresetName');
+        const name = nameInput.value.trim();
         const source = document.getElementById('presetSourceSelect').value;
         if (!name) return alert("Enter a preset name");
+        if (state.globalPresets[name] && !confirm(`Replace global preset '${name}'?`)) return;
 
         let sourceParams, sourceChain, sourceActive;
 
@@ -3772,6 +3819,10 @@ class EffectManager {
         };
 
         this.refreshPresetDropdowns();
+        const librarySelect = document.getElementById('editorDeleteSelect');
+        if (librarySelect) librarySelect.value = name;
+        this.updateGlobalPresetLibraryInfo();
+        nameInput.value = '';
         UIManager.renderLoops();
         alert(`Global Preset '${name}' saved!`);
     }

@@ -19,6 +19,7 @@ class ProjectManager {
      * Saves the entire project state, including audio, to a JSON file.
      */
     static async save() {
+        let saveBtns = [];
         try {
             const safeName = this.getSafeProjectName();
             const userInput = prompt("Save Project As:", safeName);
@@ -26,8 +27,13 @@ class ProjectManager {
             const projectName = userInput.trim() || safeName;
             document.getElementById('projectName').value = projectName;
             
-            const saveBtns = document.querySelectorAll('[onclick*="saveProject"]');
-            saveBtns.forEach(btn => { btn.dataset.origText = btn.textContent; btn.textContent = "SAVING..."; btn.disabled = true; });
+            saveBtns = document.querySelectorAll('#btnSaveProj');
+            saveBtns.forEach(btn => {
+                btn.dataset.origText = btn.textContent;
+                btn.textContent = "SAVING...";
+                btn.disabled = true;
+                btn.setAttribute('aria-busy', 'true');
+            });
 
             const loopsData = await Promise.all(state.loops.map(async loop => {
                 let wavBase64 = null;
@@ -155,12 +161,15 @@ class ProjectManager {
             link.click();
             
             setTimeout(() => URL.revokeObjectURL(url), 100);
-
-            saveBtns.forEach(btn => { btn.textContent = btn.dataset.origText; btn.disabled = false; });
-            
         } catch (error) {
             console.error("Save project error:", error);
             alert("Error saving project: " + error.message);
+        } finally {
+            saveBtns.forEach(btn => {
+                btn.textContent = btn.dataset.origText;
+                btn.disabled = false;
+                btn.removeAttribute('aria-busy');
+            });
         }
     }
 
@@ -180,7 +189,10 @@ class ProjectManager {
             if (!data || typeof data !== 'object') {
                 throw new Error("Invalid project file");
             }
-            
+            if (data.tracker && data.tracker.patterns !== undefined) {
+                TrackerManager.validatePatterns(data.tracker.patterns);
+            }
+
             // Ensure AudioContext is ready before restoring buffers
             if (state.audioContext && state.audioContext.state === 'suspended') await AudioEngine.resume();
 

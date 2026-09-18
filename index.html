@@ -8,7 +8,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#291a0a">
     <meta name="description" content="ASCII Looper - Browser-based 20-track loop station with effects and sequencing.">
-    <title>ASCII Looper v0.76.02</title>
+    <title>ASCII Looper v0.76.05</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="styles.css">
     <link rel="dns-prefetch" href="//www.google.com">
@@ -68,95 +68,106 @@
             
             <div class="retro-module" id="mod-menu">
                 <div class="module-header"><span data-i18n="PROJ_MENU">PROJECT MENU</span><span data-i18n="SYSTEM">[SYSTEM]</span></div>
-                <div class="module-content">
-                    <div style="display:flex; gap:5px; margin-bottom:5px;">
-                        <input type="text" id="projectName" placeholder="My Project" style="width:100%;" aria-label="Project Name" data-i18n-title="TIP_PROJECT_NAME">
-                    </div>
-					<div class="std-btn-grid">
-                        <button onclick="saveProject()" class="std-btn btn-blue" data-i18n="SAVE_PROJ" data-i18n-title="TIP_SAVE_PROJ" id="btnSaveProj">SAVE PROJ</button>
-                        <button onclick="document.getElementById('loadFile').click()" class="std-btn btn-orange" data-i18n="LOAD_PROJ" data-i18n-title="TIP_LOAD_PROJ" id="btnLoadProj">LOAD PROJ</button>
-                        <input type="file" id="loadFile" accept=".json,.alp" style="display:none;" onchange="ProjectManager.load(event)">
-                    </div>
-                    <div class="std-btn-grid" style="grid-template-columns: 1fr 1fr 1fr 1fr;">
-                        <button onclick="stopAll()" class="std-btn btn-yellow" data-i18n="STOP_ALL" data-i18n-title="TIP_STOP_ALL">Sto[P] ALL</button>
-                        <button onclick="clearAll()" class="std-btn btn-red" data-i18n="CLEAR_ALL" data-i18n-title="TIP_CLEAR_ALL">DEL ALL</button>
-                        <button onclick="globalUndo()" class="std-btn btn-blue" id="btnGlobalUndo" disabled title="Undo Last Action">UNDO</button>
-                        <button onclick="globalRedo()" class="std-btn btn-purple" id="btnGlobalRedo" disabled title="Redo Last Action">REDO</button>
-                    </div>
-                    <button onclick="panic()" class="std-btn btn-red" style="width:100%; border-style:dashed; margin-bottom:5px;" data-i18n-title="TIP_PANIC">[!!!] PANIC / RESET [!!!]</button>
-                    <div class="std-btn-grid">
+                <div class="module-content project-menu">
+                    <section class="project-menu-section project-file-section" aria-labelledby="project-file-heading">
+                        <div class="project-section-heading">
+                            <span id="project-file-heading" data-i18n="PROJECT_FILE">PROJECT FILE</span>
+                            <span class="project-format-badge" aria-label="Project file format">.ALP</span>
+                        </div>
+                        <label class="project-name-field" for="projectName">
+                            <span data-i18n="PROJECT_NAME">PROJECT NAME</span>
+                            <input type="text" id="projectName" placeholder="My Project" aria-label="Project Name" data-i18n-title="TIP_PROJECT_NAME">
+                        </label>
+                        <div class="project-file-actions">
+                            <button onclick="saveProject()" class="std-btn btn-blue" data-i18n="SAVE_PROJ" data-i18n-title="TIP_SAVE_PROJ" id="btnSaveProj">SAVE PROJ</button>
+                            <button onclick="document.getElementById('loadFile').click()" class="std-btn btn-orange" data-i18n="LOAD_PROJ" data-i18n-title="TIP_LOAD_PROJ" id="btnLoadProj">LOAD PROJ</button>
+                            <input type="file" id="loadFile" accept=".json,.alp" style="display:none;" onchange="ProjectManager.load(event)">
+                        </div>
+                    </section>
+                    <section class="project-menu-section" aria-labelledby="session-controls-heading">
+                        <div class="project-section-heading">
+                            <span id="session-controls-heading" data-i18n="SESSION_CONTROLS">SESSION CONTROLS</span>
+                        </div>
+                        <div class="project-session-actions">
+                            <button onclick="stopAll()" class="std-btn btn-yellow" data-i18n="STOP_ALL" data-i18n-title="TIP_STOP_ALL">STOP ALL</button>
+                            <button onclick="clearAll()" class="std-btn btn-red" data-i18n="CLEAR_ALL" data-i18n-title="TIP_CLEAR_ALL">DEL ALL</button>
+                            <button onclick="globalUndo()" class="std-btn btn-blue" id="btnGlobalUndo" disabled title="Undo Last Action">UNDO</button>
+                            <button onclick="globalRedo()" class="std-btn btn-purple" id="btnGlobalRedo" disabled title="Redo Last Action">REDO</button>
+                        </div>
+                    </section>
+                    <section class="project-menu-section project-capture-section" aria-labelledby="capture-export-heading">
+                        <div class="project-section-heading">
+                            <span id="capture-export-heading" data-i18n="CAPTURE_EXPORT">CAPTURE & EXPORT</span>
+                        </div>
+                        <button onclick="toggleMasterRecording()" id="masterRecBtn" class="std-btn btn-red project-master-record" data-i18n="MASTER_REC" data-i18n-title="TIP_MASTER_REC">[M]ASTER REC</button>
+                        <div id="masterRecTimeDisplay" class="project-record-time">00:00</div>
+                        <div class="project-export-actions">
+                            <button onclick="ProjectManager.exportInputOnly()" id="exportInputBtn" class="std-btn btn-purple" disabled data-i18n="EXP_INPUT" data-i18n-title="TIP_EXP_INPUT">EXP INPUT</button>
+                            <button onclick="ProjectManager.exportMasterOnly()" id="exportMasterBtn" class="std-btn btn-purple" disabled data-i18n="EXP_MASTER" data-i18n-title="TIP_EXP_MASTER">EXP MASTER</button>
+                            <button onclick="exportAllTracks()" id="exportAllBtn" class="std-btn btn-purple" disabled data-i18n="EXP_ALL" data-i18n-title="TIP_EXP_ALL">[E]XP ALL</button>
+                        </div>
+                    </section>
+                    <div class="project-midi-action">
                         <button onclick="if(window.App) App.requestMIDIAccess()" class="std-btn btn-cyan" id="enableMidiBtn" data-i18n-title="TIP_ENABLE_MIDI" data-i18n="ENABLE_MIDI">Enable Midi</button>
                     </div>
-                    <div class="std-btn-grid" style="grid-template-columns: 1fr 1fr 1fr;">
-                        <button onclick="ProjectManager.exportInputOnly()" id="exportInputBtn" class="std-btn btn-purple" disabled data-i18n="EXP_INPUT" data-i18n-title="TIP_EXP_INPUT">EXP INPUT</button>
-                         <button onclick="ProjectManager.exportMasterOnly()" id="exportMasterBtn" class="std-btn btn-purple" disabled data-i18n="EXP_MASTER" data-i18n-title="TIP_EXP_MASTER">EXP MASTER</button>
-                        <button onclick="exportAllTracks()" id="exportAllBtn" class="std-btn btn-purple" disabled data-i18n="EXP_ALL" data-i18n-title="TIP_EXP_ALL">[E]XP ALL</button>
-                    </div>
-                    <button onclick="toggleMasterRecording()" id="masterRecBtn" class="std-btn btn-red" style="width:100%;" data-i18n="MASTER_REC" data-i18n-title="TIP_MASTER_REC">[M]ASTER REC</button>
-                    <div id="masterRecTimeDisplay" style="text-align: center; color: #f00; font-size: 12px; display: none; margin-top: 5px; font-family: monospace;">00:00</div>
+                    <button onclick="panic()" class="std-btn btn-red project-panic" data-i18n-title="TIP_PANIC">[!!!] PANIC / RESET [!!!]</button>
                 </div>
             </div>
             <div class="retro-module" id="mod-sync">
                 <div class="module-header"><span data-i18n="SYNC_SETTINGS">SYNC & SETTINGS</span><span data-i18n="TIMING">TIMING</span></div>
-                <div class="module-content">
-                    <div style="display:flex; justify-content:space-between; align-items:center;">
-                        <label for="syncLoops"><input type="checkbox" id="syncLoops" checked aria-label="Enable Sync"><span style="color:#0f0; font-weight:bold;" data-i18n="ENABLE_SYNC">ENABLE SYNC</span></label>
-                        <span id="loopLength" style="color:#888;">0.0s</span>
-                        <span id="latencyDisplay" style="color:#666; font-size:9px;" title="System Latency Compensation">0ms</span>
-                    </div>
-                    <div style="display:flex; gap:5px; align-items:center;">
-                        <label for="bpmInput">BPM:</label><input type="number" id="bpmInput" value="120" style="width:64px;" aria-label="Beats Per Minute">
-                        <label for="numBars">BARS:</label><input type="number" id="numBars" value="2" style="width:52px;" aria-label="Number of Bars">
-                    </div>
-                    <div style="display:flex; gap:5px; align-items:center; margin-top:2px; border-top: 1px dashed #444; padding-top:2px;">
-                        <label style="font-size:9px;" for="latencyCorrection">LATENCY COMP:</label>
-                        <input type="range" id="latencyCorrection" min="-200" max="500" step="1" value="0" style="flex:1;" oninput="SyncManager.updateSettings()" title="Manual Input Latency Compensation (ms)" aria-label="Latency Compensation">
-                        <span id="manualLatencyDisplay" style="font-size:9px; width:35px; text-align:right;">0ms</span>
-                    </div>
-                    <div style="margin-top:2px; text-align:center;">
-                        <button id="pingTestBtn" onclick="SyncManager.runPingTest()" class="std-btn btn-purple small" style="width:100%;" title="Measure physical roundtrip latency (Mic must hear Speakers)">PING TEST (AUTO-CALIBRATE)</button>
-                    </div>
-                    <div style="display:flex; gap:5px; align-items:center; margin-bottom: 2px;">
-                         <label>SIG:</label>
-                         <input type="number" id="timeSigNum" value="4" style="width:44px;" aria-label="Time Signature Numerator">/
-                         <input type="number" id="timeSigDen" value="4" style="width:44px;" aria-label="Time Signature Denominator">
-                    </div>
-                    <div style="display:flex; gap:5px; align-items:center;">
-                         <label style="font-size:9px;" data-i18n="SYNC_SRC" for="syncSource">SYNC SRC:</label>
-                         <select id="syncSource" style="width:80px; font-size:9px;" onchange="SyncManager.updateSettings()" aria-label="Sync Source">
-                             <option value="master">Master BPM</option>
-                         </select>
-                         <label style="font-size:9px; margin-left:5px;" for="fxMixTimeSel">FX MIX:</label>
-                         <select id="fxMixTimeSel" style="width:50px; font-size:9px;" onchange="SyncManager.updateSettings()" aria-label="FX Mix Time">
-                             <option value="0s">0s</option>
-                             <option value="2s" selected>2s</option>
-                             <option value="5s">5s</option>
-                             <option value="10s">10s</option>
-                             <option value="0.25t">1/4t</option>
-                             <option value="0.5t">1/2t</option>
-                             <option value="1t">1t</option>
-                         </select>
-                    </div>
-                    
-                    <div style="display:flex; align-items:center; justify-content: space-between; margin-top: 5px; background: #001100; padding: 3px; border: 1px solid #004400;">
-                        <button id="metronomeBtn" onclick="MetronomeScheduler.toggle()" class="std-btn btn-cyan" style="margin-right:5px; width:auto; padding:2px 6px;" data-i18n="METRONOME">Metro[N]ome</button>
-                        <input type="range" id="metronomeVol" min="0" max="2" step="0.05" value="0.5" style="flex:1;" oninput="document.getElementById('metroVolDisplay').textContent = parseFloat(this.value).toFixed(2)" aria-label="Metronome Volume">
-                        <span id="metroVolDisplay" style="font-size:10px; width:30px; text-align:right;">0.50</span>
-                    </div>
-                    <div style="display:flex; justify-content:space-between; margin-top:2px; font-size:10px; color:#888;">
-                        <span style="font-size:9px; padding-top:3px;">REC CUE:</span>
-                        <label for="countInVisual"><input type="checkbox" id="countInVisual" checked aria-label="Visual Count-In"> VISUAL</label>
-                        <label for="countInAudio"><input type="checkbox" id="countInAudio" aria-label="Audio Count-In"> SOUND</label>
-                    </div>
-                <hr style="width:100%; border:0; border-bottom:1px dashed #444;">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 2px;">
-                    <label for="autoPlayAfterRecord"><input type="checkbox" id="autoPlayAfterRecord" checked aria-label="Auto Play After Record"> <span data-i18n="AUTO_PLAY">Auto-play after Rec</span></label>
-                    <label for="autoRecordNext"><input type="checkbox" id="autoRecordNext" aria-label="Cascade Record Next"> Cascade Rec</label>
-                </div>
-                <div style="display:flex; justify-content:space-between; font-size:10px; color:#888; margin-top:auto;">
-                        <span>Loops: <strong id="activeCount" style="color:#fff">0/10</strong></span>
-                        <span id="recStatus">READY</span>
-                    </div>
+                <div class="module-content sync-settings">
+                    <section class="sync-section sync-grid-section" aria-labelledby="sync-grid-heading">
+                        <div class="sync-section-heading">
+                            <span id="sync-grid-heading" data-i18n="SYNC_GRID">SYNC GRID</span>
+                            <label class="sync-enable-toggle" for="syncLoops">
+                                <input type="checkbox" id="syncLoops" checked aria-label="Enable Sync">
+                                <span data-i18n="ENABLE_SYNC">ENABLE SYNC</span>
+                            </label>
+                        </div>
+                        <div class="sync-readouts" aria-label="Synchronization status">
+                            <div class="sync-readout"><span data-i18n="LOOP_LENGTH">LOOP LENGTH</span><strong id="loopLength">0.0s</strong></div>
+                            <div class="sync-readout"><span data-i18n="LATENCY">LATENCY</span><strong id="latencyDisplay" title="System Latency Compensation">0ms</strong></div>
+                        </div>
+                        <div class="sync-timing-fields">
+                            <label class="sync-field" for="bpmInput"><span data-i18n="TEMPO">BPM</span><input type="number" id="bpmInput" value="120" aria-label="Beats Per Minute"></label>
+                            <label class="sync-field" for="numBars"><span data-i18n="BARS">BARS</span><input type="number" id="numBars" value="2" aria-label="Number of Bars"></label>
+                            <div class="sync-field"><span data-i18n="TIME_SIGNATURE">TIME SIG</span><div class="sync-signature-inputs"><input type="number" id="timeSigNum" value="4" aria-label="Time Signature Numerator"><span>/</span><input type="number" id="timeSigDen" value="4" aria-label="Time Signature Denominator"></div></div>
+                        </div>
+                        <div class="sync-select-fields">
+                            <label class="sync-field" for="syncSource"><span data-i18n="SYNC_SRC">SYNC SRC</span><select id="syncSource" onchange="SyncManager.updateSettings()" aria-label="Sync Source"><option value="master">Master BPM</option></select></label>
+                            <label class="sync-field" for="fxMixTimeSel"><span data-i18n="FX_MIX">FX MIX</span><select id="fxMixTimeSel" onchange="SyncManager.updateSettings()" aria-label="FX Mix Time"><option value="0s">0s</option><option value="2s" selected>2s</option><option value="5s">5s</option><option value="10s">10s</option><option value="0.25t">1/4t</option><option value="0.5t">1/2t</option><option value="1t">1t</option></select></label>
+                        </div>
+                    </section>
+
+                    <section class="sync-section sync-calibration-section" aria-labelledby="calibration-heading">
+                        <div class="sync-section-heading"><span id="calibration-heading" data-i18n="CALIBRATION">CALIBRATION</span><span class="sync-section-note" data-i18n="LATENCY_COMP">LATENCY COMP</span></div>
+                        <div class="sync-slider-control">
+                            <input type="range" id="latencyCorrection" min="-200" max="500" step="1" value="0" oninput="SyncManager.updateSettings()" title="Manual Input Latency Compensation (ms)" aria-label="Latency Compensation">
+                            <output id="manualLatencyDisplay" for="latencyCorrection">0ms</output>
+                        </div>
+                        <button id="pingTestBtn" onclick="SyncManager.runPingTest()" class="std-btn btn-purple small sync-ping-test" title="Measure physical roundtrip latency (Mic must hear Speakers)" data-i18n="PING_TEST">PING TEST (AUTO-CALIBRATE)</button>
+                    </section>
+
+                    <section class="sync-section sync-metronome-section" aria-labelledby="metronome-heading">
+                        <div class="sync-section-heading"><span id="metronome-heading" data-i18n="METRONOME">METRONOME</span><span class="sync-section-note" data-i18n="REC_CUE">REC CUE</span></div>
+                        <div class="sync-metronome-controls">
+                            <button id="metronomeBtn" onclick="MetronomeScheduler.toggle()" class="std-btn btn-cyan" data-i18n="METRONOME">Metro[N]ome</button>
+                            <label class="sync-slider-control sync-volume-control" for="metronomeVol"><span data-i18n="VOLUME">VOLUME</span><input type="range" id="metronomeVol" min="0" max="2" step="0.05" value="0.5" oninput="document.getElementById('metroVolDisplay').textContent = parseFloat(this.value).toFixed(2)" aria-label="Metronome Volume"><output id="metroVolDisplay" for="metronomeVol">0.50</output></label>
+                        </div>
+                        <div class="sync-toggle-row">
+                            <label for="countInVisual"><input type="checkbox" id="countInVisual" checked aria-label="Visual Count-In"><span data-i18n="VISUAL">VISUAL</span></label>
+                            <label for="countInAudio"><input type="checkbox" id="countInAudio" aria-label="Audio Count-In"><span data-i18n="SOUND">SOUND</span></label>
+                        </div>
+                    </section>
+
+                    <section class="sync-section sync-recording-section" aria-labelledby="recording-heading">
+                        <div class="sync-section-heading"><span id="recording-heading" data-i18n="RECORDING">RECORDING</span></div>
+                        <div class="sync-toggle-row">
+                            <label for="autoPlayAfterRecord"><input type="checkbox" id="autoPlayAfterRecord" checked aria-label="Auto Play After Record"><span data-i18n="AUTO_PLAY">Auto-play after Rec</span></label>
+                            <label for="autoRecordNext"><input type="checkbox" id="autoRecordNext" aria-label="Cascade Record Next"><span data-i18n="CASCADE_REC">CASCADE REC</span></label>
+                        </div>
+                        <div class="sync-recording-status"><span><span data-i18n="LOOPS">LOOPS</span>: <strong id="activeCount">0/10</strong></span><span id="recStatus">READY</span></div>
+                    </section>
                 </div>
             </div>
 
@@ -175,6 +186,15 @@
                         <button onclick="if(window.SampleLab) SampleLab.sendToLoop()" class="std-btn btn-cyan" style="flex:1;" title="Export to selected loop">PUT</button>
                     </div>
                     <canvas id="labCanvas" class="lab-canvas" width="300" height="40"></canvas>
+                    <div style="display:flex; gap:8px; align-items:center; margin-bottom:5px; font-size:9px;">
+                        <label style="display:flex; align-items:center; gap:3px; cursor:pointer; color:#aaa;" title="Snap slice points to the nearest zero crossing (clickless edits)">
+                            <input type="checkbox" id="labZC" style="margin:0;" aria-label="Zero-crossing snap"> ZC SNAP
+                        </label>
+                        <span id="labPeak" style="color:#888;">PEAK: --</span>
+                        <span style="flex:1;"></span>
+                        <button onclick="SampleLab.crop()" class="std-btn btn-yellow" style="padding:1px 8px; font-size:9px;" title="Destructively trim the sample to the current selection">CROP</button>
+                        <button onclick="SampleLab.undo()" id="labUndoBtn" class="std-btn btn-yellow" style="padding:1px 8px; font-size:9px;" disabled title="Undo the last destructive edit">UNDO</button>
+                    </div>
                     <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-bottom:5px;">
                         <div>
                             <label for="labStart" style="font-size:9px; display:flex; justify-content:space-between;">START <span id="labStartDisplay">0.00s</span></label>
@@ -241,10 +261,10 @@
         </div>
 
         <div class="main-tabs">
-            <button class="main-tab-btn" onclick="UIManager.switchWorkspaceTab('loops')" data-i18n="LOOP_TRACKS">LOOP TRACKS</button>
+            <button class="main-tab-btn active" onclick="UIManager.switchWorkspaceTab('loops')" data-i18n="LOOP_TRACKS">LOOP TRACKS</button>
             <button class="main-tab-btn" onclick="UIManager.switchWorkspaceTab('drone')">DRONE SYNTH</button>
             <button class="main-tab-btn" onclick="UIManager.switchWorkspaceTab('tracker'); MasterMixManager.render();" data-i18n="SONG_TRACKER">SONG TRACKER</button>
-            <button class="main-tab-btn active" onclick="UIManager.switchWorkspaceTab('live')">LIVE PERFORMANCE</button>
+            <button class="main-tab-btn" onclick="UIManager.switchWorkspaceTab('live')">LIVE PERFORMANCE</button>
         </div>
         </div><!-- /.sticky-top -->
 
@@ -252,48 +272,55 @@
             <div class="section-title" style="background: linear-gradient(90deg, #222, transparent); color:#ccc; margin-bottom:10px; border-left: 4px solid #ccc; padding:4px;" data-i18n="SONG_TRACKER">SONG TRACKER</div>
             <div class="retro-module" id="mod-tracker" style="border:none; box-shadow:none; padding-top: 5px;">
                 <div class="module-header"><span>SEQUENCER CONTROL</span><span data-i18n="SEQUENCER">[SEQUENCER]</span></div>
-                <div class="module-content">
-                    <div class="std-btn-grid" style="grid-template-columns: 1fr 1fr 1fr 1fr; margin-bottom: 5px; width: 50%;">
-                        <button onclick="TrackerManager.togglePlay()" id="trackerPlayBtn" class="std-btn btn-green" data-i18n="PLAY_SONG">[P]LAY</button>
-                        <button onclick="TrackerManager.stop()" class="std-btn btn-yellow" data-i18n="STOP_SONG">ST[O]P</button>
-                        <button onclick="TrackerManager.saveSong()" class="std-btn btn-blue">SAVE</button>
-                        <button onclick="document.getElementById('loadSongFile').click()" class="std-btn btn-orange">LOAD</button>
-                        <input type="file" id="loadSongFile" accept=".trk,.json" style="display:none;" onchange="TrackerManager.loadSong(event)">
+                <div class="module-content tracker-control-surface">
+                    <div class="tracker-transport-bar">
+                        <div class="tracker-transport-actions">
+                            <button type="button" onclick="TrackerManager.togglePlay()" id="trackerPlayBtn" class="std-btn btn-green tracker-transport-button" data-i18n="PLAY_SONG" aria-pressed="false">[P]LAY SONG</button>
+                            <button type="button" onclick="TrackerManager.stop()" id="trackerStopBtn" class="std-btn btn-yellow tracker-transport-button" data-i18n="STOP_SONG">ST[O]P ALL</button>
+                            <button type="button" onclick="TrackerManager.saveSong()" class="std-btn btn-blue tracker-transport-button">SAVE SONG</button>
+                            <button type="button" onclick="document.getElementById('loadSongFile').click()" class="std-btn btn-orange tracker-transport-button">LOAD SONG</button>
+                            <input type="file" id="loadSongFile" accept=".trk,.json" style="display:none;" onchange="TrackerManager.loadSong(event)">
+                        </div>
+                        <div class="tracker-run-state" id="trackerRunState" data-state="stopped" aria-live="polite"><span>SEQUENCER</span><strong>STOPPED</strong></div>
                     </div>
-                    <div style="display:flex; justify-content: space-between; margin-bottom: 5px; align-items:center;">
-                         <div style="display:flex; gap:5px; align-items:center;">
-                            <span style="font-size:10px; color:#888;" id="patSelLabel">PATTERN:</span>
-                            <select id="patternSelect" onchange="TrackerManager.selectPattern(this.value)" style="height:25px; width:60px;" aria-labelledby="patSelLabel">
-                                <option value="0">00</option>
-                            </select>
-                            <button onclick="TrackerManager.addPattern()" class="std-btn small btn-cyan" title="Add Pattern" style="font-size:9px; padding:2px 6px;">[+] ADD</button>
-                            <button onclick="TrackerManager.clonePattern()" class="std-btn small btn-yellow" title="Clone Current" style="font-size:9px; padding:2px 6px;">[C]LONE</button>
-                            <button onclick="TrackerManager.deletePattern()" class="std-btn small btn-red" title="Delete Pattern" style="font-size:9px; padding:2px 6px;">[-] DEL</button>
-                         </div>
-                         <div style="display:flex; gap:5px; align-items:center; font-size:10px; color:#888;">
-                            <label for="trackerFollow"><input type="checkbox" id="trackerFollow" checked aria-label="Follow Pattern"> FOLLOW</label>
-                            <label><input type="radio" name="trkMode" value="song" checked onchange="TrackerManager.setMode('song')" aria-label="Song Mode"> SONG</label>
-                            <label><input type="radio" name="trkMode" value="pattern" onchange="TrackerManager.setMode('pattern')" aria-label="Pattern Mode"> PATTERN</label>
-                         </div>
+
+                    <div class="tracker-edit-toolbar">
+                        <section class="tracker-control-block" aria-labelledby="patSelLabel">
+                            <div class="tracker-control-heading"><span id="patSelLabel">PATTERN</span><strong id="trackerPatternInfo">PAT 00 · 16 ROWS</strong></div>
+                            <div class="tracker-pattern-actions">
+                                <select id="patternSelect" onchange="TrackerManager.selectPattern(this.value)" aria-labelledby="patSelLabel"><option value="0">00</option></select>
+                                <button type="button" onclick="TrackerManager.addPattern()" class="std-btn small btn-cyan" title="Add Pattern">[+] ADD</button>
+                                <button type="button" onclick="TrackerManager.clonePattern()" class="std-btn small btn-yellow" title="Clone Current Pattern">[C]LONE</button>
+                                <button type="button" onclick="TrackerManager.deletePattern()" class="std-btn small btn-red" title="Delete Current Pattern">[-] DEL</button>
+                            </div>
+                        </section>
+                        <section class="tracker-control-block tracker-playback-options" aria-label="Playback options">
+                            <div class="tracker-control-heading"><span>PLAYBACK MODE</span><strong id="trackerModeState">SONG MODE</strong></div>
+                            <div class="tracker-mode-switch" role="group" aria-label="Playback mode">
+                                <button type="button" id="trackerSongModeBtn" onclick="TrackerManager.setMode('song')" aria-pressed="true">SONG</button>
+                                <button type="button" id="trackerPatternModeBtn" onclick="TrackerManager.setMode('pattern')" aria-pressed="false">PATTERN</button>
+                            </div>
+                            <label class="tracker-follow-toggle" for="trackerFollow"><input type="checkbox" id="trackerFollow" checked> FOLLOW PLAYING PATTERN</label>
+                        </section>
                     </div>
-                    
-                    <div style="margin-bottom:5px;">
-                        <label for="trackerSequenceInput" style="color:#666; font-size:9px;">SONG SEQ (e.g. 00, 00, 01, 02):</label>
-                        <input type="text" id="trackerSequenceInput" value="0" oninput="this.value = this.value.replace(/[^0-9, ]/g, '')" onchange="TrackerManager.updateSequence(this.value)" style="width:100%; font-family:monospace; font-size:10px;" aria-label="Song Sequence">
-                    </div>
+
+                    <section class="tracker-sequence-editor" aria-labelledby="trackerSequenceLabel">
+                        <div class="tracker-control-heading"><label id="trackerSequenceLabel" for="trackerSequenceInput">SONG SEQUENCE</label><span>COMMA-SEPARATED PATTERN NUMBERS</span></div>
+                        <input type="text" id="trackerSequenceInput" value="0" oninput="this.value = this.value.replace(/[^0-9, ]/g, '')" onchange="TrackerManager.updateSequence(this.value)" aria-label="Song Sequence">
+                    </section>
 
                     <div id="trackerGrid" class="tracker-grid">
                         <canvas id="trackerCanvas"></canvas>
                     </div>
-                    <div style="margin-top:5px; display:flex; justify-content:space-between; font-size:9px; color:#666;">
-                         <span>COMMANDS: Click to cycle (---, ON, OFF, MUT, UNM, LOP)</span>
-                         <button onclick="TrackerManager.addRow()" class="std-btn small btn-cyan">ADD ROW</button>
-                 </div>
+                    <div class="tracker-grid-footer">
+                        <span>CLICK A CELL: --- → ON → OFF → MUT → UNM → LOP</span>
+                        <button type="button" id="trackerAddRowBtn" onclick="TrackerManager.addRow()" class="std-btn small btn-cyan">[+] ADD ROW</button>
+                    </div>
                 </div>
             </div>
             <div class="retro-module" id="mod-samplers" style="margin-top:15px;">
                 <div class="module-header">SAMPLER TRACKS [S1-S10]</div>
-                <div class="module-content" id="samplers-content" style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:5px;"></div>
+                <div class="module-content sampler-tracks-grid" id="samplers-content"></div>
             </div>
             <div class="retro-module" id="mod-mastermix" style="margin-top:15px;">
                 <div class="module-header">MASTERMIX [CONSOLE]</div>
@@ -314,28 +341,28 @@
             </div>
         </div>
 
-        <div id="ws-loops" class="workspace-panel">
+        <div id="ws-loops" class="workspace-panel active">
             <div class="section-title" style="background: linear-gradient(90deg, #002200, transparent); color:#0f0; margin-bottom:10px; border-left: 4px solid #0f0; padding:4px;" data-i18n="LOOP_TRACKS">LOOP TRACKS</div>
               <div id="loopContainer"></div>
         </div>
 
-        <div id="ws-live" class="workspace-panel active">
-            <div class="section-title" style="background: linear-gradient(90deg, #550000, transparent); color:#f55; margin-bottom:10px; border-left: 4px solid #f55; padding:4px;">LIVE PERFORMANCE</div>
-            <div class="retro-module" style="margin-bottom:10px; border-color: #888;">
-                <div class="module-header" style="background: #888; color:#000;">LIVE MIX MASTER</div>
+        <div id="ws-live" class="workspace-panel">
+            <div class="section-title" style="margin-bottom:10px; padding:4px;">LIVE PERFORMANCE</div>
+            <div class="retro-module" style="margin-bottom:10px; --module-color:#888;">
+                <div class="module-header">LIVE MIX MASTER</div>
                 <div class="module-content" id="live-mastermix-container"></div>
             </div>
             <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px;">
-                <div class="retro-module" style="border-color: #0f0;">
-                    <div class="module-header" style="background: #0f0; color:#000;">LIVE LOOPS</div>
+                <div class="retro-module" style="--module-color:#0f0;">
+                    <div class="module-header">LIVE LOOPS</div>
                     <div class="module-content" id="live-loops-container" style="display:flex; flex-direction:column; gap:5px;"></div>
                 </div>
-                <div class="retro-module" style="border-color: #f0f;">
-                    <div class="module-header" style="background: #f0f; color:#000;">LIVE DRONES</div>
+                <div class="retro-module" style="--module-color:#f0f;">
+                    <div class="module-header">LIVE DRONES</div>
                     <div class="module-content" id="live-drones-container" style="display:flex; flex-direction:column; gap:5px;"></div>
                 </div>
-                <div class="retro-module" style="border-color: #08f;">
-                    <div class="module-header" style="background: #08f; color:#000;">LIVE SAMPLERS</div>
+                <div class="retro-module" style="--module-color:#08f;">
+                    <div class="module-header">LIVE SAMPLERS</div>
                     <div class="module-content" id="live-samplers-container" style="display:flex; flex-direction:column; gap:5px;"></div>
                 </div>
             </div>
@@ -354,56 +381,84 @@
         <div class="section-title" style="background: linear-gradient(90deg, #000033, transparent); color:#aaf; margin-bottom:10px; border-left: 4px solid #55f; padding:4px;">EDITORS & SETUP</div>
         <div class="module-grid grid-3" style="gap: 15px; margin-bottom: 20px;">
             <div class="retro-module" id="mod-chain">
-                <div class="module-header"><span data-i18n="FX_CHAIN">FX CHAIN EDITOR</span><span data-i18n="PRESETS">[PRESETS]</span></div>
-                <div class="module-content">
-                    <div class="preset-row">
-                        <select id="editorPresetSelect" style="flex:1; margin-right:2px; height: 25px;" onchange="EffectManager.loadPresetToEditor(this.value)" aria-label="Load FX Chain Preset">
-                            <option value="">Load Existing...</option>
-                        </select>
-                    </div>
-                    <div class="preset-row">
-                        <input type="text" id="presetNameInput" placeholder="Preset Name" style="flex:1; height: 30px;" aria-label="New Preset Name">
-                        <button onclick="EffectManager.saveCurrentChainAsPreset()" class="std-btn btn-blue" style="flex:1;">SAVE PRESET</button>
-                    </div>
-                    <hr style="border:0; border-bottom:1px dashed #444; margin:5px 0;">
-                <div class="std-btn-grid" style="grid-template-columns: 1fr 1fr;">
-                    <button onclick="document.getElementById('loadPresetFile').click()" class="std-btn btn-orange" title="Import Chain Presets (.acp)">LOAD .ACP</button>
-                    <input type="file" id="loadPresetFile" accept=".acp,.json" style="display:none;" onchange="EffectManager.importPresets(this)">
-                    <button onclick="EffectManager.savePresetsOnly()" class="std-btn btn-blue" title="Export Chain Presets (.acp)">SAVE .ACP</button>
-                </div>
-                <div class="std-btn-grid" style="grid-template-columns: 1fr 1fr;">
-                    <button onclick="document.getElementById('loadFxFile').click()" class="std-btn btn-cyan" title="Load Bundle or Custom Effect (.afx)">LOAD BUNDLE</button>
-                        <input type="file" id="loadFxFile" accept=".afx,.json" multiple style="display:none;" onchange="EffectManager.loadCustomEffect(this)">
-                        <button onclick="EffectManager.exportBundle()" class="std-btn btn-purple" title="Export Everything as Bundle (.afx)">SAVE BUNDLE</button>
-                    </div>
-                    <hr style="border:0; border-bottom:1px dashed #444; margin:5px 0;">
-                    <div class="preset-row">
-                        <input type="text" id="effectSignalChain" value="QCATFODBVKZG" style="flex:2;" placeholder="Order (e.g. TF)" oninput="this.value = this.value.toUpperCase(); EffectManager.updateChainVisual(this.value)" aria-label="Effects Chain Order">
-                        <span style="font-size: 9px; color: #666;">(B,M,D,T,F,O,C,K,Q,A,Z,G)</span>
-                    </div>
-                    <div id="chainVisualDisplay" class="chain-visual">eQ > Comp > Dist > Fuzz > Odrv > Dly > RevB > reVm > dusK > ArpD > ZigZ > Griz</div>
-                    <div id="fxChainLegend" class="chain-legend" style="max-width: 100%;"></div>
+                <div class="module-header"><span data-i18n="FX_CHAIN">FX CHAIN EDITOR</span><span data-i18n="CHAIN_PRESETS">CHAIN PRESETS</span></div>
+                <div class="module-content fx-chain-editor">
+                    <section class="preset-section fx-chain-library">
+                        <div class="preset-section-heading"><span data-i18n="CHAIN_PRESETS">CHAIN PRESETS</span><span class="preset-scope-badge" data-i18n="ORDER_ONLY">ORDER ONLY</span></div>
+                        <label class="preset-field" for="editorPresetSelect">
+                            <span data-i18n="LOAD_CHAIN_PRESET">LOAD CHAIN PRESET</span>
+                            <select id="editorPresetSelect" onchange="EffectManager.loadPresetToEditor(this.value)" aria-label="Load FX Chain Preset">
+                                <option value="">Load chain preset...</option>
+                            </select>
+                        </label>
+                        <div class="preset-save-row">
+                            <label class="preset-field" for="presetNameInput">
+                                <span data-i18n="PRESET_NAME">PRESET NAME</span>
+                                <input type="text" id="presetNameInput" placeholder="Preset Name" aria-label="New Preset Name">
+                            </label>
+                            <button onclick="EffectManager.saveCurrentChainAsPreset()" class="std-btn btn-blue" data-i18n="SAVE_CHAIN_PRESET">SAVE CHAIN</button>
+                        </div>
+                    </section>
+
+                    <section class="preset-section fx-chain-storage-section">
+                        <div class="preset-section-heading"><span data-i18n="PRESET_FILES">PRESET FILES</span><span class="preset-scope-badge">.ACP</span></div>
+                        <div class="preset-action-grid">
+                            <button onclick="document.getElementById('loadPresetFile').click()" class="std-btn btn-orange" title="Import Chain Presets (.acp)" data-i18n="IMPORT_ACP">IMPORT .ACP</button>
+                            <input type="file" id="loadPresetFile" accept=".acp,.json" style="display:none;" onchange="EffectManager.importPresets(this)">
+                            <button onclick="EffectManager.savePresetsOnly()" class="std-btn btn-blue" title="Export Chain Presets (.acp)" data-i18n="EXPORT_ACP">EXPORT .ACP</button>
+                        </div>
+                    </section>
+
+                    <section class="preset-section fx-bundle-section">
+                        <div class="preset-section-heading"><span data-i18n="FX_BUNDLE">FX BUNDLE</span><span class="preset-scope-badge">.AFX</span></div>
+                        <div class="preset-action-grid">
+                            <button onclick="document.getElementById('loadFxFile').click()" class="std-btn btn-cyan" title="Load Bundle or Custom Effect (.afx)" data-i18n="IMPORT_BUNDLE">IMPORT BUNDLE</button>
+                            <input type="file" id="loadFxFile" accept=".afx,.json" multiple style="display:none;" onchange="EffectManager.loadCustomEffect(this)">
+                            <button onclick="EffectManager.exportBundle()" class="std-btn btn-purple" title="Export Everything as Bundle (.afx)" data-i18n="EXPORT_BUNDLE">EXPORT BUNDLE</button>
+                        </div>
+                    </section>
+
+                    <section class="preset-section fx-chain-order-section">
+                        <div class="preset-section-heading"><span data-i18n="ACTIVE_CHAIN">ACTIVE CHAIN</span><span class="preset-scope-badge" data-i18n="EFFECT_ORDER">EFFECT ORDER</span></div>
+                        <div class="chain-order-control">
+                            <input type="text" id="effectSignalChain" value="QCATFODBVKZG" placeholder="Order (e.g. TF)" oninput="this.value = this.value.toUpperCase(); EffectManager.updateChainVisual(this.value)" aria-label="Effects Chain Order">
+                            <button onclick="EffectManager.setGlobalSignalChain(document.getElementById('effectSignalChain').value)" class="std-btn btn-green" data-i18n="APPLY_TO_ACTIVE">APPLY TO ACTIVE</button>
+                        </div>
+                        <p class="chain-code-hint" data-i18n="EFFECT_CODE_HINT">CODES: B, V, D, T, F, O, C, K, Q, A, Z, G</p>
+                        <div id="chainVisualDisplay" class="chain-visual">eQ &gt; Comp &gt; Dist &gt; Fuzz &gt; Odrv &gt; Dly &gt; RevB &gt; reVm &gt; dusK &gt; ArpD &gt; ZigZ &gt; Griz</div>
+                        <div id="fxChainLegend" class="chain-legend"></div>
+                    </section>
                 </div>
             </div>
 
             <div class="retro-module" id="mod-global-presets">
-                <div class="module-header">GLOBAL PRESET EDITOR</div>
-                <div class="module-content">
-                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:5px; margin-bottom:5px;">
-                        <div><label style="font-size:9px;" for="presetSourceSelect">Source</label><select id="presetSourceSelect" style="width:100%; height:24px; font-size:10px;" aria-label="Preset Source"></select></div>
-                        <div><label style="font-size:9px;" for="newGlobalPresetName">Name</label><input type="text" id="newGlobalPresetName" style="width:70%; height:24px; font-size:10px;" aria-label="New Preset Name"></div>
-                    </div>
-                    <div class="std-btn-grid">
-                        <button class="std-btn btn-blue" onclick="EffectManager.saveGlobalPreset()">SAVE</button>
-                        <button class="std-btn btn-red" onclick="EffectManager.deleteGlobalPreset()">DEL</button>
-                    </div>
-                    <div class="std-btn-grid" style="margin-top:2px;">
-                        <button class="std-btn btn-orange" onclick="document.getElementById('loadGlobalFile').click()">LOAD .AGP</button>
-                        <input type="file" id="loadGlobalFile" accept=".agp,.json" style="display:none;" onchange="EffectManager.importGlobalPresetsFromFile(this)">
-                        <button class="std-btn btn-blue" onclick="EffectManager.saveGlobalPresetsToFile()">SAVE .AGP</button>
-                    </div>
-                    <hr style="border:0; border-bottom:1px dashed #444; margin:5px 0;">
-                    <select id="editorDeleteSelect" style="width:100%; height:120px; font-size:10px; background:#000; color:#0f0; border:1px solid #444; font-family:monospace; scrollbar-width: thin; scrollbar-color: var(--term-green) #111;" size="8" aria-label="Stored Global Presets"></select>
+                <div class="module-header"><span data-i18n="GLOBAL_PRESET_EDITOR">GLOBAL PRESET EDITOR</span><span data-i18n="FULL_FX_STATE">FULL FX STATE</span></div>
+                <div class="module-content global-preset-editor">
+                    <section class="preset-section global-preset-save-section">
+                        <div class="preset-section-heading"><span data-i18n="SAVE_GLOBAL_PRESET">SAVE GLOBAL PRESET</span><span class="preset-scope-badge" data-i18n="CHAIN_AND_SETTINGS">CHAIN + SETTINGS</span></div>
+                        <p class="global-preset-help" data-i18n="GLOBAL_PRESET_SAVE_HINT">Captures the selected source's chain, enabled effects, and settings.</p>
+                        <div class="preset-form-grid">
+                            <label class="preset-field" for="presetSourceSelect"><span data-i18n="PRESET_SOURCE">SOURCE</span><select id="presetSourceSelect" aria-label="Preset Source"></select></label>
+                            <label class="preset-field" for="newGlobalPresetName"><span data-i18n="PRESET_NAME">PRESET NAME</span><input type="text" id="newGlobalPresetName" aria-label="New Preset Name"></label>
+                        </div>
+                        <button class="std-btn btn-blue" onclick="EffectManager.saveGlobalPreset()" data-i18n="SAVE_GLOBAL_PRESET">SAVE GLOBAL PRESET</button>
+                    </section>
+
+                    <section class="preset-section global-preset-library-section">
+                        <div class="preset-section-heading"><span data-i18n="GLOBAL_PRESET_LIBRARY">GLOBAL PRESET LIBRARY</span><span class="preset-scope-badge">.AGP</span></div>
+                        <div class="global-preset-library-meta">
+                            <span id="globalPresetCount" class="global-preset-count" aria-live="polite"></span>
+                            <span class="preset-scope-badge" data-i18n="FULL_FX_STATE">FULL FX STATE</span>
+                        </div>
+                        <div class="preset-action-grid">
+                            <button class="std-btn btn-orange" onclick="document.getElementById('loadGlobalFile').click()" data-i18n="IMPORT_AGP">IMPORT .AGP</button>
+                            <input type="file" id="loadGlobalFile" accept=".agp,.json" style="display:none;" onchange="EffectManager.importGlobalPresetsFromFile(this)">
+                            <button class="std-btn btn-blue" onclick="EffectManager.saveGlobalPresetsToFile()" data-i18n="EXPORT_AGP">EXPORT .AGP</button>
+                        </div>
+                        <label class="preset-field" for="editorDeleteSelect"><span data-i18n="STORED_GLOBAL_PRESETS">STORED PRESETS</span><select id="editorDeleteSelect" class="preset-library-list" size="8" aria-label="Stored Global Presets" onchange="EffectManager.updateGlobalPresetLibraryInfo()"></select></label>
+                        <p id="globalPresetSummary" class="global-preset-summary" role="status" aria-live="polite"></p>
+                        <button class="std-btn btn-red" onclick="EffectManager.deleteGlobalPreset()" data-i18n="DELETE_SELECTED">DELETE SELECTED</button>
+                    </section>
                 </div>
             </div>
 

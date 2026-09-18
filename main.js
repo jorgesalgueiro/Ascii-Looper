@@ -6,7 +6,7 @@
 // MODULE 1: CONSTANTS & GLOBALS
 // =============================================
 
-const VERSION = "v0.76.02"; // Version aligned with blueprint
+const VERSION = "v0.76.05"; // Version aligned with blueprint
 let MAX_LOOPS = 10;
 const SAMPLER_HOTKEYS = ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'ç']; // Specific to Sampler Tracks
 const AUDIO_FORMATS= {
@@ -2077,7 +2077,7 @@ class InputChannel {
         this.panNode = null;
         this.analyser = null;
         this.analyserData = null;
-        this.peak = { value: 0, lastUpdate: 0, linearPeak: 0 };
+        this.peak = { value: 0, lastUpdate: 0, linearPeak: 0, lastClipAt: 0 };
         this.visual = { rms: 0, peak: 0 };
         
         this.volume = 1.0;
@@ -2086,6 +2086,7 @@ class InputChannel {
         this.deviceId = 'default';
         this.channelMode = 'stereo'; // Default to Stereo, user chooses L/R if mono source
         this.channelModeUserSet = false; // true once the user picks L/R/ST manually (blocks auto-detect)
+        this.autoChannelMode = null;
     }
 }
 
@@ -2104,7 +2105,7 @@ class InputManager {
     static masterVolume = 1.0;
     static masterAnalyser = null;
     static masterAnalyserData = null;
-    static masterPeak = { value: 0 };
+    static masterPeak = { value: 0, lastClipAt: 0 };
     static helperGraph = null; // Static helper to avoid GC churn on chain rebuilds
     static activePresets = {}; // Store presets for Input Bus
     static rebuildTimer = null;
@@ -2160,6 +2161,33 @@ class InputManager {
         if(window.MasterMixManager) MasterMixManager.render();
     }
 
+    static async changeDevice(id, deviceId) {
+        const input = state.inputs[id];
+        if (!input) return;
+        input.deviceId = deviceId;
+        input.channelMode = 'stereo';
+        input.channelModeUserSet = false;
+        input.autoChannelMode = null;
+        await this.initInputAudio(id, deviceId);
+        this.renderUI();
+    }
+
+    static removeInputTrack(id) {
+        const input = state.inputs[id];
+        if (!input) return;
+
+        this.stopChannelDetect(input);
+        if (input.stream) input.stream.getTracks().forEach(track => track.stop());
+        for (const node of [input.source, input.gain, input.panNode, input.analyser, input.splitter]) {
+            try { if (node) node.disconnect(); } catch(e) {}
+        }
+
+        state.inputs.splice(id, 1);
+        state.inputs.forEach((remaining, index) => { remaining.id = index; });
+        this.renderUI();
+        if (window.MasterMixManager) MasterMixManager.render();
+    }
+
     static setupMasterBus() {
         if (this.inputBus) return;
         this.inputBus = state.audioContext.createGain(); // Summing point
@@ -2176,6 +2204,7 @@ class InputManager {
         const input = state.inputs[id];
         if (!input) return;
         
+        this.stopChannelDetect(input);
         if (input.stream) input.stream.getTracks().forEach(t => t.stop());
         if (input.source) input.source.disconnect();
 
@@ -2402,7 +2431,7 @@ class InputManager {
                 AudioEngine.scheduledFade(input.gain, input.volume, now, 20);
             }
             const d = document.getElementById(`in-vol-val-${id}`);
-            if(d) d.textContent = input.volume.toFixed(1);
+            if(d) d.textContent = input.volume.toFixed(2);
             const normSlider = document.getElementById(`in-vol-slider-${id}`);
             if (normSlider && document.activeElement !== normSlider) normSlider.value = input.volume;
             if(window.MasterMixManager) MasterMixManager.updateFader('in', id, input.volume);
@@ -2416,7 +2445,7 @@ class InputManager {
             AudioEngine.scheduledFade(this.masterGain, this.masterVolume, now, 20);
         }
         const d = document.getElementById('in-master-vol-val');
-        if(d) d.textContent = this.masterVolume.toFixed(1);
+        if(d) d.textContent = `Vol ${this.masterVolume.toFixed(2)}`;
         const normSlider = document.getElementById('in-master-vol-slider');
         if (normSlider && document.activeElement !== normSlider) normSlider.value = this.masterVolume;
     }
@@ -2439,11 +2468,15 @@ class InputManager {
     // Handle Channel Mode Selection
     static setChannelMode(id, mode) {
         const input = state.inputs[id];
-        if (!input || input.channelMode === mode) return;
+        if (!input) return;
         this.stopChannelDetect(input);
-        input.channelMode = mode;
         input.channelModeUserSet = true;
-        this.rebuildInputGraph(id); // Re-route audio without re-requesting stream
+        input.autoChannelMode = null;
+        if (input.channelMode !== mode) {
+            input.channelMode = mode;
+            this.rebuildInputGraph(id); // Re-route audio without re-requesting stream
+        }
+        this.renderUI();
     }
 
     // Interfaces like the Topping E2x2 deliver inputs 1+2 as one stereo pair;
@@ -2496,6 +2529,7 @@ class InputManager {
                 this.stopChannelDetect(input);
                 if (decision && decision !== 'stereo' && input.channelMode === 'stereo' && !input.channelModeUserSet) {
                     input.channelMode = decision;
+                    input.autoChannelMode = decision;
                     this.rebuildInputGraph(input.id);
                     this.renderUI();
                     if (window.DebugManager && DebugManager.enabled) {
@@ -2545,31 +2579,43 @@ class InputManager {
 
     static updateMeters() {
         const lerp = (a, b, t) => a + (b - a) * t;
+        const formatPeak = value => value > 0.0001 ? `${Math.max(-60, 20 * Math.log10(value)).toFixed(0)} dB` : '−∞ dB';
+        const nowMs = performance.now();
+        const renderLevel = (el, peak, isClipHeld) => {
+            if (!el) return;
+            const text = isClipHeld ? 'CLIP' : formatPeak(peak);
+            if (el._lastText !== text) {
+                el.textContent = text;
+                el._lastText = text;
+            }
+            if (el._lastClip !== isClipHeld) {
+                el.classList.toggle('level-clipped', isClipHeld);
+                el._lastClip = isClipHeld;
+            }
+        };
 
         // Master Input Meter
         if (this.masterAnalyser) {
             this.masterAnalyser.getFloatTimeDomainData(this.masterAnalyserData);
-            let sum = 0;
             let currentLinearPeak = 0;
             // Stride optimization matching UIManager
             for(let i=0; i<this.masterAnalyserData.length; i+=8) {
                 const v = this.masterAnalyserData[i];
-                sum += v*v;
                 if(Math.abs(v) > currentLinearPeak) currentLinearPeak = Math.abs(v);
             }
             
             this.masterPeak.value = Math.max(currentLinearPeak, (this.masterPeak.value || 0) * 0.92);
+            const isClipping = currentLinearPeak > 0.98;
+            if (isClipping) this.masterPeak.lastClipAt = nowMs;
+            const isClipHeld = nowMs - this.masterPeak.lastClipAt < 1500;
             const el = document.getElementById('in-master-vu');
             
-            // Master Input Clipping Feedback
-            const mInSlider = document.getElementById('in-master-vol-slider'); // Needs ID in renderUI
-            if(mInSlider) {
-                const isClip = currentLinearPeak > 0.98;
-                if (mInSlider._lastClip !== isClip) {
-                    mInSlider.classList.toggle('clipping-slider', isClip);
-                    mInSlider._lastClip = isClip;
-                }
+            const mInSlider = document.getElementById('in-master-vol-slider');
+            if(mInSlider && mInSlider._lastClip !== isClipHeld) {
+                mInSlider.classList.toggle('clipping-slider', isClipHeld);
+                mInSlider._lastClip = isClipHeld;
             }
+            renderLevel(document.getElementById('in-master-level'), this.masterPeak.value, isClipHeld);
             if(el) {
                 const barText = UIManager.getAsciiBar(this.masterPeak.value, 20);
                 if (el._lastText !== barText) {
@@ -2606,26 +2652,28 @@ class InputManager {
             if (targetRms > inp.visual.rms) inp.visual.rms = lerp(inp.visual.rms, targetRms, 0.3);
             else inp.visual.rms = lerp(inp.visual.rms, targetRms, 0.1);
             
-        // Render using smoothed RMS for bar, peak for clipping
-        const displayValue = inp.visual.rms / 100;
-        const isClipping = currentLinearPeak > 0.98;
-
+            // Render using smoothed RMS for bar, peak for clipping
+            const displayValue = inp.visual.rms / 100;
+            const isClipping = currentLinearPeak > 0.98;
+            if (isClipping) inp.peak.lastClipAt = nowMs;
+            const isClipHeld = nowMs - inp.peak.lastClipAt < 1500;
 
             const inpSlider = document.getElementById(`in-vol-slider-${inp.id}`);
-            if (inpSlider && inpSlider._lastClip !== isClipping) {
-                inpSlider.classList.toggle('clipping-slider', isClipping);
-                inpSlider._lastClip = isClipping;
+            if (inpSlider && inpSlider._lastClip !== isClipHeld) {
+                inpSlider.classList.toggle('clipping-slider', isClipHeld);
+                inpSlider._lastClip = isClipHeld;
             }
             
             // Also update MasterMix slider for input
             const mmSlider = document.getElementById(`mm_slider_in_${inp.id}`);
-            if (mmSlider && mmSlider._lastClip !== isClipping) {
-                mmSlider.classList.toggle('clipping-slider', isClipping);
-                mmSlider._lastClip = isClipping;
+            if (mmSlider && mmSlider._lastClip !== isClipHeld) {
+                mmSlider.classList.toggle('clipping-slider', isClipHeld);
+                mmSlider._lastClip = isClipHeld;
             }
+            renderLevel(document.getElementById(`in-level-${inp.id}`), inp.peak.value, isClipHeld);
 
-        let el = inp._cachedMeterEl;
-        if (!el || !el.isConnected) {
+            let el = inp._cachedMeterEl;
+            if (!el || !el.isConnected) {
                 el = document.getElementById(`in-vu-${inp.id}`);
                 inp._cachedMeterEl = el;
             }
@@ -2633,7 +2681,7 @@ class InputManager {
                 const barText = UIManager.getAsciiBar(displayValue, 57);
                 let colorState = 0; 
                 if (!inp.monitor) colorState = 0;
-                else if (isClipping) colorState = 2;
+                else if (isClipHeld) colorState = 2;
                 else colorState = 1;
 
                 if (el._lastText !== barText || el._lastColorState !== colorState) {
@@ -2665,33 +2713,26 @@ class InputManager {
         
         // Generate Global Presets Options for Input
         const globalOptions = Object.keys(state.globalPresets).map(name => 
-            `<option value="GLOBAL:${name}" style="color:#0f0;">[PRESET] ${name}</option>`
+            `<option value="GLOBAL:${name}" style="color:#0f0;">[FULL] ${name}</option>`
         ).join('');
         const chainOptions = Object.keys(state.fxPresets).map(k => 
-            `<option value="${k}" ${state.fxPresets[k] === InputManager.masterSignalChain ? 'selected' : ''}>${k}</option>`
+            `<option value="${k}" ${state.fxPresets[k] === InputManager.masterSignalChain ? 'selected' : ''}>[CHAIN] ${k}</option>`
         ).join('');
 
         // 1. Render Input Rows
         state.inputs.forEach(inp => {
             const div = document.createElement('div');
             const isSys = inp.type === 'system';
-            div.className = 'mixer-row input-track-row';
+            div.className = `mixer-row input-track-row ${inp.monitor ? 'input-monitoring' : 'input-muted'}`;
             div.style.display = 'block'; // Override grid for this layout
-            // Apply Gray/Dim style if muted
-            if (!inp.monitor) {
-                div.style.opacity = '0.6';
-                div.style.filter = 'grayscale(100%)';
-            } else {
-                div.style.opacity = '1.0';
-                div.style.filter = 'none';
-            }
             
             div.innerHTML = `
             <div style="display:flex; gap:4px; margin-bottom:2px; align-items:center;">
                 <label for="in-dev-${inp.id}" style="color:${inp.monitor ? '#0f0' : '#666'}; font-weight:bold; width:15px; font-size:9px;" data-i18n-title="TIP_IN_MON">${inp.id + 1}</label>
-                <select id="in-dev-${inp.id}" style="flex:1; font-size:9px;" ${isSys ? 'disabled' : ''} onchange="state.inputs[${inp.id}].deviceId=this.value; InputManager.initInputAudio(${inp.id}, this.value)" aria-label="Input Device">
+                <select id="in-dev-${inp.id}" style="flex:1; font-size:9px;" ${isSys ? 'disabled' : ''} onchange="InputManager.changeDevice(${inp.id}, this.value)" aria-label="Input Device">
                     ${isSys ? '<option>APP/SYS AUDIO</option>' : ''}
                 </select>
+                ${inp.autoChannelMode ? `<span class="input-auto-channel" title="Automatically selected the ${inp.autoChannelMode} channel because the other side was silent.">AUTO ${inp.autoChannelMode === 'left' ? 'L' : 'R'}</span>` : ''}
 
                 <span style="color:#888; font-size:8px;" aria-hidden="true">CH</span>
                 <select style="width:38px; font-size:9px; text-align:center; background:#111; color:#ccc;" onchange="InputManager.setChannelMode(${inp.id}, this.value)" title="Input channel: L = left only, R = right only, ST = stereo. Auto-selects the channel with signal if the other is silent." aria-label="Input Channel Mode">
@@ -2699,16 +2740,18 @@ class InputManager {
                     <option value="right" ${inp.channelMode==='right'?'selected':''}>R</option>
                     <option value="stereo" ${inp.channelMode==='stereo'?'selected':''}>ST</option>
                 </select>
+                <span id="in-level-${inp.id}" class="mixer-level">−∞ dB</span>
                 <div id="in-vu-${inp.id}" class="mixer-vu" style="flex:1;">[░░░░░░░░░]</div>
             </div>
             <div style="display:flex; gap:2px; align-items:center; padding-left: 20px;">
                 <input type="range" id="in-vol-slider-${inp.id}" class="mixer-slider" min="0" max="2" step="0.01" value="${inp.volume}" oninput="InputManager.setVolume(${inp.id}, this.value)" data-i18n-title="TIP_IN_VOL" style="width:50%;" aria-label="Input Volume">
-                <span id="in-vol-val-${inp.id}" style="font-size:9px; width:20px; text-align:right;">${inp.volume.toFixed(1)}</span>
+                <span id="in-vol-val-${inp.id}" style="font-size:9px; width:25px; text-align:right;">${inp.volume.toFixed(2)}</span>
                 
                 <input type="range" class="mixer-slider" min="0" max="10" step="1" value="${inp.pan}" oninput="InputManager.setPan(${inp.id}, this.value)" data-i18n-title="TIP_IN_PAN" style="width:30px;" aria-label="Input Pan">
                 <span id="in-pan-val-${inp.id}" style="font-size:9px; width:15px; text-align:right;">${inp.pan}</span>
                 
-                <button class="small ${inp.monitor?'btn-green':''}" onclick="InputManager.toggleMonitor(${inp.id})" data-i18n-title="TIP_IN_MON" style="padding:0 4px; font-size:9px; width:50px; color:${inp.monitor?'#0f0':'#f00'}; border-color:${inp.monitor?'#0f0':'#444'}; font-weight:${inp.monitor?'bold':'normal'}">${inp.monitor ? 'ON' : 'MUTE'}</button>
+                <button class="small ${inp.monitor?'btn-green':''}" onclick="InputManager.toggleMonitor(${inp.id})" aria-pressed="${inp.monitor}" title="Route this input to the input bus and master output" style="padding:0 4px; font-size:9px; width:54px; color:${inp.monitor?'#0f0':'#f00'}; border-color:${inp.monitor?'#0f0':'#444'}; font-weight:${inp.monitor?'bold':'normal'}">${inp.monitor ? 'MON ON' : 'MON OFF'}</button>
+                <button class="small input-remove-btn" onclick="InputManager.removeInputTrack(${inp.id})" title="Remove this input source" aria-label="Remove input ${inp.id + 1}" style="padding:0 3px; font-size:9px;">DEL</button>
             </div>
             `;
             container.appendChild(div);
@@ -2803,9 +2846,10 @@ class InputManager {
         masterDiv.innerHTML = `
             <div class="mixer-row" style="background:transparent; display:flex; align-items:center; gap:5px; padding: 5px; border: 1px dashed #0ff; margin-bottom: 5px;">
                 <div class="mixer-label" style="font-weight:bold; color:#0ff; white-space:nowrap; font-size:12px;">${I18n.t('INPUT_BUS')}</div>
+                <span id="in-master-level" class="mixer-level" style="color:#0ff;">−∞ dB</span>
                 <div id="in-master-vu" class="mixer-vu" style="color:#0ff; flex:1; font-size:12px; height: 14px; line-height: 14px;">[░░░░░░░░░░░░░░░]</div>
                 <input type="range" id="in-master-vol-slider" class="mixer-slider" min="0" max="2" step="0.01" value="${this.masterVolume}" oninput="InputManager.setMasterVolume(this.value); EffectManager.setActiveTab('input-bus');" style="width:100px; height: 14px;" aria-label="Master Input Volume">
-                <span id="in-master-vol-val" style="font-size:10px; width:35px; text-align:right; color:#0ff;">Vol ${this.masterVolume.toFixed(1)}</span>
+                <span id="in-master-vol-val" style="font-size:10px; width:40px; text-align:right; color:#0ff;">Vol ${this.masterVolume.toFixed(2)}</span>
             </div>
             ${fxHtml}
         `;
@@ -2848,7 +2892,7 @@ window.TrackerManager     = TrackerManager;
 window.UIManager          = UIManager;
 
 // Bind start button click handler after function is defined
-document.addEventListener('DOMContentLoaded', () => {
+const initializePage = () => {
     const startBtn = document.getElementById('btn-start');
     if (startBtn) {
         startBtn.removeAttribute('onclick');
@@ -2858,9 +2902,15 @@ document.addEventListener('DOMContentLoaded', () => {
     // Dynamic Versioning
     document.title = `ASCII Looper ${VERSION}`;
     const headerEl = document.getElementById('versionHeader');
-    if (headerEl) headerEl.textContent = `ASCII LOOPER ${VERSION} © jorge salgueiro`;
+    if (headerEl) headerEl.textContent = `ASCII Looper ${VERSION} © jorge salgueiro`;
     const overlayVer = document.getElementById('overlayVersion');
-    if (overlayVer) overlayVer.textContent = `ASCII LOOPER ${VERSION} © jorge salgueiro`;
-});
+    if (overlayVer) overlayVer.textContent = `ASCII Looper ${VERSION} © jorge salgueiro`;
+};
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initializePage, { once: true });
+} else {
+    initializePage();
+}
 
 // <title>v0.76.01</title>

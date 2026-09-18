@@ -4,14 +4,13 @@
 // =============================================
 
 class TrackerManager {
+    static playRequest = 0;
+    static maxRows = 512;
+
     static init() {
-        // Reset playback state to prevent synchronization issues if AudioContext restarts
-        state.tracker.isPlaying = false;
         state.tracker.currentRow = 0;
-        
-        // Ensure we have enough columns for loops + drones
-        const totalColumns = MAX_LOOPS + DroneSynth.instances.length + state.samplers.length;
-        
+        state.tracker.playlistIndex = 0;
+
         // Initialize patterns if needed
         if (!state.tracker.patterns || state.tracker.patterns.length === 0) {
             state.tracker.patterns = [{ rows: 16, data: {} }];
@@ -21,25 +20,100 @@ class TrackerManager {
         if (!state.tracker.playlist || state.tracker.playlist.length === 0) {
             state.tracker.playlist = [0];
         }
+        state.tracker.currentPatternIdx = this.getPatternIndex(state.tracker.currentPatternIdx);
+        state.tracker.playlist = this.normalizePlaylist(state.tracker.playlist);
         state.tracker.nextRowTime = AudioEngine.currentTime;
+        this.pause();
 
         // Init Canvas
         this.canvas = document.getElementById('trackerCanvas');
         this.ctx = this.canvas.getContext('2d', { alpha: false }); // Optimize
-        this.canvas.addEventListener('click', (e) => this.handleCanvasClick(e));
+        this.canvas.onclick = (e) => this.handleCanvasClick(e);
 
         this.renderGrid();
         this.renderSequence();
         this.updatePatternSelect();
+        this.updateControlUI();
+    }
+
+    static getPatternIndex(value) {
+        const index = Number(value);
+        return Number.isInteger(index) && index >= 0 && index < state.tracker.patterns.length ? index : 0;
+    }
+
+    static normalizePlaylist(values) {
+        const playlist = (Array.isArray(values) ? values : [])
+            .map(value => Number(value))
+            .filter(index => Number.isInteger(index) && index >= 0 && index < state.tracker.patterns.length);
+
+        return playlist.length ? playlist : [0];
+    }
+
+    static updateControlUI() {
+        const mode = state.tracker.mode === 'pattern' ? 'pattern' : 'song';
+        const modeLabel = mode.toUpperCase();
+        const isPlaying = state.tracker.isPlaying;
+        const patternIndex = this.getPatternIndex(state.tracker.currentPatternIdx);
+        const pattern = state.tracker.patterns[patternIndex];
+        const rowCount = pattern?.rows || 16;
+
+        const playButton = document.getElementById('trackerPlayBtn');
+        if (playButton) {
+            playButton.textContent = isPlaying ? `STOP ${modeLabel}` : `[P]LAY ${modeLabel}`;
+            playButton.setAttribute('aria-pressed', String(isPlaying));
+            playButton.classList.toggle('is-running', isPlaying);
+        }
+
+        const runState = document.getElementById('trackerRunState');
+        if (runState) {
+            runState.dataset.state = isPlaying ? 'running' : 'stopped';
+            const label = runState.querySelector('strong');
+            if (label) label.textContent = isPlaying ? `RUNNING ${modeLabel}` : 'STOPPED';
+        }
+
+        const modeState = document.getElementById('trackerModeState');
+        if (modeState) modeState.textContent = `${modeLabel} MODE`;
+
+        const songModeButton = document.getElementById('trackerSongModeBtn');
+        if (songModeButton) songModeButton.setAttribute('aria-pressed', String(mode === 'song'));
+        const patternModeButton = document.getElementById('trackerPatternModeBtn');
+        if (patternModeButton) patternModeButton.setAttribute('aria-pressed', String(mode === 'pattern'));
+
+        const patternInfo = document.getElementById('trackerPatternInfo');
+        if (patternInfo) patternInfo.textContent = `PAT ${String(patternIndex).padStart(2, '0')} · ${rowCount} ROWS`;
+        const addRowButton = document.getElementById('trackerAddRowBtn');
+        if (addRowButton) {
+            addRowButton.disabled = rowCount >= this.maxRows;
+            addRowButton.title = `Maximum ${this.maxRows} rows per pattern`;
+        }
+    }
+
+    static pause() {
+        state.tracker.isPlaying = false;
+        this.playRequest++;
+        clearTimeout(this.timerID);
+        this.timerID = null;
+        this.highlightRow(-1);
+        this.updateControlUI();
     }
 
     static async togglePlay() {
-        state.tracker.isPlaying = !state.tracker.isPlaying;
-        const btn = document.getElementById('trackerPlayBtn');
-        
-        // Ensure Audio Engine is awake
-        if (state.audioContext && state.audioContext.state === 'suspended') await AudioEngine.resume();
-        
+        if (state.tracker.isPlaying) {
+            this.pause();
+            return;
+        }
+        if (!state.audioContext || state.audioContext.state === 'closed') return;
+
+        const request = ++this.playRequest;
+        state.tracker.isPlaying = true;
+        this.updateControlUI();
+        const resumed = state.audioContext.state === 'running' || await AudioEngine.resume();
+        if (request !== this.playRequest) return;
+        if (!resumed) {
+            this.pause();
+            return;
+        }
+
         if (state.tracker.isPlaying) {
             // Calculate next row time. If Sync is enabled, quantize start to next Bar.
             if (state.syncEnabled && state.masterStartTime > 0) {
@@ -50,20 +124,11 @@ class TrackerManager {
             } else {
                 state.tracker.nextRowTime = AudioEngine.currentTime + 0.05;
             }
-            
-            const label = state.tracker.mode === 'song' ? 'SONG' : 'PATTERN';
-            btn.textContent = `STOP ${label}`;
-            btn.style.color = "#0f0";
-            btn.style.borderColor = "#0f0";
-            
-            
+
             this.schedule();
-        } else {
-            const label = state.tracker.mode === 'song' ? 'SONG' : 'PATTERN';
-            btn.textContent = `[P]LAY ${label}`;
-            btn.style.color = "inherit";
-            btn.style.borderColor = "inherit";
         }
+
+        this.updateControlUI();
     }
 
     static saveSong(customFilename) {
@@ -84,28 +149,64 @@ class TrackerManager {
         setTimeout(() => URL.revokeObjectURL(url), 100);
     }
 
+    static validatePatterns(patterns) {
+        if (!Array.isArray(patterns) || !patterns.length) throw new Error('Invalid song patterns');
+        const commands = ['---', 'ON', 'OFF', 'MUT', 'UNM', 'LOP'];
+        for (const pattern of patterns) {
+            if (!pattern || !Number.isInteger(pattern.rows) || pattern.rows < 1 || pattern.rows > this.maxRows) {
+                throw new Error(`Pattern rows must be between 1 and ${this.maxRows}`);
+            }
+            if (!pattern.data || typeof pattern.data !== 'object' || Array.isArray(pattern.data)) {
+                throw new Error('Invalid song pattern data');
+            }
+            for (const [key, command] of Object.entries(pattern.data)) {
+                const [row, column] = key.split('_').map(Number);
+                if (!/^(0|[1-9]\d*)_(0|[1-9]\d*)$/.test(key) || row >= pattern.rows ||
+                    !Number.isSafeInteger(column) || !commands.includes(command)) {
+                    throw new Error('Invalid song pattern cell');
+                }
+            }
+        }
+        return patterns;
+    }
+
     static async loadSong(event) {
         const file = event.target.files[0];
         if (!file) return;
         try {
             const text = await file.text();
             const data = JSON.parse(text);
-            if (data.type !== 'ascii_tracker_song' && !data.patterns) throw new Error("Invalid song file");
-            
-            state.tracker.playlist = data.playlist || [0];
-            state.tracker.patterns = data.patterns || [{rows:16, data:{}}];
-            
-            if (data.bpm && confirm(`Import Song Tempo (${data.bpm} BPM)?`)) {
-                state.bpm = data.bpm;
-                if(data.timeSig) state.timeSig = data.timeSig;
+            if (!data || (data.type !== 'ascii_tracker_song' && !data.patterns)) throw new Error("Invalid song file");
+            const patterns = this.validatePatterns(data.patterns);
+            if (data.bpm !== undefined && (!Number.isFinite(data.bpm) || data.bpm < 10 || data.bpm > 999)) {
+                throw new Error('Invalid song tempo');
+            }
+            if (data.timeSig !== undefined && (!data.timeSig ||
+                !Number.isSafeInteger(data.timeSig.num) || data.timeSig.num < 1 ||
+                !Number.isSafeInteger(data.timeSig.den) || data.timeSig.den < 1)) {
+                throw new Error('Invalid song time signature');
+            }
+            const importTempo = data.bpm !== undefined && confirm(`Import Song Tempo (${data.bpm} BPM)?`);
+
+            this.stop();
+            state.tracker.patterns = patterns;
+            state.tracker.playlist = this.normalizePlaylist(data.playlist);
+
+            if (importTempo) {
+                document.getElementById('bpmInput').value = data.bpm;
+                if (data.timeSig) {
+                    document.getElementById('timeSigNum').value = data.timeSig.num;
+                    document.getElementById('timeSigDen').value = data.timeSig.den;
+                }
                 SyncManager.updateSettings();
             }
-            
+
             state.tracker.currentPatternIdx = 0;
             state.tracker.playlistIndex = 0;
             this.renderGrid();
             this.renderSequence();
             this.updatePatternSelect();
+            this.updateControlUI();
             alert("Song loaded!");
         } catch(e) {
             alert("Error loading song: " + e.message);
@@ -114,33 +215,18 @@ class TrackerManager {
     }
 
     static setMode(mode) {
-        state.tracker.mode = mode;
-        if (state.tracker.isPlaying) {
-            const btn = document.getElementById('trackerPlayBtn');
-            btn.textContent = `STOP ${mode.toUpperCase()}`;
-        }
+        state.tracker.mode = mode === 'pattern' ? 'pattern' : 'song';
+        this.updateControlUI();
     }
 
     static stop() {
-        state.tracker.isPlaying = false;
-        if (this.timerID) {
-            clearTimeout(this.timerID);
-            this.timerID = null;
-        }
+        this.pause();
         if (window.DroneSynth) DroneSynth.stopAll(); // Stop any sustained drones
         if (window.LoopManager) LoopManager.stopAll(); // Silence loops
         state.tracker.currentRow = 0;
         state.tracker.playlistIndex = 0;
-        
-        // Update UI reset
-        const btn = document.getElementById('trackerPlayBtn');
-        if (btn) {
-            const label = state.tracker.mode === 'song' ? 'SONG' : 'PATTERN';
-            btn.textContent = `[P]LAY ${label}`;
-            btn.style.color = "inherit";
-            btn.style.borderColor = "inherit";
-        }
-        
+
+        this.updateControlUI();
         this.renderGrid(); // Force redraw to clear active indicators immediately
         this.highlightRow(-1); // Clear highlight
     }
@@ -186,31 +272,25 @@ class TrackerManager {
             // Determine which pattern to play
             let patIdx = 0;
             if (state.tracker.mode === 'song') {
-                if (state.tracker.playlist.length === 0) return; // Prevent crash on empty song
+                state.tracker.playlist = this.normalizePlaylist(state.tracker.playlist);
                 if (state.tracker.playlistIndex >= state.tracker.playlist.length) state.tracker.playlistIndex = 0;
-                patIdx = state.tracker.playlist[state.tracker.playlistIndex];
-                
+                patIdx = this.getPatternIndex(state.tracker.playlist[state.tracker.playlistIndex]);
+
                 // UI FOLLOW: Update visual grid if the playing pattern changed
                 const followCb = document.getElementById('trackerFollow');
                 if (followCb && followCb.checked && state.tracker.currentPatternIdx !== patIdx) {
                     state.tracker.currentPatternIdx = patIdx;
                     this.updatePatternSelect();
+                    this.updateControlUI();
                     this.renderGrid();
                 }
             } else {
-                patIdx = state.tracker.currentPatternIdx;
+                patIdx = this.getPatternIndex(state.tracker.currentPatternIdx);
             }
-
-            // Fallback if pattern invalid
-            if (patIdx === undefined) patIdx = 0;
 
             const currentPat = state.tracker.patterns[patIdx];
-            
-            if (!currentPat) {
-                console.warn("Tracker: Invalid pattern index (" + patIdx + "). Stopping.");
-                this.stop();
-                return;
-            }
+            if (!currentPat) return;
+            if (state.tracker.currentRow >= currentPat.rows) state.tracker.currentRow = 0;
 
             const looped = this.executeRow(patIdx, state.tracker.currentRow, state.tracker.nextRowTime);
             
@@ -267,10 +347,7 @@ class TrackerManager {
         const pattern = state.tracker.patterns[patIdx];
         if (!pattern) return false;
 
-        // Highlight row only if we are viewing the currently playing pattern
-        if (state.tracker.currentPatternIdx === patIdx) {
-             this.highlightRow(row);
-        }
+        this.highlightRow(row, patIdx);
 
         let loopTriggered = false;
 
@@ -357,12 +434,10 @@ class TrackerManager {
         }
     }
 
-    static highlightRow(r) {
-        // Canvas handles active row in draw() loop based on state.tracker.currentRow
-        // Optimize: Prevent redundant draw calls if row hasn't changed
-        if (this._lastHighlightedRow === r) return;
+    static highlightRow(r, patternIdx = state.tracker.currentPatternIdx) {
+        if (this._lastHighlightedRow === r && this._highlightedPatternIdx === patternIdx) return;
         this._lastHighlightedRow = r;
-        
+        this._highlightedPatternIdx = patternIdx;
         this.renderGrid();
     }
 
@@ -370,8 +445,8 @@ class TrackerManager {
         if (this._isDrawPending) return;
         this._isDrawPending = true;
         requestAnimationFrame(() => {
-            this.draw();
             this._isDrawPending = false;
+            this.draw();
         });
     }
 
@@ -442,14 +517,15 @@ class TrackerManager {
         for (let r = 0; r < rowCount; r++) {
             const y = headerH + (r * cellH);
             
-            // Highlight Active Row
-            if (r === state.tracker.currentRow && state.tracker.isPlaying && state.tracker.mode === 'song') {
+            const isActiveRow = state.tracker.isPlaying && r === this._lastHighlightedRow &&
+                state.tracker.currentPatternIdx === this._highlightedPatternIdx;
+            if (isActiveRow) {
                 ctx.fillStyle = '#222';
                 ctx.fillRect(0, y, w, cellH);
             }
 
             // Row Number
-            ctx.fillStyle = (r === state.tracker.currentRow) ? '#0f0' : '#666';
+            ctx.fillStyle = isActiveRow ? '#0f0' : '#666';
             ctx.fillText(r, rowHeaderW/2, y + 11);
             
             // Grid Lines
@@ -520,17 +596,16 @@ class TrackerManager {
     }
 
     static updateSequence(str) {
-        const arr = str.split(/[,\s]+/).map(s => parseInt(s.trim())).filter(n => !isNaN(n));
-        if (arr.length > 0) {
-            state.tracker.playlist = arr;
-        }
+        const patternNumbers = str.match(/\d+/g) || [];
+        state.tracker.playlist = this.normalizePlaylist(patternNumbers);
+        state.tracker.playlistIndex %= state.tracker.playlist.length;
         this.renderSequence();
     }
 
     static renderSequence() {
         const inp = document.getElementById('trackerSequenceInput');
         if (inp) {
-            inp.value = state.tracker.playlist.map(n => String(n||0).padStart(2, '0')).join(', ');
+            inp.value = state.tracker.playlist.map(n => String(n || 0).padStart(2, '0')).join(', ');
         }
     }
 
@@ -542,19 +617,26 @@ class TrackerManager {
     }
 
     static deletePattern() {
-        if (state.tracker.patterns.length <= 1) return; // Keep at least one
-        state.tracker.patterns.splice(state.tracker.currentPatternIdx, 1);
-        if (state.tracker.currentPatternIdx >= state.tracker.patterns.length) {
-            state.tracker.currentPatternIdx = Math.max(0, state.tracker.patterns.length - 1);
-        }
+        if (state.tracker.patterns.length <= 1) return;
+
+        const deletedIndex = this.getPatternIndex(state.tracker.currentPatternIdx);
+        state.tracker.patterns.splice(deletedIndex, 1);
+        const replacementIndex = Math.min(deletedIndex, state.tracker.patterns.length - 1);
+        state.tracker.playlist = this.normalizePlaylist(state.tracker.playlist.map(index => {
+            if (index < deletedIndex) return index;
+            if (index > deletedIndex) return index - 1;
+            return replacementIndex;
+        }));
+        state.tracker.playlistIndex %= state.tracker.playlist.length;
+
+        this.renderSequence();
         this.updatePatternSelect();
-        this.selectPattern(state.tracker.currentPatternIdx);
+        this.selectPattern(replacementIndex);
     }
 
     static clonePattern() {
         const src = state.tracker.patterns[state.tracker.currentPatternIdx];
         if (!src) return;
-        // Deep copy data
         const newData = JSON.parse(JSON.stringify(src.data));
         state.tracker.patterns.push({ rows: src.rows, data: newData });
         const newIdx = state.tracker.patterns.length - 1;
@@ -563,12 +645,11 @@ class TrackerManager {
     }
 
     static selectPattern(idx) {
-        state.tracker.currentPatternIdx = parseInt(idx);
+        state.tracker.currentPatternIdx = this.getPatternIndex(idx);
         this.renderGrid();
-        // Update select box if called programmatically
-        document.getElementById('patternSelect').value = idx;
-        // Restore highlight if playing to keep UI in sync
-        if(state.tracker.isPlaying) this.highlightRow(state.tracker.currentRow);
+        const select = document.getElementById('patternSelect');
+        if (select) select.value = state.tracker.currentPatternIdx;
+        this.updateControlUI();
     }
 
     static updatePatternSelect() {
@@ -587,11 +668,13 @@ class TrackerManager {
             sel.value = state.tracker.currentPatternIdx;
         }
     }
-    
+
     static addRow() {
-         const pat = state.tracker.patterns[state.tracker.currentPatternIdx];
-         pat.rows = (pat.rows || 16) + 1;
-         this.renderGrid();
+        const pat = state.tracker.patterns[this.getPatternIndex(state.tracker.currentPatternIdx)];
+        if (pat.rows >= this.maxRows) return;
+        pat.rows += 1;
+        this.renderGrid();
+        this.updateControlUI();
     }
 }
 
@@ -613,13 +696,163 @@ class SampleLab {
 
     static init() {
         this.canvas = document.getElementById('labCanvas');
-        
+        this._dragging = false;
+        this._dragHandle = null;
+        this.isProcessing = false;
+
         // Bind ranges
         const labStart = document.getElementById('labStart');
         if (labStart) labStart.oninput = () => this.updateDisplays();
         const labEnd = document.getElementById('labEnd');
         if (labEnd) labEnd.oninput = () => this.updateDisplays();
+        this.initCanvasInteraction();
         this.renderLoopSelect();
+    }
+
+    // Drag-to-select on the waveform: grab a handle if near one, move the
+    // whole selection when grabbing inside it, grow from a click otherwise.
+    static initCanvasInteraction() {
+        const cvs = this.canvas;
+        if (!cvs || cvs.dataset.dragBound) return;
+        cvs.dataset.dragBound = '1';
+
+        const toRatio = (e) => {
+            const r = cvs.getBoundingClientRect();
+            if (r.width <= 0) return 0;
+            return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+        };
+        const readSel = () => ({
+            s: parseFloat(document.getElementById('labStart').value),
+            e: parseFloat(document.getElementById('labEnd').value)
+        });
+        const writeSel = (s, e) => {
+            document.getElementById('labStart').value = s;
+            document.getElementById('labEnd').value = e;
+            this.updateDisplays();
+        };
+
+        cvs.addEventListener('pointerdown', (e) => {
+            if (!this.rawBuffer) return;
+            e.preventDefault();
+            const pos = toRatio(e);
+            const { s, e: end } = readSel();
+            const tol = 6 / cvs.getBoundingClientRect().width; // ~6px handle tolerance
+            this._dragStartS = s;
+            this._dragStartE = end;
+            if (Math.abs(pos - s) <= tol) this._dragHandle = 'start';
+            else if (Math.abs(pos - end) <= tol) this._dragHandle = 'end';
+            else if (pos > s && pos < end) {
+                this._dragHandle = 'both';
+                this._grabOffset = pos - s;
+            } else this._dragHandle = (pos < s) ? 'grow-start' : 'grow-end';
+            this.applyDrag(pos);
+            this._dragging = true;
+            try { cvs.setPointerCapture(e.pointerId); } catch (err) {}
+        });
+
+        cvs.addEventListener('pointermove', (e) => {
+            if (!this._dragging) return;
+            this.applyDrag(toRatio(e));
+        });
+
+        const endDrag = () => {
+            if (!this._dragging) return;
+            this._dragging = false;
+            this._dragHandle = null;
+            this.snapSelectionToZeroCross();
+        };
+        cvs.addEventListener('pointerup', endDrag);
+        cvs.addEventListener('pointercancel', endDrag);
+
+        cvs.addEventListener('dblclick', (e) => {
+            if (!this.rawBuffer) return;
+            e.preventDefault();
+            writeSel(0, 1);
+        });
+    }
+
+    static applyDrag(pos) {
+        const startEl = document.getElementById('labStart');
+        const endEl = document.getElementById('labEnd');
+        let s = this._dragStartS;
+        let e = this._dragStartE;
+        const MIN = 0.002; // 0.2% of buffer
+        if (this._dragHandle === 'start') {
+            s = pos;
+        } else if (this._dragHandle === 'end') {
+            e = pos;
+        } else if (this._dragHandle === 'both') {
+            const w = this._dragStartE - this._dragStartS;
+            s = Math.min(1 - w, Math.max(0, pos - this._grabOffset));
+            e = s + w;
+        } else if (this._dragHandle === 'grow-start') {
+            s = Math.min(pos, e - MIN);
+        } else if (this._dragHandle === 'grow-end') {
+            e = Math.max(pos, s + MIN);
+        }
+        if (this._dragHandle === 'start' && s > e) { this._dragHandle = 'end'; [s, e] = [e, s]; this._dragStartS = s; this._dragStartE = e; }
+        else if (this._dragHandle === 'end' && e < s) { this._dragHandle = 'start'; [s, e] = [e, s]; this._dragStartS = s; this._dragStartE = e; }
+        if (e - s < MIN) {
+            if (this._dragHandle === 'start') s = Math.max(0, e - MIN);
+            else e = Math.min(1, s + MIN);
+        }
+        startEl.value = s;
+        endEl.value = e;
+        this.updateDisplays();
+    }
+
+    static zcEnabled() {
+        const el = document.getElementById('labZC');
+        return !!(el && el.checked);
+    }
+
+    // Snap a ratio to the nearest zero crossing within ±5ms. Prefers the
+    // nearest near-silent sample (true crossing); falls back to the window's
+    // amplitude minimum so we never snap away from a usable edge.
+    static snapToZeroCross(buffer, ratio) {
+        if (!buffer) return ratio;
+        const len = buffer.length;
+        const target = Math.min(len - 1, Math.max(0, Math.round(ratio * len)));
+        const chans = [];
+        for (let c = 0; c < buffer.numberOfChannels; c++) chans.push(buffer.getChannelData(c));
+        const absAt = (i) => { let a = 0; for (let c = 0; c < chans.length; c++) a += Math.abs(chans[c][i]); return a; };
+        const win = Math.floor(buffer.sampleRate * 0.005);
+        // -42 dBFS summed across channels: inaudible as a slice click, and
+        // loose enough that stereo channels (which rarely cross at the same
+        // sample) still register a crossing.
+        const THRESH = 0.008;
+        let best = target, bestAbs = absAt(target);
+        for (let i = 1; i <= win; i++) {
+            const li = target - i, ri = target + i;
+            if (li >= 0) {
+                const a = absAt(li);
+                if (a < THRESH) return li / len; // nearest true crossing wins
+                if (a < bestAbs) { bestAbs = a; best = li; }
+            }
+            if (ri < len) {
+                const a = absAt(ri);
+                if (a < THRESH) return ri / len;
+                if (a < bestAbs) { bestAbs = a; best = ri; }
+            }
+        }
+        return best / len;
+    }
+
+    // Snap the current selection edges (used after drags and before slicing).
+    static snapSelectionToZeroCross() {
+        if (!this.zcEnabled() || !this.rawBuffer || this._dragging) return;
+        const startEl = document.getElementById('labStart');
+        const endEl = document.getElementById('labEnd');
+        let s = parseFloat(startEl.value);
+        let e = parseFloat(endEl.value);
+        const lo = Math.min(s, e), hi = Math.max(s, e);
+        const ns = this.snapToZeroCross(this.rawBuffer, lo);
+        const ne = this.snapToZeroCross(this.rawBuffer, hi);
+        if (Math.abs(ns - lo) > 1e-6 || Math.abs(ne - hi) > 1e-6) {
+            startEl.value = ns;
+            endEl.value = ne;
+            this.updateDisplays();
+        }
     }
 
     static async toggleRecord() {
@@ -682,6 +915,7 @@ class SampleLab {
             // Apply Latency Compensation for Lab recordings too
             buffer = AudioEngine.compensateLatency(buffer);
             this.rawBuffer = buffer;
+            this.clearUndo();
             this.updateDisplays();
             this.renderWaveform();
             document.getElementById('labStatus').textContent = `CAPTURED: ${buffer.duration.toFixed(2)}s`;
@@ -696,6 +930,7 @@ class SampleLab {
         const ab = await file.arrayBuffer();
         this.rawBuffer = await state.audioContext.decodeAudioData(ab);
         this.processedBuffer = null;
+        this.clearUndo();
         this.updateDisplays();
         this.renderWaveform();
         document.getElementById('labStatus').textContent = `LOADED: ${this.rawBuffer.duration.toFixed(2)}s`;
@@ -715,21 +950,56 @@ class SampleLab {
         document.getElementById('labStartDisplay').textContent = sTime + 's';
         document.getElementById('labEndDisplay').textContent = eTime + 's';
         this.renderWaveform();
-        
+        this.updatePeakDisplay(start, end);
+
         if(!this.processedBuffer && !this.isRecording && this.rawBuffer) {
              document.getElementById('labStatus').textContent = `SELECTION: ${len}s`;
+        }
+    }
+
+    // Peak of the selected region in dBFS, with strided sampling so very long
+    // buffers stay responsive while dragging the sliders.
+    static selectionPeakDb(startRatio, endRatio) {
+        if (!this.rawBuffer) return null;
+        const len = this.rawBuffer.length;
+        const i0 = Math.floor(Math.min(startRatio, endRatio) * len);
+        const i1 = Math.max(i0 + 1, Math.floor(Math.max(startRatio, endRatio) * len));
+        const stride = Math.max(1, Math.floor((i1 - i0) / 20000));
+        let peak = 0;
+        for (let c = 0; c < this.rawBuffer.numberOfChannels; c++) {
+            const d = this.rawBuffer.getChannelData(c);
+            for (let i = i0; i < i1; i += stride) {
+                const a = Math.abs(d[i]);
+                if (a > peak) peak = a;
+            }
+        }
+        return 20 * Math.log10(peak);
+    }
+
+    static updatePeakDisplay(startRatio, endRatio) {
+        const el = document.getElementById('labPeak');
+        if (!el) return;
+        const db = this.selectionPeakDb(startRatio, endRatio);
+        if (db === null || !isFinite(db)) {
+            el.textContent = 'PEAK: --';
+        } else {
+            el.textContent = 'PEAK: ' + db.toFixed(1) + ' dB';
+            el.style.color = db > -1 ? '#f55' : (db > -6 ? '#fa0' : '#888');
         }
     }
     
     static renderWaveform() {
         const cvs = this.canvas;
         if (!cvs) return;
+        // Match backing store to displayed width so the waveform is crisp and
+        // 1px on screen == 1px in the buffer (canvas clicks map 1:1).
+        if (cvs.clientWidth > 0 && cvs.width !== cvs.clientWidth) cvs.width = cvs.clientWidth;
         const ctx = cvs.getContext('2d');
         const w = cvs.width;
         const h = cvs.height;
-        
+
         ctx.clearRect(0, 0, w, h);
-        
+
         const buf = this.rawBuffer;
         if (!buf) {
             ctx.fillStyle = "#222";
@@ -738,26 +1008,40 @@ class SampleLab {
             ctx.fillText("NO AUDIO LOADED", w/2, h/2);
             return;
         }
-        
-        // Draw Waveform
-        const data = buf.getChannelData(0); // Use Ch1
-        const step = Math.ceil(data.length / w);
+
+        // Draw Waveform (merged min/max across all channels)
+        const chans = [];
+        for (let c = 0; c < buf.numberOfChannels; c++) chans.push(buf.getChannelData(c));
+        const len = buf.length;
+        const step = Math.max(1, Math.floor(len / w));
         const amp = h / 2;
-        
+
+        // Center axis
+        ctx.beginPath();
+        ctx.strokeStyle = "rgba(0,255,0,0.18)";
+        ctx.lineWidth = 1;
+        ctx.moveTo(0, amp + 0.5);
+        ctx.lineTo(w, amp + 0.5);
+        ctx.stroke();
+
         ctx.beginPath();
         ctx.strokeStyle = "#0f0";
-        ctx.lineWidth = 1;
-        
         for (let i = 0; i < w; i++) {
+            const i0 = i * step;
+            if (i0 >= len) break; // last column guard: no OOB reads
+            const i1 = Math.min(len, i0 + step);
             let min = 1.0;
             let max = -1.0;
-            for (let j = 0; j < step; j++) {
-                const datum = data[(i * step) + j];
-                if (datum < min) min = datum;
-                if (datum > max) max = datum;
+            for (let c = 0; c < chans.length; c++) {
+                const data = chans[c];
+                for (let j = i0; j < i1; j++) {
+                    const datum = data[j];
+                    if (datum < min) min = datum;
+                    if (datum > max) max = datum;
+                }
             }
-            ctx.moveTo(i, (1 + min) * amp);
-            ctx.lineTo(i, (1 + max) * amp);
+            ctx.moveTo(i + 0.5, (1 + min) * amp);
+            ctx.lineTo(i + 0.5, (1 + max) * amp);
         }
         ctx.stroke();
         
@@ -811,6 +1095,7 @@ class SampleLab {
             }
             this.rawBuffer = this.cloneBuffer(sampler.buffer);
             this.processedBuffer = null;
+            this.clearUndo();
             this.updateDisplays();
             this.renderWaveform();
             document.getElementById('labStatus').textContent = `IMPORTED SAMPLER ${sId+1}`;
@@ -823,6 +1108,7 @@ class SampleLab {
             }
             this.rawBuffer = this.cloneBuffer(loop.audioBuffer);
             this.processedBuffer = null;
+            this.clearUndo();
             this.updateDisplays();
             this.renderWaveform();
             document.getElementById('labStatus').textContent = `IMPORTED LOOP ${loopId+1}`;
@@ -875,8 +1161,13 @@ class SampleLab {
         if (!buf && this.rawBuffer) {
              const s = parseFloat(document.getElementById('labStart').value);
              const e = parseFloat(document.getElementById('labEnd').value);
-             const tStart = Math.min(s, e);
-             const tEnd = Math.max(s, e) + (Math.abs(s-e) < 0.0001 ? 0.001 : 0);
+             let tStart = Math.min(s, e);
+             let tEnd = Math.max(s, e);
+             if (this.zcEnabled()) {
+                 tStart = this.snapToZeroCross(this.rawBuffer, tStart);
+                 tEnd = this.snapToZeroCross(this.rawBuffer, tEnd);
+             }
+             if (tEnd - tStart < 0.0001) tEnd = Math.min(1, tStart + 0.001);
              buf = AudioEngine.sliceBuffer(this.rawBuffer, tStart, tEnd);
              AudioEngine.applyFades(buf, 0.005); // Smooth edges
         }
@@ -922,13 +1213,14 @@ class SampleLab {
 
     static process() {
         if(!this.rawBuffer) return alert("Please load an audio file first.");
+        if (this.isProcessing) return; // a stretch is already running
 
         // Inputs are now 0.0-1.0 ratios from the sliders
         const startRatio = parseFloat(document.getElementById('labStart').value);
         const endRatio = parseFloat(document.getElementById('labEnd').value);
         const ratio = parseFloat(document.getElementById('labStretch').value);
         const pitchSemi = parseFloat(document.getElementById('labPitch').value) || 0;
-        
+
         if (ratio <= 0.01 || isNaN(ratio)) return alert("Invalid stretch ratio.");
 
         // 1. Slice
@@ -937,6 +1229,15 @@ class SampleLab {
         // Ranges are already 0-1, just ensure end > start
         let tStart = Math.min(startRatio, endRatio);
         let tEnd = Math.max(startRatio, endRatio);
+        if (this.zcEnabled()) {
+            // Snap to zero crossings to avoid clicks at the slice boundaries
+            tStart = this.snapToZeroCross(this.rawBuffer, tStart);
+            tEnd = this.snapToZeroCross(this.rawBuffer, tEnd);
+            document.getElementById('labStart').value = tStart;
+            document.getElementById('labEnd').value = tEnd;
+            this.renderWaveform();
+        }
+        if (tEnd - tStart < 0.002) return alert("Selection too short.");
         if (tEnd - tStart < 0.01) {
             tEnd = Math.min(1.0, tStart + 0.01);
             if (tEnd - tStart < 0.01) tStart = Math.max(0.0, tEnd - 0.01);
@@ -944,31 +1245,40 @@ class SampleLab {
 
         const selectedDur = dur * (tEnd - tStart);
         if (selectedDur * ratio > 60) return alert("Result too long (>60s).");
-        
-        const sliced = AudioEngine.sliceBuffer(this.rawBuffer, tStart, tEnd);
+
+        this.processedBuffer = null; // invalidate up-front
+        const srcRef = this.rawBuffer; // detect source swaps during async DSP
+        const sliced = AudioEngine.sliceBuffer(srcRef, tStart, tEnd);
 
         // 2. Stretch
         // If ratio is 1.0, don't waste CPU cycles
         if (Math.abs(ratio - 1.0) < 0.01 && Math.abs(pitchSemi) < 0.1) {
             this.processedBuffer = sliced;
             this.playBuf(this.processedBuffer);
+            document.getElementById('labStatus').textContent = `DONE. DUR: ${sliced.duration.toFixed(2)}s`;
         } else if (ratio > 0) {
+            this.isProcessing = true;
             document.getElementById('labStatus').textContent = "CRUNCHING NUMBERS...";
+            const statusEl = document.getElementById('labStatus');
             // Async it so we don't freeze the UI thread completely
             setTimeout(() => {
                 try {
-                    if (window.SoundTouch) {
-                        this.processedBuffer = this.soundTouchTimeStretch(sliced, ratio, pitchSemi);
-                    } else {
-                        throw new Error("SoundTouch lib missing");
+                    if (typeof SoundTouch === 'undefined') throw new Error("SoundTouch lib missing");
+                    const result = this.soundTouchTimeStretch(sliced, ratio, pitchSemi);
+                    if (this.rawBuffer !== srcRef) {
+                        // Source was replaced while crunching — don't apply stale audio
+                        statusEl.textContent = "STALE: source changed. Process again.";
+                        return;
                     }
+                    this.processedBuffer = result;
+                    this.playBuf(result);
+                    statusEl.textContent = `DONE. NEW DUR: ${result.duration.toFixed(2)}s`;
                 } catch (e) {
                     console.error("DSP Error:", e);
-                    document.getElementById('labStatus').textContent = "DSP ERROR.";
-                    return;
+                    statusEl.textContent = "DSP ERROR.";
+                } finally {
+                    this.isProcessing = false;
                 }
-                document.getElementById('labStatus').textContent = `DONE. NEW DUR: ${this.processedBuffer.duration.toFixed(2)}s`;
-                this.playBuf(this.processedBuffer);
             }, 10);
         }
     }
@@ -986,7 +1296,8 @@ class SampleLab {
         const channels = buffer.numberOfChannels;
         const rate = buffer.sampleRate;
         const length = buffer.length;
-        
+        const expectedOut = Math.max(1, Math.round(length * ratio));
+
         // 1. Interleave Input
         const input = new Float32Array(length * channels);
         for (let ch = 0; ch < channels; ch++) {
@@ -997,18 +1308,17 @@ class SampleLab {
         }
 
         // 2. Setup Source
+        // Feed zeros past EOF so SoundTouch keeps pumping and flushes its
+        // internal latency (~16k frames); otherwise the tail is cut off.
         const source = {
             extract: function(target, numFrames, position) {
-                const l = length; // Frames
-                let framesRead = 0;
                 for (let i = 0; i < numFrames; i++) {
-                    if (position + i >= l) break;
+                    const srcPos = position + i;
                     for (let c = 0; c < channels; c++) {
-                        target[i * channels + c] = input[(position + i) * channels + c];
+                        target[i * channels + c] = srcPos < length ? input[srcPos * channels + c] : 0;
                     }
-                    framesRead++;
                 }
-                return framesRead;
+                return numFrames;
             }
         };
 
@@ -1021,18 +1331,20 @@ class SampleLab {
         const outSamples = [];
         const blockSize = 1024;
         const temp = new Float32Array(blockSize * channels);
+        const maxBlocks = Math.ceil(expectedOut / blockSize) * 4 + 64; // safety against runaway
 
-        while (true) {
+        let blocks = 0;
+        while (blocks < maxBlocks && Math.floor(outSamples.length / channels) < expectedOut) {
             const frames = filter.extract(temp, blockSize);
+            blocks++;
             if (frames === 0) break;
             for (let i = 0; i < frames * channels; i++) {
                 outSamples.push(temp[i]);
             }
-            if (frames < blockSize) break;
         }
 
-        // 4. De-interleave
-        const outLen = Math.floor(outSamples.length / channels);
+        // 4. De-interleave (trim to exact expected length)
+        const outLen = Math.min(Math.floor(outSamples.length / channels), expectedOut);
         if (outLen <= 0) return buffer;
         const dest = state.audioContext.createBuffer(channels, outLen, rate);
         
@@ -1046,10 +1358,43 @@ class SampleLab {
         return dest;
     }
 
+    // One-slot undo for destructive edits (REV / NORM / CROP).
+    static pushUndo() {
+        if (!this.rawBuffer) return;
+        this._undoBuffer = AudioEngine.cloneBuffer(this.rawBuffer);
+        this.updateUndoBtn();
+    }
+
+    static clearUndo() {
+        this._undoBuffer = null;
+        this.updateUndoBtn();
+    }
+
+    static updateUndoBtn() {
+        const btn = document.getElementById('labUndoBtn');
+        if (btn) btn.disabled = !this._undoBuffer;
+    }
+
+    static undo() {
+        if (!this._undoBuffer) return;
+        this.stopPreview();
+        this.rawBuffer = this._undoBuffer;
+        this._undoBuffer = null;
+        this.processedBuffer = null;
+        document.getElementById('labStart').value = 0;
+        document.getElementById('labEnd').value = 1;
+        this.updateDisplays();
+        this.renderWaveform();
+        this.updateUndoBtn();
+        document.getElementById('labStatus').textContent = `UNDO. DUR: ${this.rawBuffer.duration.toFixed(2)}s`;
+    }
+
     static reverse() {
         if (!this.rawBuffer) return;
+        this.pushUndo();
         this.rawBuffer = AudioEngine.getReversedBuffer(this.rawBuffer);
         this.processedBuffer = null;
+        this.updateDisplays();
         this.renderWaveform();
         document.getElementById('labStatus').textContent = "REVERSED.";
     }
@@ -1057,12 +1402,34 @@ class SampleLab {
     static normalize() {
         if (!this.rawBuffer) return;
         if (AudioEngine.normalizeBuffer(this.rawBuffer)) {
+            this.pushUndo();
             this.processedBuffer = null;
+            this.updateDisplays();
             this.renderWaveform();
             document.getElementById('labStatus').textContent = "NORMALIZED.";
         } else {
             document.getElementById('labStatus').textContent = "ALREADY MAXED.";
         }
+    }
+
+    // Destructively trim the sample to the current selection.
+    static crop() {
+        if (!this.rawBuffer) return alert("No sample loaded.");
+        if (this.isRecording) return;
+        const s = parseFloat(document.getElementById('labStart').value);
+        const e = parseFloat(document.getElementById('labEnd').value);
+        const tStart = Math.min(s, e);
+        const tEnd = Math.max(s, e);
+        if (tEnd - tStart >= 0.999) return alert("Selection covers the whole sample.");
+        this.stopPreview();
+        this.pushUndo();
+        this.rawBuffer = AudioEngine.sliceBuffer(this.rawBuffer, tStart, tEnd);
+        this.processedBuffer = null;
+        document.getElementById('labStart').value = 0;
+        document.getElementById('labEnd').value = 1;
+        this.updateDisplays();
+        this.renderWaveform();
+        document.getElementById('labStatus').textContent = `CROPPED: ${this.rawBuffer.duration.toFixed(2)}s`;
     }
 
     static save() {
