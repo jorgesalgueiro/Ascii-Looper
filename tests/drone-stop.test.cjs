@@ -31,6 +31,7 @@ function createHarness() {
     vm.createContext(context);
     vm.runInContext(source + '\nObject.assign(globalThis, { DroneSynth, SynthInstance });', context, { filename });
     const drone = context.DroneSynth;
+    const renderAll = drone.renderAll;
     // Keep transport, recording and per-synth UI code real; isolate audio and full DOM rendering.
     drone.noteOn = () => {};
     drone.noteOff = (id, voiceId, immediate, scheduledTime = 0) => {
@@ -66,7 +67,34 @@ function createHarness() {
         }
     }
 
-    return { drone, timers, releases, liveUpdates, renders, addSynth, advanceTo };
+    return { context, elements, renderAll, drone, timers, releases, liveUpdates, renders, addSynth, advanceTo };
+}
+
+function createControlHarness() {
+    const harness = createHarness();
+    const { context, elements, drone, renderAll } = harness;
+    const container = {
+        children: [],
+        set innerHTML(value) { this.children = []; },
+        appendChild(child) { this.children.push(child); }
+    };
+    elements.set('drone-instances-container', container);
+    context.document.createElement = () => ({ style: {}, dataset: {}, click() {} });
+    context.state.keyMapping = { kbd: [] };
+    context.state.customEffects = {};
+    context.effectColors = {};
+    context.VERSION = 'test';
+    context.Blob = Blob;
+    context.URL = { createObjectURL: () => 'blob:test', revokeObjectURL() {} };
+    context.prompt = () => 'Saved';
+    context.alert = message => assert.fail(message);
+    context.EffectManager = {
+        activeTab: 'input-bus',
+        setActiveTab(tab) { this.activeTab = tab; }
+    };
+    context.UIManager.renderEffectsTabs = () => {};
+    drone.renderAll = renderAll;
+    return { ...harness, container };
 }
 
 function assertFinalized(synth) {
@@ -77,6 +105,67 @@ function assertFinalized(synth) {
     assert.equal(synth.stopTime, 0);
     assert.equal(synth.isRecording, false);
     assert.deepEqual(Object.keys(synth.voices), []);
+}
+
+test('saved drone presets restore sequence arrays without sharing editable data', () => {
+    const { drone, addSynth, container } = createControlHarness();
+    const { synth } = addSynth();
+    const other = addSynth().synth;
+    synth.params.steps[0] = 0.75;
+    synth.params.gates[1] = 0;
+    synth.params.vels[2] = 0.4;
+    drone.savePreset(synth.id);
+    const saved = JSON.stringify(drone.PRESETS.Saved);
+    synth.params.steps[0] = 0;
+    drone.setParam(synth.id, 'rate', '3');
+    assert.equal(synth.params.rate, 3);
+    drone.loadPreset(synth.id, 'Saved');
+    drone.loadPreset(other.id, 'Saved');
+    assert.equal(JSON.stringify(synth.params), saved);
+    assert.equal(container.children.length, 2);
+    assert.ok(container.children[0].innerHTML.includes('id="ds-0-0"'));
+    for (const key of ['steps', 'gates', 'vels']) {
+        assert.ok(Array.isArray(synth.params[key]), key);
+        assert.notEqual(synth.params[key], drone.PRESETS.Saved[key]);
+        assert.notEqual(synth.params[key], other.params[key]);
+        synth.params[key][0] = 0.125;
+    }
+    assert.equal(JSON.stringify(drone.PRESETS.Saved), saved);
+    assert.equal(JSON.stringify(other.params), saved);
+});
+
+test('editing an imported drone sequence cannot change its saved session preset', async () => {
+    const { drone, addSynth, container } = createControlHarness();
+    const { synth } = addSynth();
+    const params = JSON.parse(JSON.stringify(synth.params));
+    params.steps[0] = 0.75;
+    const input = {
+        value: 'import.ald',
+        files: [{ name: 'import.ald', text: async () => JSON.stringify({ type: 'drone_preset', name: 'Imported', params }) }]
+    };
+    await drone.loadAld(synth.id, input);
+    assert.equal(input.value, '');
+    for (const key of ['steps', 'gates', 'vels']) synth.params[key][0] = 0.125;
+    assert.equal(JSON.stringify(drone.PRESETS.Imported), JSON.stringify(params));
+    drone.loadPreset(synth.id, 'Imported');
+    assert.equal(JSON.stringify(synth.params), JSON.stringify(params));
+    assert.equal(container.children.length, 1);
+});
+
+for (const activeTab of ['input-bus', 'drone-0']) {
+    test(`keyboard chain editing targets its owning drone rather than ${activeTab}`, () => {
+        const { context, drone, addSynth } = createControlHarness();
+        addSynth();
+        const { synth } = addSynth();
+        context.EffectManager.activeTab = activeTab;
+        const changes = [];
+        context.EffectManager.setGlobalSignalChain = function (chain) { changes.push([this.activeTab, chain]); };
+        const html = drone.getSynthHtml(synth);
+        const handler = /<input[^>]*id="droneSignalChainInput_1"[^>]*onchange="([^"]+)"/.exec(html)?.[1];
+        assert.ok(handler);
+        vm.runInContext(`(function () { ${handler} }).call({ value: 'DB' });`, context);
+        assert.deepEqual(changes, [['drone-1', 'DB']]);
+    });
 }
 
 for (const initialState of ['playing', 'armed', 'stopping']) {

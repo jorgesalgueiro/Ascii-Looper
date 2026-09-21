@@ -473,7 +473,7 @@ class DroneSynth {
         <div style="display:flex; align-items:center; gap:5px; margin-bottom:2px; margin-top:5px; border-top:1px dashed #333; padding-top:4px;">
             <span style="font-size:10px; font-weight:bold; color:#0ff; cursor:pointer; text-decoration:underline;" onclick="EffectManager.setActiveTab('drone-${id}'); EffectManager.scrollToEffects();" title="Go to FX Controls">FX CHAIN:</span>
             <select id="droneFxPresetSelect_${id}" style="font-size:10px; width:80px;" onchange="if(window.EffectManager) { EffectManager.setActiveTab('drone-${id}'); EffectManager.applyPresetToMic(this.value); }" aria-label="Drone FX Chain Preset"></select>
-            <input type="text" id="droneSignalChainInput_${id}" value="${synth.signalChain}" onchange="EffectManager.setGlobalSignalChain(this.value)" onclick="EffectManager.setActiveTab('drone-${id}')" style="width:80px; font-size:10px; font-family:monospace; background:#000; color:#0ff; border:1px solid #044;" title="Manual FX Chain" aria-label="Manual FX Chain">
+            <input type="text" id="droneSignalChainInput_${id}" value="${synth.signalChain}" onchange="EffectManager.setActiveTab('drone-${id}'); EffectManager.setGlobalSignalChain(this.value)" onclick="EffectManager.setActiveTab('drone-${id}')" style="width:80px; font-size:10px; font-family:monospace; background:#000; color:#0ff; border:1px solid #044;" title="Manual FX Chain" aria-label="Manual FX Chain">
             <a href="#mod-sync" onclick="document.getElementById('fxMixTimeSel').focus()" class="mixin-link" style="font-size:9px; color:#888; text-decoration:underline; margin-left:4px;">mixin time: ${state.fxMixTime || '2s'}</a>
         </div>
         <div id="drone-fx-toggles_${id}" style="display:flex; flex-wrap:wrap; gap:5px; margin-top:2px;">${fxToggles}</div>
@@ -554,7 +554,7 @@ class DroneSynth {
             
             const synth = this.instances[id];
             if(data.name) synth.name = data.name;
-            Object.assign(synth.params, data.params);
+            Object.assign(synth.params, JSON.parse(JSON.stringify(data.params)));
             
             // Auto-load FX if present
             if(data.fxParams) Object.assign(synth.fxParams, data.fxParams);
@@ -1924,6 +1924,10 @@ class DroneSynth {
         if (EffectManager.activeTab !== 'drone-' + id) EffectManager.setActiveTab('drone-' + id);
         const synth = this.instances[id];
         if (!synth) return;
+        if (Array.isArray(val)) {
+            synth.params[key] = val.slice();
+            return;
+        }
         synth.params[key] = (['osc1Type','osc2Type','subType','noiseType','filterType'].includes(key)) ? val : parseFloat(val);
         if (key === 'filterType') {
             Object.values(synth.voices).forEach(v => {

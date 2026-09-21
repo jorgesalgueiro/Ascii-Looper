@@ -1983,14 +1983,17 @@ class Loop {
     stop(scheduledTime = 0) {
         this.playRequest++;
         // Allow stop to proceed if state is 'stopping' (scheduled stop)
-        if (this.state !== 'playing' && this.state !== 'overdubbing' && this.state !== 'substituting' && this.state !== 'stopping' && this.state !== 'multiplying') return;
+        if (this.state !== 'playing' && this.state !== 'overdubbing' && this.state !== 'substituting' && this.state !== 'stopping' && this.state !== 'multiplying' && this.state !== 'queued') return;
 
+        if (this.stopTimeout) clearTimeout(this.stopTimeout);
+        this.stopTimeout = null;
+        if (this.queueTimeout) clearTimeout(this.queueTimeout);
+        this.queueTimeout = null;
         const now = AudioEngine.currentTime;
 
         // Handle Scheduled Stop
         if (scheduledTime > now) {
              this.state = 'stopping';
-             if (this.stopTimeout) clearTimeout(this.stopTimeout); // Clear any existing teardown
              UIManager.updateLoop(this.id);
              
              if (this.graph) {
@@ -2093,6 +2096,11 @@ class Loop {
      */
     clear() {
         this.playRequest++;
+        if (this.stopTimeout) clearTimeout(this.stopTimeout);
+        this.stopTimeout = null;
+        if (this.queueTimeout) clearTimeout(this.queueTimeout);
+        this.queueTimeout = null;
+        this.isStuttering = false;
         // 0. Safety: If this loop is the current Sync Source, revert to Master
         const syncSrc = document.getElementById('syncSource');
         if (syncSrc && syncSrc.value == this.id) {

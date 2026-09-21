@@ -217,6 +217,68 @@ for (const action of ['global stop', 'loop stop', 'clear']) {
     });
 }
 
+for (const firstStop of [0, 30]) {
+    test(`repeated stop replaces the ${firstStop ? 'scheduled' : 'immediate'} teardown timer`, async () => {
+        const { state, timers } = createHarness();
+        const loop = state.loops[0];
+        loop.audioBuffer = createBuffer(1, 256, 1000);
+        await loop.play();
+        loop.stop(firstStop);
+        loop.stop();
+        const [id, timer] = [...timers].at(-1);
+        timers.delete(id);
+        timer.callback();
+        await loop.play();
+        const graph = loop.graph;
+        for (const [pending, { callback }] of [...timers]) { timers.delete(pending); await callback(); }
+        assert.equal(loop.state, 'playing');
+        assert.equal(loop.graph, graph);
+        assert.equal(graph.isDestroyed, undefined);
+        assert.equal(timers.size, 0);
+    });
+}
+
+test('clear cancels a scheduled teardown before recording another take', async () => {
+    const harness = createHarness();
+    const { state, timers, manager } = harness;
+    const loop = state.loops[0];
+    loop.audioBuffer = createBuffer(1, 256, 1000);
+    await loop.play();
+    loop.stop(30);
+    loop.clear();
+    await manager.startRecording(0);
+    for (const [id, { callback }] of [...timers]) { timers.delete(id); await callback(); }
+    assert.equal(loop.state, 'recording');
+    assert.equal(state.isRecording, true);
+    assert.equal(state.recordingLoopId, 0);
+    assert.equal(loop.stopTimeout, null);
+});
+
+for (const action of ['clear', 'stop']) {
+    test(`${action} cancels queued playback instead of starting replacement audio`, async () => {
+        const { context, state, timers, manager } = createHarness();
+        context.SyncManager.getNextGridTime = () => 12;
+        state.syncEnabled = true;
+        const loop = state.loops[0];
+        loop.audioBuffer = createBuffer(1, 256, 1000);
+        loop.duration = loop.audioBuffer.duration;
+        loop.state = 'stopped';
+        await manager.handleAction(0, 'short');
+        assert.equal(loop.state, 'queued');
+        assert.equal(timers.size, 1);
+        loop[action]();
+        if (action === 'clear') {
+            loop.audioBuffer = createBuffer(1, 512, 1000);
+            loop.duration = loop.audioBuffer.duration;
+            loop.state = 'stopped';
+        }
+        for (const [id, { callback }] of [...timers]) { timers.delete(id); await callback(); }
+        assert.equal(loop.state, 'stopped');
+        assert.equal(loop.graph, null);
+        assert.equal(loop.queueTimeout, null);
+    });
+}
+
 test('global stop accelerates an already scheduled loop stop', async () => {
     const { state, manager } = createHarness();
     const loop = state.loops[0];
