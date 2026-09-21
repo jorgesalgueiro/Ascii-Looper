@@ -3580,9 +3580,20 @@ class UIManager {
         return html;
     }
 
-    /**
-     * Generates the inner HTML for a loop element.
-     */
+    static getLoopAction(loop) {
+        if (state.isFinishingRecording && state.recordingLoopId === loop.id) return 'SAVING';
+        if (loop.state === 'playing') {
+            if (state.globalSubstituteMode) return 'REPLACE';
+            if (state.globalOverdubMode) return 'OVERDUB';
+            return 'STOP';
+        }
+        return {
+            empty: 'RECORD', stopped: 'PLAY', armed: 'CANCEL', queued: 'CANCEL',
+            recording: 'FINISH', overdubbing: 'FINISH', substituting: 'FINISH',
+            multiplying: 'FINISH', stopping: 'STOP NOW'
+        }[loop.state];
+    }
+
     static generateLoopHTML(loop, index) {
         const stateSymbols = {
             empty: '( )', armed: '(A)', recording: '(R)',
@@ -3593,27 +3604,16 @@ class UIManager {
         
         const stateSymbol = stateSymbols[loop.state] || '( )';
         const effectiveDur = loop.duration / loop.playbackRate;
-        const durationText = loop.duration > 0 ? `(${effectiveDur.toFixed(1)}s)` : '';
-        const mutedText = loop.muted ? '[MUTED]' : '';
-        const progressBar = this.getProgressBar(loop, AudioEngine.currentTime);
-        const muteStyle = loop.muted ? 'background:#f00; color:#000; border-color:#f00;' : 'border-color:#444; color:#666;';
-        const soloStyle = (state.soloState.active && state.soloState.loopId === index) ? 'background:#ff0; color:#000; border-color:#ff0;' : 'border-color:#444; color:#666;';
-        
-        // Calculate dB for display (1.0 = 0dB)
+        const durationText = loop.audioBuffer && loop.duration > 0 ? `(${effectiveDur.toFixed(1)}s)` : '';
+        const mutedText = loop.muted ? '[MUTED] ' : '';
+        const action = this.getLoopAction(loop);
+        const isSolo = state.soloState.active && state.soloState.loopId === index;
+        const muteStyle = loop.muted ? 'background:#f00; color:#000; border-color:#f00;' : '';
+        const soloStyle = isSolo ? 'background:#ff0; color:#000; border-color:#ff0;' : '';
         const volDb = loop.volume <= 0 ? '-inf' : (20 * Math.log10(loop.volume)).toFixed(1);
-        
-        // Use CSS variables or inline styles for state colors
-        let stateColor = '#555'; 
-        if (loop.state === 'recording') stateColor = '#f00';
-        else if (loop.state === 'armed') stateColor = '#ff0';
-        else if (loop.state === 'playing') stateColor = '#0f0';
-        else if (loop.state === 'stopped') stateColor = '#0ff';
-        else if (loop.state === 'overdubbing') stateColor = '#f0f';
-        else if (loop.state === 'substituting') stateColor = '#00cccc';
-        else if (loop.state === 'multiplying') stateColor = '#ffaa00';
-        else if (loop.state === 'queued') stateColor = '#0088aa';
-        const presetOptions = Object.keys(state.fxPresets).map(name => 
-            `<option value="${name}" ${state.fxPresets[name] === loop.signalChain ? 'selected' : ''}>[CHAIN] ${name}</option>`
+        const escape = SamplerManager.escapeHTML;
+        const presetOptions = Object.keys(state.fxPresets).map(name =>
+            `<option value="${escape(name)}" ${state.fxPresets[name] === loop.signalChain ? 'selected' : ''}>[CHAIN] ${escape(name)}</option>`
         ).join('');
         
         const mergeOptions = state.loops.map((l, i) => 
@@ -3621,120 +3621,112 @@ class UIManager {
         ).join('');
 
         return `
-			<div class="loop-main-content" style="display: flex; flex-direction: column; flex: 1; min-width: 0;">
-               <div class="loop-header" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 8px; min-height: 44px;">
-
-                    <div style="display: flex; align-items: center; gap: 8px; overflow: hidden; flex: 1;">
-                        <strong style="color: ${stateColor};">[${index + 1}]</strong> 
-                        <input type="text" value="${(loop.name || '').replace(/"/g, '&quot;')}" name="loop-name-${index}" placeholder="Loop ${index + 1}"
+            <div class="loop-main-content">
+                <div class="loop-header loop-track-header">
+                    <div class="loop-track-identity">
+                        <strong>[${index + 1}]</strong>
+                        <button type="button" id="loop-action-${index}" class="loop-track-action"
+                                onclick="event.stopPropagation(); LoopManager.handleAction(${index}, 'short');"
+                                aria-label="Loop ${index + 1}: ${action}" ${action === 'SAVING' ? 'disabled' : ''}>${action}</button>
+                        <input type="text" value="${escape(loop.name || '')}" name="loop-name-${index}" placeholder="Loop ${index + 1}"
                                onkeydown="if(event.key==='Enter') this.blur(); event.stopPropagation();"
                                oninput="event.stopPropagation(); state.loops[${index}].name = this.value; if(window.UIManager && UIManager.updateLiveLoop) UIManager.updateLiveLoop(${index});"
-                               onclick="event.stopPropagation(); EffectManager.setActiveTab(${index});"
-                               style="background: #000; border: 1px solid ${stateColor}; color: ${stateColor}; font-size: 11px; font-family: 'Courier New', monospace; width: 80px; padding: 2px;" aria-label="Loop Name">
-                     
-                        <select class="preset-menu-trigger" onchange="event.stopPropagation(); EffectManager.applyPresetToLoop(${index}, this.value)"
-                                onclick="event.stopPropagation(); EffectManager.setActiveTab(${index});" style="height: 18px; color:${stateColor};" title="Load Complete FX-State Preset" aria-label="Load Complete Loop FX Preset">
-                            <option value="">FULL</option>
-                            ${Object.keys(state.globalPresets).map(name => `<option value="GLOBAL:${name}">[FULL] ${name}</option>`).join('')}
-                        </select>
-                     
-                        <span id="loop-state-symbol-${index}" style="color: ${stateColor}; font-weight:bold;">${stateSymbol}</span>
-                        <span id="loop-state-text-${index}" style="color: ${stateColor}; font-size: 10px;">${loop.state.toUpperCase()}</span>
-                     </div>
-
-                    <div style="display: flex; align-items: center; gap: 8px; font-size: 10px; color: #888; flex-shrink: 0;">
-                         <span id="loop-extra-info-${index}" style="white-space: nowrap; display:none;">${mutedText}${durationText}</span>
-                         <canvas id="loop-wave-${index}" width="180" height="20" title="Click to Export WAV" onclick="event.stopPropagation(); ProjectManager.exportLoop(${index});" style="background:rgba(0,0,0,0.3); border:1px solid ${stateColor}; border-radius:2px; vertical-align:middle; cursor:pointer; width:180px; height:20px;"></canvas>
-                         <pre id="loop-ascii-vu-${index}" class="ascii-vu-meter" style="margin:0; width:auto; height:20px; line-height:20px; background:transparent; border:none; display:none;">[░░░]</pre>
+                               onclick="event.stopPropagation(); EffectManager.setActiveTab(${index});" aria-label="Loop Name">
+                    </div>
+                    <div class="loop-track-summary">
+                        <span class="loop-track-state"><span id="loop-state-symbol-${index}">${stateSymbol}</span> <span id="loop-state-text-${index}">${loop.state.toUpperCase()}</span></span>
+                        <span id="loop-extra-info-${index}">${mutedText}${durationText}</span>
+                        <canvas id="loop-wave-${index}" width="180" height="20" title="Click to Export WAV" aria-label="Loop ${index + 1} waveform" onclick="event.stopPropagation(); ProjectManager.exportLoop(${index});"></canvas>
+                        <pre id="loop-ascii-vu-${index}" class="ascii-vu-meter" style="display:none;">[░░░]</pre>
                     </div>
                 </div>
-                <div class="loop-controls" style="padding: 4px;">
+                <div class="loop-controls loop-track-controls">
                     
-                    <div style="display:flex; gap:8px; margin-bottom:5px; align-items:center;">
-                        <div style="display:flex; flex-direction:column; flex:1.5;">
-                            <label style="font-size:9px; margin-bottom:14px;">Vol <span id="loop-vol-display-${index}">${volDb}dB</span></label>
+                    <div class="loop-track-parameters">
+                        <div class="loop-track-parameter">
+                            <div class="loop-track-parameter-heading"><label for="loop-vol-slider-${index}">Volume</label><span id="loop-vol-display-${index}">${volDb}dB</span></div>
                             <input type="range" id="loop-vol-slider-${index}" min="0" max="2" step="0.01" value="${loop.volume}" title="${I18n.t('TIP_VOL')}"
                                    oninput="UIManager.setLoopVolume(${index}, this.value); EffectManager.setActiveTab(${index});"
-                                   onclick="event.stopPropagation()" style="margin:0; width:100%;" aria-label="Loop Volume">
+                                   onclick="event.stopPropagation()" aria-label="Loop Volume">
                         </div>
-                        <div style="display:flex; flex-direction:column; flex:0.7;">
-                            <label style="font-size:9px; margin-bottom:14px;">Pan <span id="loop-pan-display-${index}">${loop.pan}</span></label>
+                        <div class="loop-track-parameter">
+                            <div class="loop-track-parameter-heading"><label for="loop-pan-slider-${index}">Pan</label><span id="loop-pan-display-${index}">${loop.pan}</span></div>
                             <input type="range" id="loop-pan-slider-${index}" min="0" max="10" step="1" value="${loop.pan}" title="${I18n.t('TIP_PAN')}"
                                    oninput="UIManager.setLoopPan(${index}, this.value); EffectManager.setActiveTab(${index});"
-                                   onclick="event.stopPropagation()" style="margin:0; width:100%;" aria-label="Loop Pan">
+                                   onclick="event.stopPropagation()" aria-label="Loop Pan">
                         </div>
-                        <div style="display:flex; flex-direction:column; flex:1.2;">
-                             <div style="display:flex; justify-content:space-between; margin-bottom:2px;">
-                                <label style="font-size:9px; display:flex; align-items:center; gap:2px;">Start
-                                    <button class="small" style="padding:0 3px; font-size:8px; height:12px; min-height:unset; line-height:1;" onclick="event.stopPropagation(); UIManager.nudgeLoopStart(${index}, -1)" title="Nudge Left (1/64)">&lt;</button>
-                                    <button class="small btn-purple" style="padding:0 3px; font-size:8px; height:12px; min-height:unset; line-height:1;" onclick="event.stopPropagation(); UIManager.quantizeLoopStart(${index})" title="Quantize Start to 16th Note">Q</button>
-                                    <button class="small" style="padding:0 3px; font-size:8px; height:12px; min-height:unset; line-height:1;" onclick="event.stopPropagation(); UIManager.nudgeLoopStart(${index}, 1)" title="Nudge Right (1/64)">&gt;</button>
-                                </label>
-                                <span id="loop-delay-display-${index}" style="font-size:8px; line-height:12px;">${Math.floor(loop.startDelay * loop.duration * 1000)}ms</span>
-                             </div>
-                             <input type="range" id="loop-start-slider-${index}" min="0" max="1" step="0.001" value="${loop.startDelay}" title="${I18n.t('TIP_START')}"
-                                    oninput="UIManager.setLoopStartDelay(${index}, this.value); EffectManager.setActiveTab(${index});"
-                                    onchange="state.loops[${index}].restart(AudioEngine.currentTime + 0.05);"
-                                   onclick="event.stopPropagation()" style="margin:0; width:100%;" aria-label="Loop Start Delay">
+                        <div class="loop-track-parameter loop-track-parameter-start">
+                            <div class="loop-track-parameter-heading"><label for="loop-start-slider-${index}">Start</label><span id="loop-delay-display-${index}">${Math.floor(loop.startDelay * loop.duration * 1000)}ms</span></div>
+                            <input type="range" id="loop-start-slider-${index}" min="0" max="1" step="0.001" value="${loop.startDelay}" title="${I18n.t('TIP_START')}"
+                                   oninput="UIManager.setLoopStartDelay(${index}, this.value); EffectManager.setActiveTab(${index});"
+                                   onchange="state.loops[${index}].restart(AudioEngine.currentTime + 0.05);"
+                                   onclick="event.stopPropagation()" aria-label="Loop Start Delay">
+                            <div class="loop-track-mini-actions">
+                                <button type="button" class="small" onclick="event.stopPropagation(); UIManager.nudgeLoopStart(${index}, -1)" title="Nudge Left (1/64)" aria-label="Nudge loop start left">&lt;</button>
+                                <button type="button" class="small btn-purple" onclick="event.stopPropagation(); UIManager.quantizeLoopStart(${index})" title="Quantize Start to 16th Note">Q</button>
+                                <button type="button" class="small" onclick="event.stopPropagation(); UIManager.nudgeLoopStart(${index}, 1)" title="Nudge Right (1/64)" aria-label="Nudge loop start right">&gt;</button>
+                            </div>
                         </div>
-                        <div style="display:flex; flex-direction:column; flex:1.0;">
-                             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:2px;">
-                                <label style="font-size:9px; display:flex; gap:4px; align-items:center;">Spd
-                                    <button class="small btn-cyan" style="padding:0 3px; font-size:8px; height:12px; min-height:unset; line-height:1;" onclick="event.stopPropagation(); state.loops[${index}].toggleHalfSpeed(); EffectManager.setActiveTab(${index});" title="Toggle Half Speed [H]">1/2</button>
-                                </label>
-                                <span id="loop-speed-display-${index}" style="font-size:8px;">${loop.playbackRate.toFixed(2)}x</span>
-                             </div>
+                        <div class="loop-track-parameter">
+                            <div class="loop-track-parameter-heading"><label for="loop-speed-slider-${index}">Speed</label><span id="loop-speed-display-${index}">${loop.playbackRate.toFixed(2)}x</span></div>
                             <input type="range" id="loop-speed-slider-${index}" min="0.25" max="2" step="0.01" value="${loop.playbackRate}" title="${I18n.t('TIP_SPEED')}"
                                    oninput="UIManager.setLoopSpeed(${index}, this.value);"
                                    ondblclick="UIManager.resetLoopSpeed(${index});"
-                                   onclick="event.stopPropagation()" style="margin:0; width:100%;" aria-label="Loop Playback Speed">
+                                   onclick="event.stopPropagation()" aria-label="Loop Playback Speed">
+                            <div class="loop-track-mini-actions">
+                                <button type="button" class="small btn-cyan" onclick="event.stopPropagation(); state.loops[${index}].toggleHalfSpeed(); EffectManager.setActiveTab(${index});" title="Toggle Half Speed [H]">1/2</button>
+                                <button type="button" class="small" onclick="event.stopPropagation(); UIManager.resetLoopSpeed(${index});" title="Reset Loop Playback Speed" ${loop.playbackRate === 1 ? 'disabled' : ''}>1x</button>
+                            </div>
                         </div>
-                        <div style="display:flex; flex-direction:column; flex:1.0;">
-                             <div style="display:flex; justify-content:space-between;">
-                                <label style="font-size:9px; margin-bottom:14px;">Fbk</label>
-                                <span id="loop-fbk-display-${index}" style="font-size:8px;">${Math.round(loop.feedback * 100)}%</span>
-                             </div>
-                            <input type="range" id="loop-fbk-slider-${index}" min="0" max="1" step="0.01" value="${loop.feedback}" title="Overdub Feedback (Decay)"
+                        <div class="loop-track-parameter">
+                            <div class="loop-track-parameter-heading"><label for="loop-fbk-slider-${index}">Feedback</label><span id="loop-fbk-display-${index}">${Math.round(loop.feedback * 100)}%</span></div>
+                            <input type="range" id="loop-fbk-slider-${index}" min="0" max="1" step="0.01" value="${loop.feedback}" title="Overdub Feedback (Decay); double-click to reset to 80%"
                                    oninput="UIManager.setLoopFeedback(${index}, this.value);"
                                    ondblclick="UIManager.resetLoopFeedback(${index});"
-                                   onclick="event.stopPropagation()" style="margin:0; width:100%;" aria-label="Loop Overdub Feedback">
+                                   onclick="event.stopPropagation()" aria-label="Loop Overdub Feedback">
                         </div>
                     </div>
 
-                    <div style="display:flex; gap:2px; margin-bottom:5px; justify-content:space-between;">
-                            <button class="small" onclick="event.stopPropagation(); LoopManager.toggleMute(${index}); EffectManager.setActiveTab(${index});" style="flex:1; ${muteStyle}" title="${I18n.t('TIP_MUTE')}">${loop.muted ? 'UNM' : 'MUTE'}</button>
-                            <button class="small" onclick="event.stopPropagation(); SoloManager.toggleSolo(${index}); EffectManager.setActiveTab(${index});" style="flex:1; ${soloStyle}" title="${I18n.t('TIP_SOLO')}">SOLO</button>
-                            <button class="small" onclick="event.stopPropagation(); state.loops[${index}].undo(); EffectManager.setActiveTab(${index});" title="Undo Overdub" style="flex:1;" ${loop.undoStack.length > 0 ? '' : 'disabled'}>UNDO</button>
-                            <button class="small" onclick="event.stopPropagation(); state.loops[${index}].redo(); EffectManager.setActiveTab(${index});" title="Redo Overdub" style="flex:1;" ${loop.redoStack.length > 0 ? '' : 'disabled'}>REDO</button>
-                            <button class="small" onclick="event.stopPropagation(); state.loops[${index}].retrigger(); EffectManager.setActiveTab(${index});" title="Retrigger [\/] — Instantly restart on-beat" style="flex:1;" ${loop.audioBuffer ? '' : 'disabled'}><span style="color:#0f0">[/]</span>RTRG</button>
-                            <button class="small" onclick="event.stopPropagation(); state.loops[${index}].multiply(); EffectManager.setActiveTab(${index});" title="Multiply [\\] — press to capture, press again to extend. No input = double." style="flex:1;" ${loop.audioBuffer ? '' : 'disabled'}><span style="color:#0f0">[\\]</span>MULT</button>
-                            <button class="small" onpointerdown="event.preventDefault(); event.stopPropagation(); state.loops[${index}].stutterStart(); const b=this; const up=()=>{state.loops[${index}].stutterStop(); b.classList.remove('btn-active'); window.removeEventListener('pointerup',up); window.removeEventListener('pointercancel',up);}; window.addEventListener('pointerup',up); window.addEventListener('pointercancel',up); b.classList.add('btn-active');" title="Stutter: hold to retrigger short fragment, release to resume" style="flex:1; touch-action:none; user-select:none;" ${loop.audioBuffer ? '' : 'disabled'}>STUT</button>
-                            <button class="small" onclick="event.stopPropagation(); state.loops[${index}].normalize(); UIManager.updateLoop(${index}); EffectManager.setActiveTab(${index});" title="${I18n.t('TIP_NORM')}" style="flex:1;" ${loop.audioBuffer ? '' : 'disabled'}>NORM</button>
-                            <button class="small" onclick="event.stopPropagation(); ProjectManager.exportDryWet('loop', ${index}); EffectManager.setActiveTab(${index});" title="${I18n.t('TIP_SAVE')} Dry/Wet" style="flex:1;" ${loop.audioBuffer ? '' : 'disabled'}>SAVE</button>
-                            <button class="danger small" onclick="event.stopPropagation(); state.loops[${index}].clear(); EffectManager.setActiveTab(${index});" title="${I18n.t('TIP_DEL')}" style="flex:1;">DEL</button>
+                    <div class="loop-track-actions">
+                        <div class="loop-track-action-group" role="group" aria-label="Performance controls">
+                            <button type="button" class="small" onclick="event.stopPropagation(); LoopManager.toggleMute(${index}); EffectManager.setActiveTab(${index});" style="${muteStyle}" aria-pressed="${loop.muted}" title="${I18n.t('TIP_MUTE')}">${loop.muted ? 'UNM' : 'MUTE'}</button>
+                            <button type="button" class="small" onclick="event.stopPropagation(); SoloManager.toggleSolo(${index}); EffectManager.setActiveTab(${index});" style="${soloStyle}" aria-pressed="${isSolo}" title="${I18n.t('TIP_SOLO')}">SOLO</button>
+                            <button type="button" class="small" onclick="event.stopPropagation(); state.loops[${index}].retrigger(); EffectManager.setActiveTab(${index});" title="Retrigger [/] — Instantly restart on-beat" ${loop.audioBuffer ? '' : 'disabled'}>RTRG</button>
+                            <button type="button" class="small" onclick="event.stopPropagation(); state.loops[${index}].multiply(); EffectManager.setActiveTab(${index});" title="Multiply [\\] — press to capture, press again to extend. No input = double." ${loop.audioBuffer ? '' : 'disabled'}>MULT</button>
+                            <button type="button" class="small" onpointerdown="event.preventDefault(); event.stopPropagation(); state.loops[${index}].stutterStart(); const b=this; const up=()=>{state.loops[${index}].stutterStop(); b.classList.remove('btn-active'); window.removeEventListener('pointerup',up); window.removeEventListener('pointercancel',up);}; window.addEventListener('pointerup',up); window.addEventListener('pointercancel',up); b.classList.add('btn-active');" title="Stutter: hold during playback, release to resume" style="touch-action:none; user-select:none;" ${loop.audioBuffer && loop.state === 'playing' ? '' : 'disabled'}>STUT</button>
+                        </div>
+                        <div class="loop-track-action-group" role="group" aria-label="Audio editing and export">
+                            <button type="button" class="small" onclick="event.stopPropagation(); state.loops[${index}].undo(); EffectManager.setActiveTab(${index});" title="Undo Overdub" ${loop.undoStack.length > 0 ? '' : 'disabled'}>UNDO</button>
+                            <button type="button" class="small" onclick="event.stopPropagation(); state.loops[${index}].redo(); EffectManager.setActiveTab(${index});" title="Redo Overdub" ${loop.redoStack.length > 0 ? '' : 'disabled'}>REDO</button>
+                            <button type="button" class="small" onclick="event.stopPropagation(); state.loops[${index}].normalize(); UIManager.updateLoop(${index}); EffectManager.setActiveTab(${index});" title="${I18n.t('TIP_NORM')}" ${loop.audioBuffer ? '' : 'disabled'}>NORM</button>
+                            <button type="button" class="small" onclick="event.stopPropagation(); ProjectManager.exportDryWet('loop', ${index}); EffectManager.setActiveTab(${index});" title="${I18n.t('TIP_SAVE')} Dry/Wet" ${loop.audioBuffer ? '' : 'disabled'}>SAVE</button>
+                            <button type="button" class="danger small loop-track-delete" onclick="event.stopPropagation(); state.loops[${index}].clear(); EffectManager.setActiveTab(${index});" title="${I18n.t('TIP_DEL')}">DEL</button>
+                        </div>
                     </div>
 
-                    <div style="display:flex; justify-content:space-between; align-items:center; gap:5px; margin-bottom:5px; border-top:1px dashed #333; padding-top:2px;">
-                        <div style="display:flex; align-items:center; gap:5px;">
-                            <span style="flex-shrink: 0; font-weight: bold; font-size:10px; cursor:pointer; text-decoration:underline;" onclick="event.stopPropagation(); EffectManager.setActiveTab(${index}); EffectManager.scrollToEffects();" title="Go to FX Controls">FX:</span>
-                            <select style="font-size: 10px; width: 85px; height: 18px; min-height: unset; padding: 0;"
-                                    onchange="event.stopPropagation(); EffectManager.applyPresetToLoop(${index}, this.value)"
-                                    onclick="event.stopPropagation(); EffectManager.setActiveTab(${index});" aria-label="Apply FX Preset">
-                            <option value="">-- Custom --</option>
-                                ${presetOptions}
+                    <div class="loop-track-fx-toolbar">
+                        <div class="loop-track-fx-group">
+                            <button type="button" class="small" onclick="event.stopPropagation(); EffectManager.setActiveTab(${index}); EffectManager.scrollToEffects();" title="Go to FX Controls">FX</button>
+                            <select onchange="event.stopPropagation(); EffectManager.applyPresetToLoop(${index}, this.value)"
+                                    onclick="event.stopPropagation(); EffectManager.setActiveTab(${index});" title="Load Complete FX-State Preset" aria-label="Load Complete Loop FX Preset">
+                                <option value="">FULL PRESET</option>
+                                ${Object.keys(state.globalPresets).map(name => `<option value="GLOBAL:${escape(name)}">[FULL] ${escape(name)}</option>`).join('')}
                             </select>
-                            <input type="text" value="${loop.signalChain}" 
+                            <select onchange="event.stopPropagation(); EffectManager.applyPresetToLoop(${index}, this.value)"
+                                    onclick="event.stopPropagation(); EffectManager.setActiveTab(${index});" aria-label="Apply FX Preset">
+                                <option value="">CHAIN PRESET</option>${presetOptions}
+                            </select>
+                            <input type="text" value="${escape(loop.signalChain)}"
                                    onchange="event.stopPropagation(); state.loops[${index}].setSignalChain(this.value);"
-                                   onclick="event.stopPropagation(); EffectManager.setActiveTab(${index});"
-                                   style="width: 80px; font-size: 10px; font-family: monospace; background: #000; color: var(--term-green); border: 1px solid #444; height: 18px; min-height: unset; padding: 2px;" title="Manual FX Chain" aria-label="Loop FX Chain">
-                            <a href="#mod-sync" onclick="document.getElementById('fxMixTimeSel').focus()" class="mixin-link" style="font-size:9px; color:#888; text-decoration:underline; margin-left:4px;">mixin time: ${state.fxMixTime || '2s'}</a>
+                                   onclick="event.stopPropagation(); EffectManager.setActiveTab(${index});" title="Manual FX Chain" aria-label="Loop FX Chain">
+                            <a href="#mod-sync" onclick="document.getElementById('fxMixTimeSel').focus()" class="mixin-link">mixin time: ${escape(state.fxMixTime || '2s')}</a>
                         </div>
-                        <div style="display:flex; gap:5px; align-items:center; font-size:9px;">
-                            <span style="color:#888;">MERGE &#8592;</span>
-                            <select id="merge-src-${index}" onclick="event.stopPropagation()" style="width:40px; font-size:9px; height:16px; min-height:unset; padding:0;" aria-label="Merge Source">
+                        <div class="loop-track-fx-group">
+                            <label for="merge-src-${index}">MERGE &#8592;</label>
+                            <select id="merge-src-${index}" onclick="event.stopPropagation()" aria-label="Merge Source">
                                 <option value="">-</option>${mergeOptions}
                             </select>
-                            <button class="small btn-purple" onclick="event.stopPropagation(); LoopManager.mergeLoops(${index}, document.getElementById('merge-src-${index}').value)" style="padding:0 6px; font-size:9px; height:16px; min-height:unset; line-height:1;">GO</button>
+                            <button type="button" class="small btn-purple" onclick="event.stopPropagation(); LoopManager.mergeLoops(${index}, document.getElementById('merge-src-${index}').value)" title="Merge selected source into this loop">GO</button>
                         </div>
                     </div>
 
@@ -3903,12 +3895,11 @@ class UIManager {
             else if (speed < 1.5) finalSpeed = 1.0;
             else finalSpeed = 2.0;
             
-            // Update slider visual to snap
-            const el = document.querySelector(`#loop-${loopId} input[oninput*="setLoopSpeed"]`);
-            if(el) el.value = finalSpeed;
         }
-        
+
         loop.playbackRate = finalSpeed;
+        const slider = document.getElementById(`loop-speed-slider-${loopId}`);
+        if (slider && (state.syncEnabled || document.activeElement !== slider)) slider.value = finalSpeed;
 
         // Update live audio graph if playing
         if (loop.graph && loop.graph.nodes.source) {
@@ -3924,7 +3915,7 @@ class UIManager {
         
         const loopDiv = document.getElementById(`loop-${loopId}`);
         if(loopDiv) {
-            const resetBtn = loopDiv.querySelector('button[title*="Loop Playback Speed"]');
+            const resetBtn = loopDiv.querySelector('button[onclick*="resetLoopSpeed"]');
             if (resetBtn) {
                 resetBtn.disabled = (loop.playbackRate === 1.0);
             }
@@ -3933,6 +3924,8 @@ class UIManager {
 
     static resetLoopSpeed(loopId) {
         this.setLoopSpeed(loopId, 1.0);
+        const slider = document.getElementById(`loop-speed-slider-${loopId}`);
+        if (slider) slider.value = 1;
     }
 
     /**
@@ -4170,7 +4163,16 @@ class UIManager {
             
             const loopDiv = loop._ui.div;
             if (!loopDiv) return;
-            
+
+            if (!loop._ui.action || !loop._ui.action.isConnected) loop._ui.action = document.getElementById(`loop-action-${index}`);
+            const actionButton = loop._ui.action;
+            const action = this.getLoopAction(loop);
+            if (actionButton && actionButton.textContent !== action) {
+                actionButton.textContent = action;
+                actionButton.setAttribute('aria-label', `Loop ${index + 1}: ${action}`);
+                actionButton.disabled = action === 'SAVING';
+            }
+
             // Lazy load peaks if missing
             if (!loop.wavePeaks && loop.audioBuffer) {
                 loop.wavePeaks = UIManager.generateWaveformPeaks(loop.audioBuffer);
@@ -4271,32 +4273,18 @@ class UIManager {
                 const newSymbol = stateSymbol;
                 const newText = loop.state.toUpperCase();
 
-                // Determine color based on state (can't use class, color is on parent)
-                let stateStyle = 'color:#555;'; // Default for empty
-                if (loop.state === 'recording') stateStyle = 'color:#f00;';
-                else if (loop.state === 'armed') stateStyle = 'color:#ff0;';
-                else if (loop.state === 'playing') stateStyle = 'color:#0f0;';
-                else if (loop.state === 'stopped') stateStyle = 'color:#0ff;';
-                else if (loop.state === 'overdubbing') stateStyle = 'color:#f0f;';
-                else if (loop.state === 'substituting') stateStyle = 'color:#00cccc;';
-                else if (loop.state === 'multiplying') stateStyle = 'color:#ffaa00;';
-                else if (loop.state === 'queued') stateStyle = 'color:#0088aa;';
-                else if (loop.state === 'stopping') stateStyle = 'color:#ffaa00;';
-                
                 const mutedText = loop.muted ? ' [MUTED]' : '';
                 const effectiveDur = loop.duration / loop.playbackRate;
-                const durationText = loop.duration > 0 ? ` (${effectiveDur.toFixed(1)}s)` : '';
+                const durationText = loop.audioBuffer && loop.duration > 0 ? ` (${effectiveDur.toFixed(1)}s)` : '';
                 const newExtra = `${mutedText}${durationText}`;
 
                 // Check cached value to prevent redundant DOM read thrashing
                 if (symbolSpan._lastVal !== newSymbol) {
                     symbolSpan.textContent = newSymbol;
-                    symbolSpan.style.cssText = stateStyle + ' font-weight:bold;';
                     symbolSpan._lastVal = newSymbol;
                 }
                 if (textSpan._lastVal !== newText) {
                     textSpan.textContent = newText;
-                    textSpan.style.cssText = stateStyle;
                     textSpan._lastVal = newText;
                 }
                 if (extraSpan._lastVal !== newExtra) {
@@ -4331,22 +4319,28 @@ class UIManager {
         setDisabled(".retrigger()", !hasBuffer);
         setDisabled(".multiply()", !hasBuffer);
         setDisabled(".normalize()", !hasBuffer);
-        setDisabled("exportLoop", !hasBuffer);
+        setDisabled("exportDryWet", !hasBuffer);
+        setDisabled("resetLoopSpeed", loop.playbackRate === 1);
+        const stutterButton = loopDiv.querySelector('button[onpointerdown*=".stutterStart()"]');
+        if (stutterButton) stutterButton.disabled = !hasBuffer || loop.state !== 'playing';
 
         // 3. Mute & Solo Styles
         const muteBtn = loopDiv.querySelector(`button[onclick*="toggleMute"]`);
         if (muteBtn) {
             muteBtn.textContent = loop.muted ? 'UNM' : 'MUTE';
-            muteBtn.style.cssText = loop.muted 
-                ? 'flex:1; background:#f00; color:#000; border-color:#f00;' 
-                : 'flex:1; border-color:#444; color:#666;';
+            muteBtn.setAttribute('aria-pressed', String(loop.muted));
+            muteBtn.style.cssText = loop.muted
+                ? 'background:#f00; color:#000; border-color:#f00;'
+                : '';
         }
-        
+
         const soloBtn = loopDiv.querySelector(`button[onclick*="toggleSolo"]`);
         if (soloBtn) {
-            soloBtn.style.cssText = (state.soloState.active && state.soloState.loopId === loopId)
-                ? 'flex:1; background:#ff0; color:#000; border-color:#ff0;'
-                : 'flex:1; border-color:#444; color:#666;';
+            const isSolo = state.soloState.active && state.soloState.loopId === loopId;
+            soloBtn.setAttribute('aria-pressed', String(isSolo));
+            soloBtn.style.cssText = isSolo
+                ? 'background:#ff0; color:#000; border-color:#ff0;'
+                : '';
         }
 
         // 4. Update Inputs/Sliders safely
@@ -4361,6 +4355,17 @@ class UIManager {
         safeUpdateVal(`input[aria-label="Loop Playback Speed"]`, loop.playbackRate);
         safeUpdateVal(`input[aria-label="Loop Overdub Feedback"]`, loop.feedback);
         safeUpdateVal(`input[aria-label="Loop FX Chain"]`, loop.signalChain);
+        const chainPreset = Object.keys(state.fxPresets).find(name => state.fxPresets[name] === loop.signalChain) || '';
+        safeUpdateVal(`select[aria-label="Apply FX Preset"]`, chainPreset);
+        const displays = {
+            vol: `${loop.volume <= 0 ? '-inf' : (20 * Math.log10(loop.volume)).toFixed(1)}dB`,
+            pan: String(loop.pan), delay: `${Math.floor(loop.startDelay * loop.duration * 1000)}ms`,
+            speed: `${loop.playbackRate.toFixed(2)}x`, fbk: `${Math.round(loop.feedback * 100)}%`
+        };
+        for (const [key, value] of Object.entries(displays)) {
+            const display = document.getElementById(`loop-${key}-display-${loopId}`);
+            if (display) display.textContent = value;
+        }
 
         // 5. Update FX Toggles
         const fxContainer = document.getElementById(`loop-fx-container-${loopId}`);

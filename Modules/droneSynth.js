@@ -369,6 +369,20 @@ class DroneSynth {
                     <button id="droneMidiBtn_${id}" class="std-btn ${midiBtnClass} small" style="width: 35px; height: 20px; margin-left: 5px;" onclick="DroneSynth.toggleMidi(${id})" data-i18n-title="TIP_MIDI_LEARN">MIDI</button>
                     <button class="std-btn ${synth.isRecording ? 'btn-red' : ''} small" style="width: 35px; height: 20px;" onclick="DroneSynth.toggleRecord(${id})" data-i18n-title="TIP_REC_DRONE">REC</button>
                     <button id="droneSoloBtn_${id}" class="std-btn ${DroneSynth.soloInstanceId === id ? 'btn-yellow' : ''} small" style="width: 45px; height: 20px; padding:0; line-height:1;" onclick="DroneSynth.toggleSolo(${id})" data-i18n-title="TIP_SOLO">SOLO</button>
+                    <label class="drone-header-rate" for="droneRate_${id}">RATE:
+                        <select id="droneRate_${id}" onchange="DroneSynth.setParam(${id}, 'rate', this.value)" aria-label="Drone Rate">
+                            <option value="1" ${synth.params.rate==1?'selected':''}>1/1</option>
+                            <option value="2" ${synth.params.rate==2?'selected':''}>1/2</option>
+                            <option value="3" ${synth.params.rate==3?'selected':''}>1/3 (T)</option>
+                            <option value="4" ${synth.params.rate==4?'selected':''}>1/4</option>
+                            <option value="6" ${synth.params.rate==6?'selected':''}>1/6 (T)</option>
+                            <option value="8" ${synth.params.rate==8?'selected':''}>1/8</option>
+                            <option value="12" ${synth.params.rate==12?'selected':''}>1/12 (T)</option>
+                            <option value="16" ${synth.params.rate==16?'selected':''}>1/16</option>
+                            <option value="24" ${synth.params.rate==24?'selected':''}>1/24 (T)</option>
+                            <option value="32" ${synth.params.rate==32?'selected':''}>1/32</option>
+                        </select>
+                    </label>
                 </div>
                 <div style="display:flex; gap:4px; align-items:center; flex-wrap:wrap;">
                     <span style="font-size:9px; color:#888; font-weight:bold;">LEN:</span>
@@ -390,8 +404,8 @@ class DroneSynth {
         
         <div class="drone-grid">
             <div class="knob-group">
-                <h5 style="display:flex; justify-content:space-between; align-items:center; height:24px;">OSC MIX
-                    <span style="font-size:9px;">
+                <h5>OSC MIX
+                    <span class="drone-waveforms">
                     <select style="height:24px; font-size:10px; width:55px; background:#000; color:#0f0; border:1px solid #333;" onchange="DroneSynth.setParam(${id}, 'osc1Type', this.value)" title="Osc 1" aria-label="Oscillator 1 Waveform">
                         <option value="sine" ${synth.params.osc1Type=='sine'?'selected':''}>SIN</option>
                         <option value="triangle" ${synth.params.osc1Type=='triangle'?'selected':''}>TRI</option>
@@ -420,7 +434,7 @@ class DroneSynth {
             </div>
 
             <div class="knob-group">
-                <h5 style="display:flex; justify-content:space-between; align-items:center; height:24px;">VCF <select style="height:24px; font-size:10px; width:65px; background:#000; color:#0f0; border:1px solid #333;" onchange="DroneSynth.setParam(${id}, 'filterType', this.value)" aria-label="Filter Type">
+                <h5>VCF <select style="height:24px; font-size:10px; width:65px; background:#000; color:#0f0; border:1px solid #333;" onchange="DroneSynth.setParam(${id}, 'filterType', this.value)" aria-label="Filter Type">
                     <option value="lowpass" ${(synth.params.filterType||'lowpass')=='lowpass'?'selected':''}>LP</option>
                     <option value="highpass" ${(synth.params.filterType||'lowpass')=='highpass'?'selected':''}>HP</option>
                     <option value="bandpass" ${synth.params.filterType=='bandpass'?'selected':''}>BP</option>
@@ -434,7 +448,7 @@ class DroneSynth {
             </div>
 
              <div class="knob-group">
-                <h5 style="display:flex; justify-content:space-between; align-items:center; height:24px;">LFO / MOD</h5>
+                <h5>LFO / MOD</h5>
                 <div class="control-group"><label for="d_lfoRate_input_${id}" data-i18n-title="TIP_DRONE_LFO_R">LFO Rate <span id="d_lfoRate_val_${id}">${synth.params.lfoRate}</span></label><input type="range" id="d_lfoRate_input_${id}" min="0.1" max="20" step="0.1" value="${synth.params.lfoRate}" oninput="DroneSynth.setParam(${id}, 'lfoRate', this.value)" aria-label="LFO Rate"></div>
                 <div class="control-group"><label for="d_lfoDepth_input_${id}" data-i18n-title="TIP_DRONE_LFO_D">LFO Dpth <span id="d_lfoDepth_val_${id}">${synth.params.lfoDepth}</span></label><input type="range" id="d_lfoDepth_input_${id}" min="-2000" max="2000" step="10" value="${synth.params.lfoDepth}" oninput="DroneSynth.setParam(${id}, 'lfoDepth', this.value)" aria-label="LFO Depth"></div>
                 <div class="control-group"><label for="d_vibRate_input_${id}">Vib Rate <span id="d_vibratoRate_val_${id}">${synth.params.vibratoRate || 5}</span></label><input type="range" id="d_vibRate_input_${id}" min="0.1" max="15" step="0.1" value="${synth.params.vibratoRate || 5}" oninput="DroneSynth.setParam(${id}, 'vibratoRate', this.value)" aria-label="Vibrato Rate"></div>
@@ -443,7 +457,7 @@ class DroneSynth {
             </div>
 
             <div class="knob-group">
-                <h5 style="display:flex; justify-content:space-between; align-items:center; height:24px;">ADSR <select style="height:24px; font-size:10px; width:60px; background:#000; color:#0f0; border:1px solid #333;" onchange="DroneSynth.setParam(${id}, 'noiseType', this.value)" aria-label="Noise Type">
+                <h5>ADSR <select style="height:24px; font-size:10px; width:60px; background:#000; color:#0f0; border:1px solid #333;" onchange="DroneSynth.setParam(${id}, 'noiseType', this.value)" aria-label="Noise Type">
                     <option value="white" ${synth.params.noiseType=='white'?'selected':''}>WHT</option>
                     <option value="pink" ${synth.params.noiseType=='pink'?'selected':''}>PNK</option>
                 </select></h5>
@@ -452,18 +466,6 @@ class DroneSynth {
                 <div class="control-group"><label for="d_sustain_input_${id}">Sustain <span id="d_sustain_val_${id}">${synth.params.sustain ?? 0.8}</span></label><input type="range" id="d_sustain_input_${id}" min="0.0" max="1.0" step="0.01" value="${synth.params.sustain ?? 0.8}" oninput="DroneSynth.setParam(${id}, 'sustain', this.value)" aria-label="Envelope Sustain"></div>
                 <div class="control-group"><label for="d_release_input_${id}" data-i18n-title="TIP_DRONE_REL">Release <span id="d_release_val_${id}">${synth.params.release ?? 0.5}</span></label><input type="range" id="d_release_input_${id}" min="0.005" max="5.0" step="0.01" value="${synth.params.release ?? 0.5}" oninput="DroneSynth.setParam(${id}, 'release', this.value)" aria-label="Envelope Release"></div>
             </div>
-                <div class="control-group"><label>Rate (1/n)</label><select style="width:100%; height:20px; font-size:10px;" onchange="DroneSynth.setParam(${id}, 'rate', this.value)" aria-label="Drone Rate">
-                    <option value="1" ${synth.params.rate==1?'selected':''}>1/1</option>
-                    <option value="2" ${synth.params.rate==2?'selected':''}>1/2</option>
-                    <option value="3" ${synth.params.rate==3?'selected':''}>1/3 (T)</option>
-                    <option value="4" ${synth.params.rate==4?'selected':''}>1/4</option>
-                    <option value="6" ${synth.params.rate==6?'selected':''}>1/6 (T)</option>
-                    <option value="8" ${synth.params.rate==8?'selected':''}>1/8</option>
-                    <option value="12" ${synth.params.rate==12?'selected':''}>1/12 (T)</option>
-                    <option value="16" ${synth.params.rate==16?'selected':''}>1/16</option>
-                    <option value="24" ${synth.params.rate==24?'selected':''}>1/24 (T)</option>
-                    <option value="32" ${synth.params.rate==32?'selected':''}>1/32</option>
-                </select></div>
             </div>
         </div>
         <div class="drone-seq-row">${stepsHtml}</div>

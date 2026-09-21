@@ -561,7 +561,7 @@ input[type=range]::-moz-range-thumb {
 
     /* ===== LOOP TRACKS ===== */
     #part2 { margin-bottom: 20px; }
-    #loopContainer { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    #loopContainer { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
     
     .loop { 
         --state-color: #0f0; 
@@ -593,6 +593,218 @@ input[type=range]::-moz-range-thumb {
     .loop.playing { --state-color: #0f0; --state-bg: #003300; }
     .loop.armed { --state-color: #ff0; --state-bg: #333300; }
     .loop.overdubbing { --state-color: #f0f; --state-bg: #330033; }
+
+    #loopContainer .loop.substituting { --state-color: #00cccc; --state-bg: #002222; }
+    #loopContainer .loop.multiplying { --state-color: #ffaa00; --state-bg: #332200; }
+    #loopContainer .loop.queued { --state-color: #0088aa; --state-bg: #001b22; }
+    #loopContainer .loop.stopping { --state-color: #ffaa00; --state-bg: #332200; }
+    #loopContainer .loop { container: loop-track / inline-size; --loop-control-color: var(--state-color); }
+    #loopContainer .loop.empty { --loop-control-color: #bbb; }
+    #loopContainer > *,
+    #loopContainer .loop,
+    #loopContainer .loop-main-content,
+    #loopContainer .loop-main-content :is(div, input, select) { min-width: 0; }
+    #loopContainer .loop-main-content { display: flex; flex: 1; flex-direction: column; }
+    #loopContainer .loop-main-content,
+    #loopContainer :is(button, button *, label, span) { text-shadow: none; }
+
+    #loopContainer .loop-track-header {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 8px;
+        padding: 8px;
+    }
+    #loopContainer .loop-track-identity {
+        display: grid;
+        grid-template-columns: auto auto minmax(0, 1fr);
+        align-items: center;
+        gap: 6px;
+        color: var(--loop-control-color);
+    }
+    #loopContainer .loop-track-identity input[aria-label="Loop Name"] {
+        width: 100%;
+        font-size: 12px;
+        border-color: var(--state-color);
+    }
+    #loopContainer .loop-track-summary {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px 10px;
+        color: #bbb;
+        font-size: 10px;
+        line-height: 1.4;
+    }
+    #loopContainer .loop-track-state {
+        display: inline-flex;
+        flex-wrap: wrap;
+        gap: 5px;
+        color: var(--loop-control-color);
+        font-weight: bold;
+    }
+    #loopContainer .loop-track-state span { color: inherit; }
+    #loopContainer [id^="loop-extra-info-"] { white-space: normal; overflow-wrap: anywhere; }
+    #loopContainer .loop-track-summary canvas {
+        display: block;
+        flex: 0 0 180px;
+        width: 180px;
+        height: 20px;
+        box-sizing: content-box;
+        border: 1px solid var(--state-color);
+        border-radius: 2px;
+        background: rgba(0, 0, 0, 0.3);
+        cursor: pointer;
+    }
+    #loopContainer .loop-track-controls { padding: 8px; gap: 10px; color: #bbb; }
+    #loopContainer .loop-track-parameters {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px 12px;
+    }
+    #loopContainer .loop-track-parameter {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+    #loopContainer .loop-track-parameter-start { grid-column: 1 / -1; }
+    #loopContainer .loop-track-parameter-heading {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 4px 6px;
+        min-height: 24px;
+        font-size: 10px;
+        line-height: 1.4;
+    }
+    #loopContainer .loop-track-parameter-heading label { font-size: 10px; color: #bbb; }
+    #loopContainer .loop-track-parameter-heading > span {
+        color: var(--loop-control-color);
+        font-variant-numeric: tabular-nums;
+        overflow-wrap: anywhere;
+    }
+    #loopContainer .loop-track-mini-actions,
+    #loopContainer .loop-track-actions,
+    #loopContainer .loop-track-action-group,
+    #loopContainer .loop-track-fx-toolbar,
+    #loopContainer .loop-track-fx-group {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 5px;
+    }
+    #loopContainer .loop-track-actions { justify-content: space-between; gap: 8px 12px; }
+    #loopContainer .loop-track-fx-toolbar {
+        gap: 8px 12px;
+        border-top: 1px dashed #444;
+        padding-top: 8px;
+    }
+    #loopContainer .loop-track-fx-group:first-child { flex: 1 1 280px; }
+    #loopContainer .loop-track-fx-group select { flex: 1 1 90px; width: 100px; }
+    #loopContainer .loop-track-fx-group input[type="text"] { flex: 1 1 110px; width: 120px; }
+    #loopContainer .loop-track-fx-group:last-child select { flex: 0 1 56px; width: 56px; }
+    #loopContainer .loop-track-fx-group :is(label, a) { font-size: 10px; color: #bbb; }
+    #loopContainer .mixin-link { padding: 5px 0; }
+    #loopContainer input[type="range"] {
+        width: 100%;
+        margin: 4px 0;
+        margin-top: 4px !important;
+        padding: 7px 0;
+        box-sizing: border-box;
+        touch-action: none;
+    }
+    #loopContainer :is(input[type="text"], input[type="number"], select) {
+        max-width: 100%;
+        min-height: 28px;
+        padding: 4px 5px;
+        color: var(--loop-control-color);
+        border-color: color-mix(in srgb, var(--state-color) 50%, #444);
+    }
+    #loopContainer input::placeholder { color: #aaa; opacity: 1; }
+    #loopContainer button {
+        --loop-button-color: #bbb;
+        width: auto;
+        height: auto;
+        min-height: 28px;
+        margin: 0;
+        padding: 4px 7px;
+        color: var(--loop-button-color);
+        border-color: var(--loop-button-color);
+        font-size: 10px;
+        letter-spacing: 0.4px;
+        line-height: 1.2;
+    }
+    #loopContainer button * { color: inherit; }
+    #loopContainer .btn-red,
+    #loopContainer .danger,
+    #loopContainer .loop-track-delete { --loop-button-color: #f00; }
+    #loopContainer .btn-orange { --loop-button-color: var(--col-1); }
+    #loopContainer .btn-yellow { --loop-button-color: var(--col-2); }
+    #loopContainer .btn-green { --loop-button-color: var(--btn-green-border); }
+    #loopContainer .btn-blue { --loop-button-color: var(--col-4); }
+    #loopContainer .btn-purple { --loop-button-color: var(--col-5); }
+    #loopContainer .btn-cyan { --loop-button-color: var(--neon-cyan); }
+    #loopContainer .loop-track-action {
+        --loop-button-color: var(--loop-control-color);
+        min-width: 80px;
+        justify-self: start;
+        white-space: nowrap;
+    }
+    #loopContainer .loop-track-mini-actions button { min-width: 24px; min-height: 24px; padding: 3px 5px; }
+    #loopContainer .loop-track-action-group:first-child > button:first-child { --loop-button-color: #f00; }
+    #loopContainer .loop-track-action-group:first-child > button:nth-child(2) { --loop-button-color: #ff0; }
+    #loopContainer button:hover:not(:disabled) {
+        background: color-mix(in srgb, var(--loop-button-color) 16%, #000);
+        color: var(--loop-button-color);
+        border-color: var(--loop-button-color);
+    }
+    #loopContainer button[aria-pressed="true"]:not(:disabled),
+    #loopContainer button:active:not(:disabled) {
+        background: var(--loop-button-color);
+        color: #000;
+        border-color: var(--loop-button-color);
+    }
+    #loopContainer :is(button, input, select):disabled {
+        color: #888;
+        border-color: #555;
+        background: #111;
+        opacity: 0.55;
+        box-shadow: none;
+        cursor: not-allowed;
+    }
+    #loopContainer :is(button, input, select, a, [tabindex]):focus-visible {
+        outline: 2px solid #fff;
+        outline-offset: 2px;
+    }
+    #loopContainer .loop.empty input[type="range"]::-webkit-slider-thumb { background: #bbb; box-shadow: none; }
+    #loopContainer .loop.empty input[type="range"]::-moz-range-thumb { background: #bbb; box-shadow: none; }
+    #loopContainer [id^="loop-fx-container-"] { font-size: 10px; line-height: 1.5; }
+    #loopContainer [data-tip]::after { display: none; }
+    #loopContainer [data-tip]:is(:hover, :focus, :focus-within)::after { display: block; }
+    #loopContainer .loop-track-parameter:last-child [data-tip]::after,
+    #loopContainer .loop-track-fx-group:last-child [data-tip]::after,
+    #loopContainer .loop-track-delete::after { left: auto; right: 0; transform: none; }
+
+    @media (max-width: 1100px) {
+        #loopContainer { grid-template-columns: minmax(0, 1fr); }
+    }
+    @container loop-track (min-width: 400px) {
+        #loopContainer .loop-track-parameters { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        #loopContainer .loop-track-parameter-start { grid-column: auto; }
+    }
+    @container loop-track (min-width: 520px) {
+        #loopContainer .loop-track-parameters { grid-template-columns: repeat(2, minmax(0, 1fr)) minmax(0, 1.5fr) repeat(2, minmax(0, 1fr)); }
+    }
+    @container loop-track (max-width: 360px) {
+        #loopContainer .loop-track-identity { grid-template-columns: auto minmax(0, 1fr); }
+        #loopContainer .loop-track-identity input[aria-label="Loop Name"] { grid-column: 1 / -1; }
+    }
+    @media (pointer: coarse) {
+        #loopContainer button,
+        #loopContainer .loop-track-mini-actions button,
+        #loopContainer :is(input[type="text"], input[type="number"], select) { min-height: 36px; }
+        #loopContainer input[type="range"] { padding-block: 12px; }
+    }
 
     /* ===== EFFECTS MODULES ===== */
 	/* Container for the effect modules */
@@ -797,7 +1009,36 @@ label, .val-display, span {
     }
 
     /* ===== DRONE SYNTH STYLES ===== */
-    .drone-grid { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 5px; margin-bottom: 4px; }
+    .drone-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; margin-bottom: 4px; }
+    .drone-grid .knob-group { min-width: 0; }
+    .drone-grid .knob-group h5 {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        align-items: center;
+        gap: 4px 8px;
+        min-height: 44px;
+        padding: 4px 0;
+        box-sizing: border-box;
+    }
+    .drone-waveforms {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 4px;
+        min-width: 0;
+        font-size: 9px;
+    }
+    .drone-waveforms select { flex-shrink: 0; }
+    .drone-header-rate {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 9px;
+        font-weight: bold;
+        color: #888;
+    }
+    .drone-header-rate select { width: 86px; font-size: 10px; }
     .drone-seq-row { 
         display: grid; 
         grid-template-columns: repeat(auto-fit, minmax(25px, 1fr));
