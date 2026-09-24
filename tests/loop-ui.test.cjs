@@ -27,7 +27,7 @@ function decodeHTML(value) {
 // Match attributes literally so onclick selectors cannot find pointer-only buttons.
 function readControls(html) {
     const controls = [];
-    const tags = /<(button|input|span|select|option|canvas|pre)\b((?:"[^"]*"|'[^']*'|[^'">])*)>/g;
+    const tags = /<(button|input|span|select|option|canvas|pre|div)\b((?:"[^"]*"|'[^']*'|[^'">])*)>/g;
     for (const match of html.matchAll(tags)) {
         const rawAttributes = {};
         for (const attribute of match[2].matchAll(/([\w:-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s=<>]+)))?/g)) {
@@ -96,7 +96,7 @@ function createHarness() {
     function mount(index = 0) {
         const loop = context.state.loops[index];
         const controls = readControls(ui.generateLoopHTML(loop, index));
-        const card = { className: `loop ${loop.state}`, querySelector: selector => controls.find(control => matches(control, selector)) || null };
+        const card = { className: `loop ${loop.state}`, dataset: {}, querySelector: selector => controls.find(control => matches(control, selector)) || null };
         elements.set(`loop-${index}`, card);
         controls.forEach(control => { if (control.id) elements.set(control.id, control); });
         return card;
@@ -165,6 +165,60 @@ test('generated action button uses the track index and stops click propagation',
     context.LoopManager.handleAction = (index, gesture) => events.push([index, gesture]);
     vm.runInContext(action.getAttribute('onclick'), context);
     assert.deepEqual(events, ['stop', [1, 'short']]);
+});
+
+test('loop header places the paired waveform and meter immediately after the name', () => {
+    const { ui, loop } = createHarness();
+    const html = ui.generateLoopHTML(loop, 0);
+    assert.match(html, /aria-label="Loop Name">\s*<div class="track-signal-pair loop-track-signal">\s*<canvas id="loop-wave-0"[^>]*><\/canvas>\s*<div id="loop-ascii-vu-0"/);
+    assert.ok(html.indexOf('loop-ascii-vu-0') < html.indexOf('class="loop-track-summary"'));
+});
+
+test('selected loop frame follows FX selection and survives transport class updates', () => {
+    const { context, ui, loop, mount, elements } = createHarness();
+    const first = mount(0), second = mount(1);
+    elements.set('fx-tabs-container', { innerHTML: '', appendChild() {} });
+    context.DroneSynth = { instances: [] };
+    context.EffectManager = { activeTab: 0 };
+    ui.renderEffectsTabs();
+    assert.equal(first.dataset.fxSelected, 'true');
+    assert.equal(second.dataset.fxSelected, 'false');
+    loop.state = 'playing';
+    ui.updateLoop(0);
+    ui.updateLoopDisplays(10);
+    assert.equal(first.dataset.fxSelected, 'true');
+    assert.equal(first.className, 'loop playing');
+    context.EffectManager.activeTab = 1;
+    ui.renderEffectsTabs();
+    assert.equal(first.dataset.fxSelected, 'false');
+    assert.equal(second.dataset.fxSelected, 'true');
+    context.EffectManager.activeTab = 'input-bus';
+    ui.renderEffectsTabs();
+    assert.equal(second.dataset.fxSelected, 'false');
+});
+
+test('loop waveform redraws to its measured size without setting a fixed CSS width', () => {
+    const { context, ui, loop, mount, elements } = createHarness();
+    mount();
+    const cvs = elements.get('loop-wave-0');
+    const rects = [];
+    cvs.offsetParent = {};
+    cvs.clientWidth = 90;
+    cvs.clientHeight = 26;
+    cvs.getContext = () => ({ resetTransform() {}, scale() {}, clearRect() {}, fillRect(...args) { rects.push(args); } });
+    context.devicePixelRatio = 2;
+    loop.wavePeaks = Array(180).fill(0.5);
+    loop.wavePeaks[178] = 1;
+    ui.updateLoopDisplays(10);
+    assert.equal(cvs.width, 180);
+    assert.equal(cvs.height, 52);
+    assert.equal(rects.at(-1)[3], 26, 'end of the full waveform is retained at narrow widths');
+    rects.length = 0;
+    cvs.clientWidth = 240;
+    ui.updateLoopDisplays(10);
+    assert.equal(cvs.width, 480);
+    assert.equal(rects.length, 240, 'resize redraws even with a stationary playhead');
+    assert.equal(cvs.style.width, undefined);
 });
 
 test('generated sliders retain their accessible labels, IDs and numeric displays', () => {

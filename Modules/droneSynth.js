@@ -50,6 +50,8 @@ class SynthInstance {
         this.stopTime = 0;
         this.stepIndex = 0;
         this.lastVisualIndex = -1;
+        this.visualSteps = [];
+        this.meter = {};
         this.muted = false;
         this.lastNote = 36; // C2 default
         this.synthPreset = '';
@@ -335,22 +337,21 @@ class DroneSynth {
 
         return `
         <div style="display: flex; flex-direction: column; gap: 4px; margin-bottom: 5px;">
-            <div class="loop-header" 
+            <div class="loop-header drone-track-header"
                  onclick="DroneSynth.togglePlay(${id})"
-                 style="display:flex; justify-content:space-between; align-items:center; padding: 8px; min-height: 44px; background: rgba(0,20,20,0.6); border-bottom: 1px dashed ${stateColor}; cursor: pointer; transition: background 0.1s;">
-                <div style="display:flex; align-items:center; gap: 8px; overflow: hidden; flex: 1;">
-                    <strong style="color:${stateColor}; font-size:12px;">[${mappedKey}]</strong>
-                    <input type="text" value="${synth.name || ''}" placeholder="Drone ${mappedKey}" 
-                           oninput="DroneSynth.instances[${id}].name = this.value; if(window.UIManager && UIManager.updateLiveDrone) UIManager.updateLiveDrone(${id});"
-                           onkeydown="if(event.key==='Enter') this.blur(); event.stopPropagation();"
-                           onclick="event.stopPropagation(); EffectManager.setActiveTab('drone-${id}')"
-                           style="background: #000; border: 1px solid ${stateColor}; color: ${stateColor}; font-size: 11px; font-family: 'Courier New', monospace; width: 80px; padding: 2px;" aria-label="Drone Name" data-i18n-title="TIP_PROJECT_NAME">
-            <span style="color: ${stateColor}; font-size: 10px;">${synth.state.toUpperCase()}</span>
-        </div>
-        <div style="display:flex; gap: 5px; align-items:center;">
-            <canvas id="drone-viz-${id}" width="100" height="20" style="background:#000; border:1px solid ${stateColor}; border-radius:2px;"></canvas>
-        </div>
-    </div>
+                 style="background: rgba(0,20,20,0.6); border-bottom: 1px dashed ${stateColor}; cursor: pointer;">
+                <strong style="color:${stateColor}; font-size:12px;">[${mappedKey}]</strong>
+                <input type="text" class="track-name" value="${String(synth.name || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}" placeholder="Drone ${mappedKey}"
+                       oninput="DroneSynth.instances[${id}].name = this.value; if(window.UIManager && UIManager.updateLiveDrone) UIManager.updateLiveDrone(${id});"
+                       onkeydown="if(event.key==='Enter') this.blur(); event.stopPropagation();"
+                       onclick="event.stopPropagation(); EffectManager.setActiveTab('drone-${id}')"
+                       style="border-color:${stateColor}; color:${stateColor};" aria-label="Drone Name" data-i18n-title="TIP_PROJECT_NAME">
+                <div class="track-signal-pair drone-signal">
+                    <canvas id="drone-viz-${id}" width="180" height="26" style="border-color:${stateColor};" aria-label="Drone ${mappedKey} waveform"></canvas>
+                    <div id="drone-vu-${id}" class="ascii-vu-meter" aria-label="Drone ${mappedKey} output level"></div>
+                </div>
+                <span class="drone-track-state" style="color:${stateColor};">${synth.state.toUpperCase()}</span>
+            </div>
             
             <div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 5px; background: #000500; padding: 4px 8px; border-bottom: 1px solid #222;">
                 <div style="display:flex; gap:4px; align-items:center; flex-wrap:wrap;">
@@ -1031,8 +1032,8 @@ class DroneSynth {
         if (!synth) return;
 
         const now = AudioEngine.currentTime;
-        const targetTime = scheduledTime > now
-            ? scheduledTime
+        const targetTime = scheduledTime > 0
+            ? Math.max(now, scheduledTime)
             : (state.syncEnabled ? SyncManager.getNextGridTime() : now);
 
         if (synth.state === 'playing' || synth.state === 'armed') {
@@ -1079,7 +1080,7 @@ class DroneSynth {
             header.style.borderBottom = `1px dashed ${stateColor}`;
             const label = header.querySelector('strong');
             if (label) label.style.color = stateColor;
-            const text = header.querySelector('span:last-child');
+            const text = header.querySelector('.drone-track-state');
             if (text) {
                 text.style.color = stateColor;
                 text.textContent = synth.state.toUpperCase();
@@ -1122,7 +1123,9 @@ class DroneSynth {
         synth.startTime = targetTime;
         synth.stopTime = 0;
         synth.nextStepTime = targetTime;
-        if (state.syncEnabled && state.masterStartTime > 0) {
+        synth.visualSteps.length = 0;
+        synth.lastVisualIndex = -1;
+        if (state.syncEnabled && state.masterStartTime !== 0) {
             const rate = (Number.isFinite(synth.params.rate) && synth.params.rate > 0) ? synth.params.rate : 8;
             const stepDur = (60 / Math.max(10, state.bpm || 120)) * (4 / rate);
             const stepsElapsed = Math.round((targetTime - state.masterStartTime) / stepDur);
@@ -1142,6 +1145,7 @@ class DroneSynth {
                 this.updateDroneUI(id);
             }, Math.max(0, targetTime - now) * 1000);
         }
+        this.scheduleSynth(synth);
         this.updateDroneUI(id);
     }
 
@@ -1177,6 +1181,8 @@ class DroneSynth {
         synth.state = 'stopped';
         synth.nextStepTime = 0;
         synth.stopTime = 0;
+        synth.visualSteps.length = 0;
+        synth.lastVisualIndex = -1;
         Object.keys(synth.voices).forEach(voiceId => this.noteOff(id, voiceId, true));
         if (synth.isRecording) this.toggleRecord(id);
         this.updateDroneUI(id);
@@ -2015,7 +2021,9 @@ class DroneSynth {
 
     static scheduleSynth(synth) {
         const ctx = state.audioContext;
+        if (!ctx || ctx.state !== 'running') return;
         const now = ctx.currentTime;
+        const earliest = Math.max(now, synth.startTime);
         const lookahead = 0.15;
         const rate = (Number.isFinite(synth.params.rate) && synth.params.rate > 0) ? synth.params.rate : 8;
         const secPerBeat = 60 / Math.max(10, state.bpm || 120);
@@ -2025,20 +2033,12 @@ class DroneSynth {
 
         if (synth.stopTime > 0 && now >= synth.stopTime) return;
         if (!synth.nextStepTime || synth.nextStepTime < now - 0.05) {
-            if (state.syncEnabled && state.masterStartTime > 0) {
-                if (now < state.masterStartTime) {
-                    synth.nextStepTime = state.masterStartTime;
-                    synth.stepIndex = 0;
-                } else {
-                    const elapsed = now - state.masterStartTime;
-                    const stepsElapsed = Math.ceil(elapsed / stepDur);
-                    synth.nextStepTime = state.masterStartTime + (stepsElapsed * stepDur);
-                    let newStepIndex = stepsElapsed % maxSteps;
-                    if (newStepIndex < 0) newStepIndex += maxSteps;
-                    synth.stepIndex = newStepIndex;
-                }
+            if (state.syncEnabled && state.masterStartTime !== 0) {
+                const stepsElapsed = Math.max(0, Math.ceil((earliest - state.masterStartTime) / stepDur));
+                synth.nextStepTime = state.masterStartTime + (stepsElapsed * stepDur);
+                synth.stepIndex = stepsElapsed % maxSteps;
             } else {
-                synth.nextStepTime = now;
+                synth.nextStepTime = earliest;
             }
         }
         let safeguard = 0;
@@ -2076,14 +2076,18 @@ class DroneSynth {
             }
         }
         
-        // Queue visual update index
-        synth.lastVisualIndex = index;
+        while (synth.visualSteps.length && synth.visualSteps.at(-1).time >= time) synth.visualSteps.pop();
+        synth.visualSteps.push({ index, time });
+        if (synth.visualSteps.length > 128) synth.visualSteps.shift();
     }
 
-    static updateVisuals() {
+    static updateVisuals(now = AudioEngine.playbackTime) {
         this.instances.forEach(synth => {
-            // Clipping Check
-            let isClipping = false;
+            while (synth.visualSteps.length && synth.visualSteps[0].time <= now) {
+                synth.lastVisualIndex = synth.visualSteps.shift().index;
+            }
+            if (synth.state === 'stopped' || (synth.stopTime > 0 && now >= synth.stopTime)) synth.lastVisualIndex = -1;
+            const isClipping = !!synth.meter.clipped;
             if (!synth._ui) synth._ui = {};
             if (!synth._ui.canvas || !synth._ui.canvas.isConnected) {
                 synth._ui.canvas = document.getElementById(`drone-viz-${synth.id}`);
@@ -2091,14 +2095,7 @@ class DroneSynth {
             }
             
             if (synth.analyser) {
-                synth.analyser.getFloatTimeDomainData(synth.analyserData);
-                let peak = 0;
-                for(let k=0; k<synth.analyserData.length; k+=8) {
-                    const abs = Math.abs(synth.analyserData[k]);
-                    if(abs > peak) peak = abs;
-                }
-                if (peak > 0.95) isClipping = true;
-                
+                const peak = synth.meter.linearPeak || 0;
                 // Draw Waveform Visualizer
                     if (synth._ui.canvas && synth._ui.ctx) {
                         const ctx = synth._ui.ctx;
@@ -2180,25 +2177,13 @@ class DroneSynth {
         this.instances.forEach(inst => this.updateDroneUI(inst.id));
     }
     
-    static updateMeters() {
+    static updateMeters(playbackTime = AudioEngine.playbackTime) {
         this.instances.forEach(synth => {
-            if (!synth.analyser) return;
-            synth.analyser.getFloatTimeDomainData(synth.analyserData);
-            let peak = 0;
-            // Stride for perf
-            for(let i=0; i<synth.analyserData.length; i+=8) {
-                const abs = Math.abs(synth.analyserData[i]);
-                if(abs > peak) peak = abs;
-            }
-            
-            // Update MasterMix slider style
-            const slider = document.getElementById(`mm_slider_d_${synth.id}`);
-            if (slider) {
-                const isClip = peak > 0.98;
-                if (slider._lastClip !== isClip) {
-                    slider.classList.toggle('clipping-slider', isClip);
-                    slider._lastClip = isClip;
-                }
+            AudioEngine.readMeter(synth.analyser, synth.analyserData, synth.meter, playbackTime);
+            UIManager.renderMeter(document.getElementById(`drone-vu-${synth.id}`), synth.meter);
+            UIManager.renderMeter(document.getElementById(`live_mm_vu_d_${synth.id}`), synth.meter);
+            for (const id of [`mm_slider_d_${synth.id}`, `live_mm_slider_d_${synth.id}`]) {
+                document.getElementById(id)?.classList.toggle('clipping-slider', synth.meter.clipped);
             }
         });
     }

@@ -60,18 +60,17 @@ class AudioEngine {
      */
     static async initialize(config = {}) {
         try {
-            // Use lowest possible latency hint (0) for interactive audio
-            // If '0' is passed as a string, convert to number, otherwise keep string (e.g. 'interactive')
-            const latHint = (config.latencyHint === '0') ? 0 : (config.latencyHint || 'interactive');
+            // Preserve numeric zero; the selector also supplies it as a string.
+            const latHint = (config.latencyHint === '0') ? 0 : (config.latencyHint ?? 'interactive');
 
-            let options = { 
-                latencyHint: latHint,
-                sampleRate: config.sampleRate || 44100
-            };
+            const options = { latencyHint: latHint };
+            const sampleRate = Number(config.sampleRate);
+            // Auto/missing/invalid rates leave the browser free to use the device default.
+            if (Number.isFinite(sampleRate) && sampleRate > 0) {
+                options.sampleRate = sampleRate;
+            }
             
-            state.audioContext = new (window.AudioContext || window.webkitAudioContext)({ 
-                ...options
-            });
+            state.audioContext = new (window.AudioContext || window.webkitAudioContext)(options);
 
             // This is the main mix bus. All audio sources (loops, mic)
             // must be connected here *before* the masterGain.
@@ -104,10 +103,15 @@ class AudioEngine {
             // Gently saturates peaks before they hit the limiter to prevent hard digital breaking
             state.masterSoftClip = state.audioContext.createWaveShaper();
             state.masterSoftClip.oversample = '4x'; // Prevent aliasing from the saturation curve on the master bus
-            const softClipCurve = new Float32Array(4096);
-            for (let i = 0; i < 4096; i++) {
-                const x = (i * 2.0 / 4096.0) - 1.0;
-                softClipCurve[i] = Math.tanh(x);
+            const softClipCurve = new Float32Array(4097);
+            const threshold = 0.875;
+            // Unity below the knee, with symmetric, zero-slope endpoints at +/-0.9375.
+            for (let i = 0; i < softClipCurve.length; i++) {
+                const x = 2 * i / (softClipCurve.length - 1) - 1;
+                const magnitude = Math.abs(x);
+                softClipCurve[i] = Math.sign(x) * (magnitude <= threshold
+                    ? magnitude
+                    : magnitude - (magnitude - threshold) ** 2 / (2 * (1 - threshold)));
             }
             state.masterSoftClip.curve = softClipCurve;
 
@@ -120,9 +124,6 @@ class AudioEngine {
             // [All Sources] -> masterMixer -> masterGain -> Limiter -> Output
             state.masterMixer.connect(state.masterGain);
             // Routing is deferred until Worklet load to insert Master EQ/Comp
-            
-            // Meter taps pre-limiter to show mix dynamics/drive before squashing
-            state.masterGain.connect(state.masterMeter);
             
             state.masterStartTime = 0; // Will be set on resume
             
@@ -210,10 +211,11 @@ class AudioEngine {
             }
             
             lastNode.connect(state.audioContext.destination);
-            // Rec taps post-limiter
+            // Recording and metering both tap the signal sent to the output.
             if (state.masterDestination) {
                 lastNode.connect(state.masterDestination);
             }
+            lastNode.connect(state.masterMeter);
             return true;
             
         } catch (error) {
@@ -292,6 +294,105 @@ class AudioEngine {
      */
     static get currentTime() {
         return state.audioContext ? state.audioContext.currentTime : 0;
+    }
+
+    /** Estimated audible context time, for visuals only; scheduling uses currentTime. */
+    static get playbackTime() {
+        const ctx = state.audioContext;
+        if (!ctx) return 0;
+        const now = Number.isFinite(ctx.currentTime) ? Math.max(0, ctx.currentTime) : 0;
+        try {
+            if (typeof ctx.getOutputTimestamp === 'function' && typeof performance !== 'undefined') {
+                const stamp = ctx.getOutputTimestamp();
+                const wallTime = performance.now();
+                // Some browsers return zero/uninitialized timestamps during startup.
+                if (stamp && Number.isFinite(stamp.contextTime) && stamp.contextTime > 0 &&
+                    Number.isFinite(stamp.performanceTime) && stamp.performanceTime > 0 &&
+                    Number.isFinite(wallTime)) {
+                    const audible = stamp.contextTime + (wallTime - stamp.performanceTime) / 1000;
+                    if (Number.isFinite(audible)) return Math.max(0, Math.min(now, audible));
+                }
+            }
+        } catch (e) { /* Unsupported or temporarily unavailable output timestamp. */ }
+        const latency = value => Number.isFinite(value) ? Math.max(0, value) : 0;
+        return Math.max(0, now - latency(ctx.baseLatency) - latency(ctx.outputLatency));
+    }
+
+    // Capture meters pass playbackTime = now; output meters wait for audible samples.
+    static readMeter(analyser, data, meter, playbackTime = this.playbackTime, now = this.currentTime) {
+        const ctx = state.audioContext;
+        const running = !!ctx && ctx.state === 'running';
+        now = Number.isFinite(now) ? Math.max(0, now) : 0;
+        playbackTime = Number.isFinite(playbackTime) ? Math.max(0, Math.min(now, playbackTime)) : now;
+        const reset = !meter._history || meter._context !== ctx || meter._running !== running ||
+            now < meter._sampleTime ||
+            (analyser && (meter._analyser !== analyser || (data && meter._data !== data)));
+        if (reset) {
+            meter._history = [];
+            meter.rms = 0;
+            meter.peak = 0;
+            meter._time = playbackTime;
+            meter._peakUntil = playbackTime;
+            meter._clipUntil = -Infinity;
+        }
+        meter._context = ctx;
+        meter._running = running;
+        meter._analyser = analyser || null;
+        meter._data = data || null;
+        meter._sampleTime = now;
+
+        let rms = 0;
+        let peak = 0;
+        if (running && analyser && data && data.length) {
+            analyser.getFloatTimeDomainData(data);
+            let sum = 0;
+            for (let i = 0; i < data.length; i++) {
+                const value = Number.isFinite(data[i]) ? data[i] : 0;
+                sum += value * value;
+                peak = Math.max(peak, Math.abs(value));
+            }
+            rms = Math.sqrt(sum / data.length);
+        }
+        // Missing analysers enqueue silence, rather than discarding their audible tail.
+        const history = meter._history;
+        // A stalled clock must not evict pending audio or overwrite a disconnected tail.
+        if (!history.length || history[history.length - 1].time !== now) {
+            history.push({ time: now, rms, peak });
+            if (history.length > 128) history.shift();
+        }
+        rms = 0;
+        peak = 0;
+        for (let i = history.length - 1; i >= 0; i--) {
+            if (history[i].time <= playbackTime) {
+                rms = history[i].rms;
+                peak = history[i].peak;
+                break;
+            }
+        }
+
+        // Latency-estimate jitter may move playbackTime backwards, but must not rewind holds.
+        const time = Math.max(meter._time, playbackTime);
+        const dt = time - meter._time;
+        meter.rms = rms >= meter.rms ? rms : rms + (meter.rms - rms) * Math.exp(-dt / 0.18);
+        const fallTime = Math.max(0, time - Math.max(meter._time, meter._peakUntil));
+        meter.peak *= Math.pow(10, -fallTime); // 20 dB/second, only after the 0.8s hold.
+        if (peak > 0 && peak >= meter.peak) {
+            meter.peak = peak;
+            meter._peakUntil = time + 0.8;
+        }
+        // Clip timing is independent of held peaks, display rounding, and redraw thresholds.
+        if (peak >= 1) meter._clipUntil = time + 1.2;
+        meter.clipped = time < meter._clipUntil;
+        meter._time = time;
+        meter.linearPeak = peak < 0.001 ? 0 : peak;
+        if (meter.rms < 0.001) meter.rms = 0;
+        if (meter.peak < 0.001) meter.peak = 0;
+        const toDb = value => value > 0 ? Math.max(-60, 20 * Math.log10(value)) : -60;
+        const toPercent = db => Math.max(0, Math.min(100, (db + 60) / 60 * 100));
+        meter.peakDb = toDb(meter.peak);
+        meter.rmsPercent = toPercent(toDb(meter.rms));
+        meter.peakPercent = toPercent(meter.peakDb);
+        return meter;
     }
     
     static updateMasterEQ(param, val) {

@@ -6,7 +6,7 @@
 // MODULE 1: CONSTANTS & GLOBALS
 // =============================================
 
-const VERSION = "v0.76.06"; // Version aligned with blueprint
+const VERSION = "v0.76.07"; // Version aligned with blueprint
 let MAX_LOOPS = 10;
 const SAMPLER_HOTKEYS = ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'ç']; // Specific to Sampler Tracks
 const AUDIO_FORMATS= {
@@ -46,8 +46,7 @@ const state = {
    // --- VU Meters ---
    masterMeter: null,
    masterMeterData: null,
-   masterPeak: 0,
-	masterVisual: { rms: 0, peak: 0 }, // For smoothed ASCII meter
+   masterPeak: {},
     masterMixVolume: 1.0,
     undoStack: [], // History stack for restoration
     redoStack: [], // History stack for redo
@@ -552,7 +551,7 @@ class App {
             if (state.audioContext) await state.audioContext.close();
             
             const latHint = document.getElementById('latencySelect') ? document.getElementById('latencySelect').value : 'interactive';
-            const sRate = document.getElementById('sampleRateSelect') ? parseInt(document.getElementById('sampleRateSelect').value) : 44100;
+            const sRate = Number(document.getElementById('sampleRateSelect')?.value);
 
             const audioInitialized = await AudioEngine.initialize({ latencyHint: latHint, sampleRate: sRate });
             if (!audioInitialized) {
@@ -1519,23 +1518,28 @@ class App {
         const animate = (timestamp) => {
             requestAnimationFrame(animate);
 
-            if (!state.audioContext || state.audioContext.state !== 'running') return;
+            if (!state.audioContext) return;
             // Audio runs on the audio thread regardless; skip visual/DOM churn in background tabs
             if (document.hidden) return;
+            if (state.audioContext.state !== 'running') {
+                this.updateMeters(AudioEngine.currentTime);
+                return;
+            }
             
             const now = AudioEngine.currentTime;
-            const elapsed = now - state.masterStartTime;
+            const playbackTime = AudioEngine.playbackTime;
+            const elapsed = Math.max(0, playbackTime - state.masterStartTime);
             
             // 60 FPS (Every frame) - High priority visual updates (Meters, Playhead)
             this.updatePlayhead(elapsed);
-            this.updateMeters();
-            if(window.DroneSynth) DroneSynth.updateVisuals();
-            if(window.SamplerManager) SamplerManager.updateVisuals();
+            this.updateMeters(playbackTime);
+            if(window.DroneSynth) DroneSynth.updateVisuals(playbackTime);
+            SamplerManager.updateVisuals(playbackTime);
 
             // 30 FPS - Medium priority (Waveforms, UI States)
             if (timestamp - last30FpsTime >= 33.3) {
                 last30FpsTime = timestamp;
-                UIManager.updateLoopDisplays();
+                UIManager.updateLoopDisplays(playbackTime);
                 if (window.LoopManager && state.syncEnabled) LoopManager.realignDriftedLoops();
             }
 
@@ -1569,203 +1573,31 @@ class App {
         requestAnimationFrame(animate);
     }
 
-	static updateMeters() {
-		const lerp = (a, b, t) => a + (b - a) * t;
-		const clipLevel = 0.95;
-        const peakHoldTime = 0.5; // Seconds on the audio clock so holds survive context suspends
-        const rmsSmoothFactor = 0.3;
-        const peakSmoothFactor = 0.2;
+    static updateMeters(playbackTime = AudioEngine.playbackTime) {
+        AudioEngine.readMeter(state.masterMeter, state.masterMeterData, state.masterPeak ||= {}, playbackTime);
+        UIManager.renderMeter(document.getElementById('master-ascii-vu'), state.masterPeak, 'MASTER');
+        UIManager.renderMeter(document.getElementById('live-master-ascii-vu'), state.masterPeak, 'MASTER');
+        UIManager.renderMeter(document.getElementById('live_mm_vu_master'), state.masterPeak);
+        ['mm_slider_master_vol', 'live_mm_slider_master_vol'].forEach(id => {
+            document.getElementById(id)?.classList.toggle('clipping-slider', state.masterPeak.clipped);
+        });
 
-        const updateAsciiMeter = (analyser, data, audioPeakState, visualState, el, width, prefix, defaultColor, sliders = []) => {
-            if (!audioPeakState || !visualState) return audioPeakState;
-            const now = AudioEngine.currentTime;
-            let currentLinearPeak = 0;
-            let rms = 0;
- 
-
-            if (analyser && data) { 
-				analyser.getFloatTimeDomainData(data); // Actually fetch audio data
-				let sum = 0;
-                // Stride by 8 to reduce main thread CPU load for visual metering (optimized)
-				for (let i = 0; i < data.length; i+=8) {
-					const v = data[i];
-					sum += v * v;
-					const absV = Math.abs(v);
-					if (absV > currentLinearPeak) currentLinearPeak = absV;
-				}
-				rms = (data.length > 0) ? Math.sqrt(sum / Math.ceil(data.length / 8)) : 0;
-			} 
-			
-			audioPeakState.linearPeak = currentLinearPeak;
-			if (currentLinearPeak > audioPeakState.value) {
-                audioPeakState.value = currentLinearPeak;
-                audioPeakState.lastUpdate = now;
-            } else {
-                if (now - audioPeakState.lastUpdate > peakHoldTime) {
-                    audioPeakState.value *= 0.92;
-                }
-				if (audioPeakState.value < 0.001) audioPeakState.value = 0;
-            }
-
-            // CONVERT TO dB (Scale: -60dB to 0dB)
-			const rmsDB = rms > 0.001 ? 20 * Math.log10(rms) : -60;
-			const peakDB = audioPeakState.value > 0.001 ? 20 * Math.log10(audioPeakState.value) : -60;
-
-            // Map -60dB...0dB to 0...100%
-            const targetRmsPercent = Math.max(0, Math.min(100, ((rmsDB + 60) / 60) * 100));
-			const targetPeakPercent = Math.max(0, Math.min(100, ((peakDB + 60) / 60) * 100));
-			
-			if (targetRmsPercent > visualState.rms) {
-				visualState.rms = lerp(visualState.rms, targetRmsPercent, rmsSmoothFactor);
-			} else {
-				visualState.rms = lerp(visualState.rms, targetRmsPercent, 0.1);
-			}
-			
-			if (targetPeakPercent > visualState.peak) {
-				visualState.peak = lerp(visualState.peak, targetPeakPercent, peakSmoothFactor);
-			} else {
-				visualState.peak = lerp(visualState.peak, targetPeakPercent, 0.05);
-			}
-
-			if (visualState.rms < 0.1) visualState.rms = 0;
-			if (visualState.peak < 0.1) visualState.peak = 0;
-
-			const rmsChars = Math.round((visualState.rms / 100) * width);
-			const peakChar = Math.round((visualState.peak / 100) * width);
-			// Clamp to prevent out-of-bounds peak indicator
-			const clampedPeakChar = Math.max(0, Math.min(width - 1, peakChar));
-			const clampedRmsChars = Math.max(0, Math.min(width, rmsChars));
-			
-			const needsUpdate = !el || 
-			                    Math.abs(visualState.rms - (el._lastRms || 0)) > 1 ||
-			                    Math.abs(visualState.peak - (el._lastPeak || 0)) > 2 ||
-			                    (el._lastColor !== defaultColor);
-            
-            if (needsUpdate) {
-                let bar = '[';
-                for (let i = 0; i < width; i++) {
-                    if (i < clampedRmsChars) {
-                        bar += '█';
-                    } else if (i === clampedPeakChar && i >= clampedRmsChars) {
-                        bar += '│';  
-                    } else {
-                        bar += '░';
-                    }
-                }
-                bar += ']';
-
-            // Clipping indicated by color below, removed text expansion to prevent UI jitter
-            // Also updates associated sliders to red if clipping
-            const isClipping = currentLinearPeak > 0.98;
-            
-            if (sliders.length > 0) {
-                sliders.forEach(s => {
-                    if(s) s.classList.toggle('clipping-slider', isClipping);
-                });
-            }
-
-			if (el) {
-				// Cache values to prevent redundant updates
-				el._lastColor = defaultColor;
-				el._lastRms = visualState.rms;
-				el._lastPeak = visualState.peak;
-				el.textContent = prefix + bar;
-                
-                // Color State for Clipping (Red/Yellow/Default)
-                if (isClipping) {
-                    el.style.color = '#f00'; // Red
-                    el.style.borderColor = '#f00';
-                    el.style.backgroundColor = '#300'; // Dark red bg flash
-                    el.style.boxShadow = '0 0 5px #f00';
-                } else if (currentLinearPeak > 0.85) {
-                    el.style.color = '#ff0'; // Yellow
-                    el.style.borderColor = '#aa0';
-                    el.style.backgroundColor = 'transparent';
-                    el.style.boxShadow = 'none';
-                } else {
-                    el.style.color = defaultColor || 'inherit'; 
-                    el.style.borderColor = (el.id.includes('master') || el.id.includes('system')) ? defaultColor : '#444';
-                    el.style.backgroundColor = 'transparent';
-                    el.style.boxShadow = 'none';
-                }
-			}
-			}
-
-			return audioPeakState; 
-		};
-
-		const masterWidth = 114;
-		const loopWidth = 30; // Increased to match wav visualizer
-		
-        let mLabel = 'MASTER';
-        let mColor = '#0ff';
-        let mWidth = masterWidth;
-
-        if (state.masterRecording) {
-            mColor = '#f00';
-        } else if (state.globalSusMode) {
-            mColor = '#ff0';
-        } else if (state.globalSubstituteMode) {
-            mColor = '#00cccc';
-        } else if (state.globalOverdubMode) {
-            mColor = '#f0f';
-        }
-
-        let mEl = document.getElementById('master-ascii-vu'); 
-        
-        // Cache master sliders
-        if (!state._cachedMasterSliders || (state._cachedMasterSliders[0] && !state._cachedMasterSliders[0].isConnected)) {
-            state._cachedMasterSliders = [
-                document.getElementById('mm_slider_master_vol'), // MasterMix Fader
-                document.getElementById('live_mm_slider_master_vol'), // Live MasterMix Fader
-                document.getElementById('in-master-vol-slider')  // Input Bus Fader (if exists)
-            ].filter(Boolean);
-        }
-
-        state.masterPeak = updateAsciiMeter(state.masterMeter, state.masterMeterData, state.masterPeak, state.masterVisual, mEl, mWidth, mLabel, mColor, state._cachedMasterSliders);       
-        
-        const liveMEl = document.getElementById('live-master-ascii-vu');
-        if (liveMEl && mEl) {
-            liveMEl.textContent = mEl.textContent;
-            liveMEl.style.color = mEl.style.color;
-        }
-        
-        InputManager.updateMeters(); // Update dynamic inputs
-        if(window.DroneSynth) DroneSynth.updateMeters(); // Update Drone sliders in MasterMix
+        InputManager.updateMeters(); // Capture feedback stays on the immediate audio clock.
+        if (window.DroneSynth) DroneSynth.updateMeters(playbackTime);
+        SamplerManager.updateMeters(playbackTime);
 
         state.loops.forEach(loop => {
-            // Performance: Re-cache sliders if invalid (e.g. after DOM rebuild)
-            if (!loop._cachedSliders || !loop._cachedSliders[0] || !loop._cachedSliders[0].isConnected) {
-                loop._cachedSliders = [
-                    document.getElementById(`loop-vol-slider-${loop.id}`), // Loop Card
-                    document.getElementById(`mm_slider_l_${loop.id}`)      // MasterMix
-                ].filter(Boolean);
-            }
-
-            let meterColor = '#0f0'; // Default Green (Playing/Stopped)
-            if (loop.state === 'recording') meterColor = '#f00';
-            else if (loop.state === 'overdubbing') meterColor = '#f0f';
-            else if (loop.state === 'substituting') meterColor = '#00cccc';
-            else if (loop.state === 'armed') meterColor = '#ff0';
-
-            // Performance: Cache DOM element to avoid repeated lookups during animation frame
-            let el = loop._cachedMeterEl;
-            if (!el || !el.isConnected) {
-                el = document.getElementById(`loop-ascii-vu-${loop.id}`);
-                loop._cachedMeterEl = el;
-            }
-
-            if (loop.state === 'playing' && loop.analyser && loop.analyserData) {
-                if (!loop.peak) loop.peak = { value: 0, lastUpdate: 0, linearPeak: 0 };
-                 loop.peak = updateAsciiMeter(loop.analyser, loop.analyserData, loop.peak, loop.visual, el, loopWidth, '', meterColor, loop._cachedSliders);
-             } else {
-                if (!loop.peak) loop.peak = { value: 0, lastUpdate: 0, linearPeak: 0 };
-				if (loop.visual.rms > 0 || loop.visual.peak > 0) {
-					loop.peak = updateAsciiMeter(null, null, loop.peak, loop.visual, el, loopWidth, '', meterColor, loop._cachedSliders);
-				}
-            }
+            const active = ['playing', 'stopping', 'overdubbing', 'substituting', 'multiplying'].includes(loop.state);
+            const hasGraph = active && loop.graph && !loop.graph.isDestroyed;
+            // Disconnected analysers can retain stale samples; feed silence to let holds decay.
+            AudioEngine.readMeter(hasGraph ? loop.analyser : null, hasGraph ? loop.analyserData : null, loop.peak ||= {}, playbackTime);
+            UIManager.renderMeter(document.getElementById(`loop-ascii-vu-${loop.id}`), loop.peak);
+            UIManager.renderMeter(document.getElementById(`live_mm_vu_l_${loop.id}`), loop.peak);
+            [`loop-vol-slider-${loop.id}`, `mm_slider_l_${loop.id}`, `live_mm_slider_l_${loop.id}`].forEach(id => {
+                document.getElementById(id)?.classList.toggle('clipping-slider', loop.peak.clipped);
+            });
         });
-	}
+    }
 
     static updatePlayhead(elapsed) {
         const timeline = document.getElementById('timeline');
@@ -1777,7 +1609,7 @@ class App {
         
         if (tw > 0) {
             if (state.syncEnabled && state.loopLength > 0) {
-                pos = SyncManager.getLoopPosition() * tw;
+                pos = (elapsed % state.loopLength) / state.loopLength * tw;
             } else {
                 const beats = elapsed * (state.bpm / 60);
                 const numBeats = state.timeSig.num;
@@ -1994,16 +1826,28 @@ class MasterMixManager {
 
     static renderLive(container) {
         if(!container) return;
-        let html = `<div style="display:flex; overflow-x:auto; gap:4px; margin-bottom:10px; padding-bottom:5px; height:185px; scrollbar-width:thin;">`;
-        const sliderStyle = "writing-mode: vertical-lr; direction: rtl; -webkit-appearance: none; appearance: none; background: #222; border: 1px solid #444; width: 32px; height: 120px; margin: 12px 0; cursor: ns-resize; touch-action: none; position: relative; z-index: 1;";
-        const stripStyle = "display:flex; flex-direction:column; align-items:center; justify-content:space-between; min-width:60px; background:#050505; border:1px solid #333; padding:8px 4px;";
+        let html = `<div class="live-mixer-console">`;
+        const sliderStyle = "writing-mode: vertical-lr; direction: rtl; -webkit-appearance: none; appearance: none; background: #222; border: 1px solid #444; width: 32px; height: 120px; margin: 0; cursor: ns-resize; touch-action: none; position: relative; z-index: 1;";
+        const stripStyle = "display:flex; flex:0 0 auto; flex-direction:column; align-items:center; gap:4px; min-width:60px; background:#050505; border:1px solid #333; padding:8px 4px;";
         const valStyle = "font-size:9px; color:#888; text-align:center; height:12px; font-family:monospace;";
         const btnMuteStyle = "font-size:8px; padding:2px 4px; height: 20px; margin-bottom: 2px; min-height: unset;";
-        
+
+        html += `<div style="${stripStyle} border-top:2px solid #f00; margin-right: 5px;" onwheel="event.preventDefault(); const s=document.getElementById('live_mm_slider_master_vol'); if(s){ s.value=Math.max(0, Math.min(2, parseFloat(s.value) + (event.deltaY < 0 ? 0.05 : -0.05))); MasterMixManager.setMasterMixVolume(s.value); }">
+            <label for="live_mm_slider_master_vol" style="font-size:9px; color:#f00; font-weight:bold;">MASTER</label>
+            <div class="live-mixer-fader">
+                <input type="range" id="live_mm_slider_master_vol" min="0" max="2" step="0.01" value="${state.masterMixVolume ?? 1.0}" style="${sliderStyle} border-color: #f00;" oninput="MasterMixManager.setMasterMixVolume(this.value);" aria-label="Master Volume">
+                <div id="live_mm_vu_master" class="ascii-vu-meter vu-vertical" aria-label="Master output level"></div>
+            </div>
+            <div id="live_mm_master_v" style="${valStyle} color:#f00;">${(state.masterMixVolume ?? 1.0).toFixed(2)}</div>
+        </div>`;
+
         state.inputs.forEach(i => {
             html += `<div style="${stripStyle} border-top:2px solid #0ff;" onwheel="event.preventDefault(); const s=document.getElementById('live_mm_slider_in_${i.id}'); if(s){ s.value=Math.max(0, Math.min(2, parseFloat(s.value) + (event.deltaY < 0 ? 0.05 : -0.05))); InputManager.setVolume(${i.id}, s.value); }">
                 <label for="live_mm_slider_in_${i.id}" style="font-size:9px; color:#0ff; font-weight:bold;">IN ${i.id+1}</label>
-                <input type="range" id="live_mm_slider_in_${i.id}" min="0" max="2" step="0.01" value="${i.volume}" style="${sliderStyle}" oninput="InputManager.setVolume(${i.id}, this.value);" aria-label="Input ${i.id+1} Volume">
+                <div class="live-mixer-fader">
+                    <input type="range" id="live_mm_slider_in_${i.id}" min="0" max="2" step="0.01" value="${i.volume}" style="${sliderStyle}" oninput="InputManager.setVolume(${i.id}, this.value);" aria-label="Input ${i.id+1} Volume">
+                    <div id="live_mm_vu_in_${i.id}" class="ascii-vu-meter vu-vertical" aria-label="Input ${i.id+1} capture level"></div>
+                </div>
                 <div id="live_mm_in_v_${i.id}" style="${valStyle}">${i.volume.toFixed(2)}</div>
                 <div style="display:flex; gap:2px; margin:2px 0;">
                     <button id="live_mm_mute_in_${i.id}" class="small" style="${btnMuteStyle} background:${!i.monitor ? '#f00' : '#222'}; color:${!i.monitor ? '#000' : '#fff'};" onclick="InputManager.toggleMonitor(${i.id})">M</button>
@@ -2016,7 +1860,10 @@ class MasterMixManager {
             const color = l.audioBuffer ? '#0f0' : '#444';
             html += `<div style="${stripStyle} border-top:2px solid ${color};" onwheel="event.preventDefault(); const s=document.getElementById('live_mm_slider_l_${idx}'); if(s){ s.value=Math.max(0, Math.min(2, parseFloat(s.value) + (event.deltaY < 0 ? 0.05 : -0.05))); UIManager.setLoopVolume(${idx}, s.value); }">
                 <label for="live_mm_slider_l_${idx}" style="font-size:9px; color:${color}; font-weight:bold;">L ${idx+1}</label>
-                <input type="range" id="live_mm_slider_l_${idx}" min="0" max="2" step="0.01" value="${l.volume}" style="${sliderStyle}" oninput="UIManager.setLoopVolume(${idx}, this.value);" aria-label="Loop ${idx+1} Volume">
+                <div class="live-mixer-fader">
+                    <input type="range" id="live_mm_slider_l_${idx}" min="0" max="2" step="0.01" value="${l.volume}" style="${sliderStyle}" oninput="UIManager.setLoopVolume(${idx}, this.value);" aria-label="Loop ${idx+1} Volume">
+                    <div id="live_mm_vu_l_${idx}" class="ascii-vu-meter vu-vertical" aria-label="Loop ${idx+1} output level"></div>
+                </div>
                 <div id="live_mm_l_v_${idx}" style="${valStyle}">${l.volume.toFixed(2)}</div>
                 <div style="display:flex; gap:2px; margin:2px 0;">
                     <button id="live_mm_mute_l_${idx}" class="small" style="${btnMuteStyle} background:${l.muted ? '#f00' : '#222'}; color:${l.muted ? '#000' : '#fff'};" onclick="LoopManager.toggleMute(${idx})">M</button>
@@ -2030,7 +1877,10 @@ class MasterMixManager {
                 const label = (d.id < 10 && state.keyMapping.kbd[20 + d.id]) ? state.keyMapping.kbd[20 + d.id].toUpperCase() : `D${d.id+1}`;
                 html += `<div style="${stripStyle} border-top:2px solid #f0f;" onwheel="event.preventDefault(); const s=document.getElementById('live_mm_slider_d_${d.id}'); if(s){ s.value=Math.max(0, Math.min(1.0, parseFloat(s.value) + (event.deltaY < 0 ? 0.05 : -0.05))); DroneSynth.setParam(${d.id}, 'volume', s.value); }">
                     <label for="live_mm_slider_d_${d.id}" style="font-size:9px; color:#f0f; font-weight:bold;">DRONE ${label}</label>
-                    <input type="range" id="live_mm_slider_d_${d.id}" min="0" max="1.0" step="0.01" value="${d.params.volume}" style="${sliderStyle}" oninput="DroneSynth.setParam(${d.id}, 'volume', this.value);" aria-label="Drone ${d.id+1} Volume">
+                    <div class="live-mixer-fader">
+                        <input type="range" id="live_mm_slider_d_${d.id}" min="0" max="1.0" step="0.01" value="${d.params.volume}" style="${sliderStyle}" oninput="DroneSynth.setParam(${d.id}, 'volume', this.value);" aria-label="Drone ${d.id+1} Volume">
+                        <div id="live_mm_vu_d_${d.id}" class="ascii-vu-meter vu-vertical" aria-label="Drone ${d.id+1} output level"></div>
+                    </div>
                     <div id="live_mm_d_v_${d.id}" style="${valStyle}">${d.params.volume.toFixed(2)}</div>
                     <div style="display:flex; gap:2px; margin:2px 0;">
                         <button id="live_mm_mute_d_${d.id}" class="small" style="${btnMuteStyle} background:${d.muted ? '#f00' : '#222'}; color:${d.muted ? '#000' : '#fff'};" onclick="DroneSynth.toggleMute(${d.id})">M</button>
@@ -2043,7 +1893,10 @@ class MasterMixManager {
             const color = s.buffer ? '#08f' : '#444';
             html += `<div style="${stripStyle} border-top:2px solid ${color};" onwheel="event.preventDefault(); const sl=document.getElementById('live_mm_slider_s_${idx}'); if(sl){ sl.value=Math.max(0, Math.min(2, parseFloat(sl.value) + (event.deltaY < 0 ? 0.05 : -0.05))); SamplerManager.setVolume(${idx}, sl.value); }">
                 <label for="live_mm_slider_s_${idx}" style="font-size:9px; color:${color}; font-weight:bold;">S ${idx+1}</label>
-                <input type="range" id="live_mm_slider_s_${idx}" min="0" max="2" step="0.01" value="${s.volume}" style="${sliderStyle}" oninput="SamplerManager.setVolume(${idx}, this.value);" aria-label="Sampler ${idx+1} Volume">
+                <div class="live-mixer-fader">
+                    <input type="range" id="live_mm_slider_s_${idx}" min="0" max="2" step="0.01" value="${s.volume}" style="${sliderStyle}" oninput="SamplerManager.setVolume(${idx}, this.value);" aria-label="Sampler ${idx+1} Volume">
+                    <div id="live_mm_vu_s_${idx}" class="ascii-vu-meter vu-vertical" aria-label="Sampler ${idx+1} output level"></div>
+                </div>
                 <div id="live_mm_s_v_${idx}" style="${valStyle}">${s.volume.toFixed(2)}</div>
                 <div style="display:flex; gap:2px; margin:2px 0;">
                     <button id="live_mm_mute_s_${idx}" class="small" style="${btnMuteStyle} background:${s.muted ? '#f00' : '#222'}; color:${s.muted ? '#000' : '#fff'};" onclick="SamplerManager.toggleMute(${idx})">M</button>
@@ -2052,11 +1905,6 @@ class MasterMixManager {
             </div>`;
         });
         
-        html += `<div style="${stripStyle} border-top:2px solid #f00; margin-left: 5px;" onwheel="event.preventDefault(); const s=document.getElementById('live_mm_slider_master_vol'); if(s){ s.value=Math.max(0, Math.min(2, parseFloat(s.value) + (event.deltaY < 0 ? 0.05 : -0.05))); MasterMixManager.setMasterMixVolume(s.value); }">
-            <label for="live_mm_slider_master_vol" style="font-size:9px; color:#f00; font-weight:bold;">MASTER</label>
-            <input type="range" id="live_mm_slider_master_vol" min="0" max="2" step="0.01" value="${state.masterMixVolume || 1.0}" style="${sliderStyle} border-color: #f00;" oninput="MasterMixManager.setMasterMixVolume(this.value);" aria-label="Master Volume">
-            <div id="live_mm_master_v" style="${valStyle} color:#f00;">${(state.masterMixVolume || 1.0).toFixed(2)}</div>
-        </div>`;
         html += `</div>`;
         container.innerHTML = html;
     }
@@ -2077,7 +1925,7 @@ class InputChannel {
         this.panNode = null;
         this.analyser = null;
         this.analyserData = null;
-        this.peak = { value: 0, lastUpdate: 0, linearPeak: 0, lastClipAt: 0 };
+        this.peak = {};
         this.visual = { rms: 0, peak: 0 };
         
         this.volume = 1.0;
@@ -2105,7 +1953,7 @@ class InputManager {
     static masterVolume = 1.0;
     static masterAnalyser = null;
     static masterAnalyserData = null;
-    static masterPeak = { value: 0, lastClipAt: 0 };
+    static masterPeak = {};
     static helperGraph = null; // Static helper to avoid GC churn on chain rebuilds
     static activePresets = {}; // Store presets for Input Bus
     static rebuildTimer = null;
@@ -2578,123 +2426,32 @@ class InputManager {
     }
 
     static updateMeters() {
-        const lerp = (a, b, t) => a + (b - a) * t;
-        const formatPeak = value => value > 0.0001 ? `${Math.max(-60, 20 * Math.log10(value)).toFixed(0)} dB` : '−∞ dB';
-        const nowMs = performance.now();
-        const renderLevel = (el, peak, isClipHeld) => {
+        const now = AudioEngine.currentTime;
+        const renderLevel = (el, meter) => {
             if (!el) return;
-            const text = isClipHeld ? 'CLIP' : formatPeak(peak);
+            const text = UIManager.formatMeterLevel(meter);
             if (el._lastText !== text) {
                 el.textContent = text;
                 el._lastText = text;
             }
-            if (el._lastClip !== isClipHeld) {
-                el.classList.toggle('level-clipped', isClipHeld);
-                el._lastClip = isClipHeld;
-            }
+            el.classList.toggle('level-clipped', meter.clipped);
         };
 
-        // Master Input Meter
-        if (this.masterAnalyser) {
-            this.masterAnalyser.getFloatTimeDomainData(this.masterAnalyserData);
-            let currentLinearPeak = 0;
-            // Stride optimization matching UIManager
-            for(let i=0; i<this.masterAnalyserData.length; i+=8) {
-                const v = this.masterAnalyserData[i];
-                if(Math.abs(v) > currentLinearPeak) currentLinearPeak = Math.abs(v);
-            }
-            
-            this.masterPeak.value = Math.max(currentLinearPeak, (this.masterPeak.value || 0) * 0.92);
-            const isClipping = currentLinearPeak > 0.98;
-            if (isClipping) this.masterPeak.lastClipAt = nowMs;
-            const isClipHeld = nowMs - this.masterPeak.lastClipAt < 1500;
-            const el = document.getElementById('in-master-vu');
-            
-            const mInSlider = document.getElementById('in-master-vol-slider');
-            if(mInSlider && mInSlider._lastClip !== isClipHeld) {
-                mInSlider.classList.toggle('clipping-slider', isClipHeld);
-                mInSlider._lastClip = isClipHeld;
-            }
-            renderLevel(document.getElementById('in-master-level'), this.masterPeak.value, isClipHeld);
-            if(el) {
-                const barText = UIManager.getAsciiBar(this.masterPeak.value, 20);
-                if (el._lastText !== barText) {
-                    el.textContent = barText;
-                    el._lastText = barText;
-                }
-            }
-        }
+        // Raw capture feedback must not wait for device-output latency.
+        AudioEngine.readMeter(this.masterAnalyser, this.masterAnalyserData, this.masterPeak ||= {}, now, now);
+        UIManager.renderMeter(document.getElementById('in-master-vu'), this.masterPeak);
+        document.getElementById('in-master-vol-slider')?.classList.toggle('clipping-slider', this.masterPeak.clipped);
+        renderLevel(document.getElementById('in-master-level'), this.masterPeak);
 
         state.inputs.forEach(inp => {
-            if (!inp.analyser) return;
-            inp.analyser.getFloatTimeDomainData(inp.analyserData);
-            
-            let sum = 0;
-            let currentLinearPeak = 0;
-            for(let i=0; i<inp.analyserData.length; i+=8) {
-                const v = inp.analyserData[i];
-                sum += v*v;
-                if(Math.abs(v) > currentLinearPeak) currentLinearPeak = Math.abs(v);
-            }
-            const rms = Math.sqrt(sum / (inp.analyserData.length/8));
-            
-            // Ballistics
-            if (currentLinearPeak > inp.peak.value) {
-                inp.peak.value = currentLinearPeak;
-            } else {
-                inp.peak.value *= 0.92; // Decay
-            }
-            
-            // Visual Smoothing using InputChannel visual state
-            const rmsDB = rms > 0.001 ? 20 * Math.log10(rms) : -60;
-            const targetRms = Math.max(0, Math.min(100, ((rmsDB + 60) / 60) * 100));
-            
-            if (targetRms > inp.visual.rms) inp.visual.rms = lerp(inp.visual.rms, targetRms, 0.3);
-            else inp.visual.rms = lerp(inp.visual.rms, targetRms, 0.1);
-            
-            // Render using smoothed RMS for bar, peak for clipping
-            const displayValue = inp.visual.rms / 100;
-            const isClipping = currentLinearPeak > 0.98;
-            if (isClipping) inp.peak.lastClipAt = nowMs;
-            const isClipHeld = nowMs - inp.peak.lastClipAt < 1500;
-
-            const inpSlider = document.getElementById(`in-vol-slider-${inp.id}`);
-            if (inpSlider && inpSlider._lastClip !== isClipHeld) {
-                inpSlider.classList.toggle('clipping-slider', isClipHeld);
-                inpSlider._lastClip = isClipHeld;
-            }
-            
-            // Also update MasterMix slider for input
-            const mmSlider = document.getElementById(`mm_slider_in_${inp.id}`);
-            if (mmSlider && mmSlider._lastClip !== isClipHeld) {
-                mmSlider.classList.toggle('clipping-slider', isClipHeld);
-                mmSlider._lastClip = isClipHeld;
-            }
-            renderLevel(document.getElementById(`in-level-${inp.id}`), inp.peak.value, isClipHeld);
-
-            let el = inp._cachedMeterEl;
-            if (!el || !el.isConnected) {
-                el = document.getElementById(`in-vu-${inp.id}`);
-                inp._cachedMeterEl = el;
-            }
-            if (el) {
-                const barText = UIManager.getAsciiBar(displayValue, 57);
-                let colorState = 0; 
-                if (!inp.monitor) colorState = 0;
-                else if (isClipHeld) colorState = 2;
-                else colorState = 1;
-
-                if (el._lastText !== barText || el._lastColorState !== colorState) {
-                    el.textContent = barText;
-                    if (el._lastColorState !== colorState) {
-                        if (colorState === 0) { el.style.color = '#444'; el.style.backgroundColor = 'transparent'; }
-                        else if (colorState === 2) { el.style.color = '#f00'; el.style.backgroundColor = '#300'; }
-                        else { el.style.color = 'var(--term-green)'; el.style.backgroundColor = 'transparent'; }
-                        el._lastColorState = colorState;
-                    }
-                    el._lastText = barText;
-                }
-            }
+            // Keep measuring unmonitored capture and decaying disconnected inputs.
+            AudioEngine.readMeter(inp.analyser, inp.analyserData, inp.peak ||= {}, now, now);
+            UIManager.renderMeter(document.getElementById(`in-vu-${inp.id}`), inp.peak);
+            UIManager.renderMeter(document.getElementById(`live_mm_vu_in_${inp.id}`), inp.peak);
+            [`in-vol-slider-${inp.id}`, `mm_slider_in_${inp.id}`, `live_mm_slider_in_${inp.id}`].forEach(id => {
+                document.getElementById(id)?.classList.toggle('clipping-slider', inp.peak.clipped);
+            });
+            renderLevel(document.getElementById(`in-level-${inp.id}`), inp.peak);
         });
     }
 
@@ -2723,7 +2480,7 @@ class InputManager {
         state.inputs.forEach(inp => {
             const div = document.createElement('div');
             const isSys = inp.type === 'system';
-            div.className = `mixer-row input-track-row ${inp.monitor ? 'input-monitoring' : 'input-muted'}`;
+            div.className = `mixer-row input-track-row${inp.monitor ? ' input-monitoring' : ''}`;
             div.style.display = 'block'; // Override grid for this layout
             
             div.innerHTML = `
@@ -2740,8 +2497,8 @@ class InputManager {
                     <option value="right" ${inp.channelMode==='right'?'selected':''}>R</option>
                     <option value="stereo" ${inp.channelMode==='stereo'?'selected':''}>ST</option>
                 </select>
-                <span id="in-level-${inp.id}" class="mixer-level">−∞ dB</span>
-                <div id="in-vu-${inp.id}" class="mixer-vu" style="flex:1;">[░░░░░░░░░]</div>
+                <span id="in-level-${inp.id}" class="mixer-level">-∞ dBFS</span>
+                <div id="in-vu-${inp.id}" class="mixer-vu ascii-vu-meter" role="meter" aria-label="Input ${inp.id + 1} level" style="flex:1;"></div>
             </div>
             <div style="display:flex; gap:2px; align-items:center; padding-left: 20px;">
                 <input type="range" id="in-vol-slider-${inp.id}" class="mixer-slider" min="0" max="2" step="0.01" value="${inp.volume}" oninput="InputManager.setVolume(${inp.id}, this.value)" data-i18n-title="TIP_IN_VOL" style="width:50%;" aria-label="Input Volume">
@@ -2846,8 +2603,8 @@ class InputManager {
         masterDiv.innerHTML = `
             <div class="mixer-row" style="background:transparent; display:flex; align-items:center; gap:5px; padding: 5px; border: 1px dashed #0ff; margin-bottom: 5px;">
                 <div class="mixer-label" style="font-weight:bold; color:#0ff; white-space:nowrap; font-size:12px;">${I18n.t('INPUT_BUS')}</div>
-                <span id="in-master-level" class="mixer-level" style="color:#0ff;">−∞ dB</span>
-                <div id="in-master-vu" class="mixer-vu" style="color:#0ff; flex:1; font-size:12px; height: 14px; line-height: 14px;">[░░░░░░░░░░░░░░░]</div>
+                <span id="in-master-level" class="mixer-level" style="color:#0ff;">-∞ dBFS</span>
+                <div id="in-master-vu" class="mixer-vu ascii-vu-meter" role="meter" aria-label="Input bus level" style="flex:1;"></div>
                 <input type="range" id="in-master-vol-slider" class="mixer-slider" min="0" max="2" step="0.01" value="${this.masterVolume}" oninput="InputManager.setMasterVolume(this.value); EffectManager.setActiveTab('input-bus');" style="width:100px; height: 14px;" aria-label="Master Input Volume">
                 <span id="in-master-vol-val" style="font-size:10px; width:40px; text-align:right; color:#0ff;">Vol ${this.masterVolume.toFixed(2)}</span>
             </div>

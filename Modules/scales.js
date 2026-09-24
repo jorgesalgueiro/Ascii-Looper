@@ -21,12 +21,12 @@ class MetronomeProcessor extends AudioWorkletProcessor {
             { name: 'playing', defaultValue: 0, minValue: 0, maxValue: 1 },
             { name: 'volume', defaultValue: 0.5, minValue: 0 },
             { name: 'beatsPerBar', defaultValue: 4, minValue: 1 },
-            { name: 'origin', defaultValue: 0, minValue: 0 },
+            { name: 'origin', defaultValue: 0 },
         ];
     }
     constructor() {
         super();
-        this.lastBeatIndex = -1;
+        this.lastBeatIndex = null;
         this.oscPhase = 0;
         this.env = 0;
         this.freq = 440;
@@ -41,12 +41,13 @@ class MetronomeProcessor extends AudioWorkletProcessor {
         const bpb = Math.max(1, Math.round(parameters.beatsPerBar[0]));
         // Use global scope sampleRate
         const sr = getWorkletSampleRate();
+        const decay = Math.exp(-1 / (sr * 0.0113));
         const bpmParam = parameters.bpm;
         const originParam = parameters.origin;
 
         if (!playing) {
             // Re-arm so the next start clicks on the next grid boundary
-            this.lastBeatIndex = -1;
+            this.lastBeatIndex = null;
             this.env = 0;
             for (let i = 0; i < outputL.length; i++) {
                 outputL[i] = 0;
@@ -61,14 +62,16 @@ class MetronomeProcessor extends AudioWorkletProcessor {
             const t = (currentFrame + i) / sr;
             const beatIndex = Math.floor(((t - origin) * bpm) / 60.0);
 
-            if (this.lastBeatIndex < 0) {
-                // Arm on the current grid beat: first click lands on the next boundary
+            if (this.lastBeatIndex === null) {
+                this.lastBeatIndex = Math.floor((((currentFrame + i - 1) / sr - origin) * bpm) / 60.0);
+            }
+            if (beatIndex !== this.lastBeatIndex) {
                 this.lastBeatIndex = beatIndex;
-            } else if (beatIndex > this.lastBeatIndex) {
-                this.lastBeatIndex = beatIndex;
-                this.env = 1.0;
-                this.freq = (beatIndex % bpb === 0) ? 2000 : 1000; // Sharper high/low click
-                this.oscPhase = 0;
+                if (beatIndex >= 0) {
+                    this.env = 1.0;
+                    this.freq = (beatIndex % bpb === 0) ? 2000 : 1000;
+                    this.oscPhase = 0;
+                }
             }
 
             // Synthesis (Sine + Exp Decay)
@@ -77,7 +80,7 @@ class MetronomeProcessor extends AudioWorkletProcessor {
                 sample = Math.sin(this.oscPhase) * this.env * vol;
                 this.oscPhase += (2 * Math.PI * this.freq) / sr;
                 if (this.oscPhase > 100 * Math.PI) this.oscPhase -= 100 * Math.PI;
-                this.env *= 0.998; // Tighter decay for sharper transient
+                this.env *= decay;
             } else {
                 this.env = 0;
             }
@@ -119,6 +122,7 @@ class SyncManager {
         const fxMixTimeSel = document.getElementById('fxMixTimeSel');
 
         const oldBpm = state.bpm; // Save previous BPM for phase-alignment
+        const wasSynced = state.syncEnabled;
 
         if (syncCheckbox) state.syncEnabled = syncCheckbox.checked;
         if (bpmInput) state.bpm = Math.max(10, Math.min(999, parseFloat(bpmInput.value) || 120));
@@ -174,7 +178,7 @@ class SyncManager {
         }
 
         // Continuous Phase Alignment for Live Tempo Changes
-        if (state.bpm !== oldBpm && state.masterStartTime > 0 && state.audioContext) {
+        if (state.bpm !== oldBpm && state.masterStartTime !== 0 && state.audioContext) {
             const now = AudioEngine.currentTime;
             // Calculate how many beats have elapsed on the master grid
             const currentBeats = (now - state.masterStartTime) * (oldBpm / 60.0);
@@ -236,10 +240,9 @@ class SyncManager {
 
         if (window.DroneSynth) {
             DroneSynth.instances.forEach(d => {
-                d.nextStepTime = 0; // Force tight resync to new master grid
+                if (state.bpm !== oldBpm || state.syncEnabled !== wasSynced) d.nextStepTime = 0;
                 if (d.fxChain && d.fxChain.nodes) updateTimeBasedFX(d.fxChain.nodes, d.fxParams);
             });
-            DroneSynth.renderAll();
         }
     }
 
@@ -314,7 +317,7 @@ class SyncManager {
             return now;
         }
 
-        const origin = Number.isFinite(state.masterStartTime) && state.masterStartTime > 0
+        const origin = Number.isFinite(state.masterStartTime) && state.masterStartTime !== 0
             ? state.masterStartTime
             : now;
         const earliest = now + Math.max(0, minimumLead);

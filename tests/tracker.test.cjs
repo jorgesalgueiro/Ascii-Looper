@@ -287,6 +287,7 @@ test('global stop silences old sampler sources after a queued restart', () => {
     };
     state.audioContext.createGain = () => ({ gain: {}, connect() {}, disconnect() {} });
     state.audioContext.createStereoPanner = () => ({ pan: {}, connect() {}, disconnect() {} });
+    state.audioContext.createAnalyser = () => ({ context: state.audioContext, connect() {}, disconnect() {} });
     context.AudioEngine.connectToMaster = () => {};
     const sampler = new context.SamplerTrack(0);
     sampler.buffer = {};

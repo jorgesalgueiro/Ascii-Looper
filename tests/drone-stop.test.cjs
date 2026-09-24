@@ -17,7 +17,10 @@ function createHarness() {
     const context = {
         console,
         state: { audioContext: { currentTime: 10, state: 'running' }, syncEnabled: false },
-        AudioEngine: { get currentTime() { return context.state.audioContext.currentTime; } },
+        AudioEngine: {
+            get currentTime() { return context.state.audioContext.currentTime; },
+            midiNoteToFrequency: note => 440 * 2 ** ((note - 69) / 12)
+        },
         document: { getElementById: id => elements.get(id) || null },
         UIManager: { updateLiveDrone: id => liveUpdates.push(id) },
         setTimeout(callback, delay = 0) {
@@ -34,6 +37,7 @@ function createHarness() {
     const renderAll = drone.renderAll;
     // Keep transport, recording and per-synth UI code real; isolate audio and full DOM rendering.
     drone.noteOn = () => {};
+    drone.triggerVoice = () => {};
     drone.noteOff = (id, voiceId, immediate, scheduledTime = 0) => {
         releases.push({ id, voiceId, immediate, scheduledTime });
         if (scheduledTime <= context.AudioEngine.currentTime) delete drone.instances[id].voices[voiceId];
@@ -47,7 +51,7 @@ function createHarness() {
         drone.instances.push(synth);
         const classes = new Set();
         const status = { style: {}, textContent: '' };
-        const header = { style: {}, querySelector: selector => selector === 'span:last-child' ? status : null };
+        const header = { style: {}, querySelector: selector => selector === '.drone-track-state' ? status : null };
         const recButton = { classList: { add: name => classes.add(name), remove: name => classes.delete(name) } };
         elements.set(`drone-inst-${synth.id}`, {
             style: {}, dataset: {},

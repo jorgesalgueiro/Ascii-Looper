@@ -8,7 +8,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#291a0a">
     <meta name="description" content="ASCII Looper - Browser-based 10-track loop station with effects and sequencing.">
-    <title>ASCII Looper v0.76.06</title>
+    <title>ASCII Looper v0.76.07</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="styles.css">
     <link rel="dns-prefetch" href="//www.google.com">
@@ -251,7 +251,7 @@
                 </div>
 
                 <div style="width: 100%;">
-                     <pre id="master-ascii-vu" class="ascii-vu-meter" style="color:#0ff; border-color:#0ff; width: 100%; box-sizing: border-box; font-size: 20px; line-height: 20px; height: 40px; padding-top: 10px;">MST : [░░░░░░░░░░░░░░░░░░░]</pre>
+                     <div id="master-ascii-vu" class="ascii-vu-meter vu-detailed" role="meter" aria-label="Master output level after limiter" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="-60">MASTER · −∞ dBFS</div>
                 </div>
 
                 <div style="text-align:right;">
@@ -1319,7 +1319,8 @@
                 </label>
                 <label class="ov-label">SAMPLE RATE:
                     <select id="sampleRateSelect">
-                        <option value="44100" selected>44100 Hz</option>
+                        <option value="auto" selected>Auto (Device Default)</option>
+                        <option value="44100">44100 Hz</option>
                         <option value="48000">48000 Hz</option>
                         <option value="96000">96000 Hz</option>
                         <option value="192000">192000 Hz</option>
@@ -1342,7 +1343,8 @@
                 </label>
                 <label class="ov-label">SAMPLE RATE:
                     <select class="ov-mirror" data-target="sampleRateSelect">
-                        <option value="44100" selected>44100 Hz</option>
+                        <option value="auto" selected>Auto (Device Default)</option>
+                        <option value="44100">44100 Hz</option>
                         <option value="48000">48000 Hz</option>
                         <option value="96000">96000 Hz</option>
                         <option value="192000">192000 Hz</option>

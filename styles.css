@@ -598,7 +598,8 @@ input[type=range]::-moz-range-thumb {
     #loopContainer .loop.multiplying { --state-color: #ffaa00; --state-bg: #332200; }
     #loopContainer .loop.queued { --state-color: #0088aa; --state-bg: #001b22; }
     #loopContainer .loop.stopping { --state-color: #ffaa00; --state-bg: #332200; }
-    #loopContainer .loop { container: loop-track / inline-size; --loop-control-color: var(--state-color); }
+    #loopContainer .loop { container: loop-track / inline-size; --loop-control-color: var(--state-color); border-width: 3px; }
+    #loopContainer .loop:is([data-fx-selected="true"], :focus-within) { outline: 2px solid #f5e7c4; outline-offset: 2px; }
     #loopContainer .loop.empty { --loop-control-color: #bbb; }
     #loopContainer > *,
     #loopContainer .loop,
@@ -616,14 +617,12 @@ input[type=range]::-moz-range-thumb {
     }
     #loopContainer .loop-track-identity {
         display: grid;
-        grid-template-columns: auto auto minmax(0, 1fr);
+        grid-template-columns: auto auto 140px minmax(0, 1fr);
         align-items: center;
         gap: 6px;
         color: var(--loop-control-color);
     }
     #loopContainer .loop-track-identity input[aria-label="Loop Name"] {
-        width: 100%;
-        font-size: 12px;
         border-color: var(--state-color);
     }
     #loopContainer .loop-track-summary {
@@ -644,15 +643,8 @@ input[type=range]::-moz-range-thumb {
     }
     #loopContainer .loop-track-state span { color: inherit; }
     #loopContainer [id^="loop-extra-info-"] { white-space: normal; overflow-wrap: anywhere; }
-    #loopContainer .loop-track-summary canvas {
-        display: block;
-        flex: 0 0 180px;
-        width: 180px;
-        height: 20px;
-        box-sizing: content-box;
-        border: 1px solid var(--state-color);
-        border-radius: 2px;
-        background: rgba(0, 0, 0, 0.3);
+    #loopContainer .loop-track-signal canvas {
+        border-color: var(--state-color);
         cursor: pointer;
     }
     #loopContainer .loop-track-controls { padding: 8px; gap: 10px; color: #bbb; }
@@ -795,9 +787,9 @@ input[type=range]::-moz-range-thumb {
     @container loop-track (min-width: 520px) {
         #loopContainer .loop-track-parameters { grid-template-columns: repeat(2, minmax(0, 1fr)) minmax(0, 1.5fr) repeat(2, minmax(0, 1fr)); }
     }
-    @container loop-track (max-width: 360px) {
-        #loopContainer .loop-track-identity { grid-template-columns: auto minmax(0, 1fr); }
-        #loopContainer .loop-track-identity input[aria-label="Loop Name"] { grid-column: 1 / -1; }
+    @container loop-track (max-width: 480px) {
+        #loopContainer .loop-track-identity { grid-template-columns: auto auto minmax(0, 1fr); }
+        #loopContainer .loop-track-signal { grid-column: 1 / -1; }
     }
     @media (pointer: coarse) {
         #loopContainer button,
@@ -1127,11 +1119,93 @@ label, .val-display, span {
 
     /* ===== VISUALS & UTILS ===== */
     .ascii-vu-meter {
-        font-family: 'Courier New', monospace; font-size: 10px; line-height: 12px;
-        background: #000; border: 1px solid #444; color: var(--term-green);
-        overflow: hidden; white-space: pre; padding: 2px; width: 100%;
-        contain: strict; /* Strict isolation for high-frequency updates */
-        will-change: contents; /* Hint browser to optimize text repainting */
+        --vu-rms: 0%;
+        display: flex; align-items: center; gap: 5px; min-width: 0; min-height: 18px;
+        width: 100%; box-sizing: border-box; margin: 0; padding: 3px;
+        font: 10px/1.2 'Courier New', monospace; font-variant-numeric: tabular-nums;
+        background: #050b0c; border: 1px solid #294047; color: #d6eee9;
+        overflow: hidden; white-space: nowrap; contain: layout paint;
+    }
+    .vu-body { flex: 1; min-width: 0; display: block; }
+    .vu-rail { display: block; position: relative; height: 9px; background: #102326; overflow: hidden; }
+    .vu-fill {
+        position: absolute; inset: 0;
+        background: linear-gradient(90deg, #4ac8bd, #68e19b 70%, #e4bd59 70%, #e4bd59 90%, #ef6d68 90%);
+        clip-path: inset(0 calc(100% - var(--vu-rms)) 0 0);
+    }
+    .vu-rail::after {
+        content: ''; position: absolute; z-index: 1; inset: 0; pointer-events: none;
+        background: repeating-linear-gradient(90deg, transparent 0 5px, #050b0c 5px 7px);
+    }
+    .vu-peak { position: absolute; z-index: 2; top: 0; bottom: 0; left: var(--vu-peak, 0%); width: 2px; background: #fff; transform: translateX(-100%); }
+    .vu-peak[hidden] { display: none; }
+    .vu-label, .vu-readout, .vu-scale { display: none; }
+    .vu-clip { flex: 0 0 5px; height: 9px; background: #392023; border: 1px solid #613036; }
+    .vu-clipped .vu-clip { background: #ff5e60; border-color: #ff9d9f; }
+    .vu-clipped .vu-readout { color: #ff8585; }
+    .vu-detailed { gap: 10px; min-height: 48px; padding: 7px 9px; }
+    .vu-detailed .vu-label { display: block; color: #c4d8f6; font-size: 10px; font-weight: bold; letter-spacing: .06em; }
+    .vu-detailed .vu-readout { display: block; width: 10ch; text-align: right; font-size: 12px; font-weight: bold; }
+    .vu-detailed .vu-rail { height: 14px; }
+    .vu-detailed .vu-clip { height: 14px; }
+    .vu-detailed .vu-scale { display: block; position: relative; height: 12px; margin-top: 3px; color: #99afb9; font-size: 9px; }
+    .vu-scale span { position: absolute; transform: translateX(-50%); }
+    .vu-scale span:first-child { transform: none; }
+    .vu-scale span:last-child { transform: translateX(-100%); }
+    .live-mixer-console {
+        display: flex; overflow-x: auto; gap: 4px; margin-bottom: 10px;
+        padding-bottom: 6px; scrollbar-width: thin;
+    }
+    .live-mixer-fader { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+    .live-mixer-fader input[type="range"] { box-sizing: border-box; }
+    .vu-vertical {
+        flex: 0 0 18px; flex-direction: column-reverse; gap: 3px;
+        width: 18px; height: 120px; padding: 2px;
+    }
+    .vu-vertical .vu-body { width: 100%; min-height: 0; }
+    .vu-vertical .vu-rail { width: 100%; height: 100%; }
+    .vu-vertical .vu-fill {
+        background: linear-gradient(0deg, #4ac8bd, #68e19b 70%, #e4bd59 70%, #e4bd59 90%, #ef6d68 90%);
+        clip-path: inset(calc(100% - var(--vu-rms)) 0 0 0);
+    }
+    .vu-vertical .vu-rail::after {
+        background: repeating-linear-gradient(0deg, transparent 0 5px, #050b0c 5px 7px);
+    }
+    .vu-vertical .vu-peak {
+        top: auto; bottom: var(--vu-peak, 0%); left: 0; width: 100%; height: 2px;
+        transform: translateY(100%);
+    }
+    .vu-vertical .vu-clip { width: 100%; height: 5px; box-sizing: border-box; }
+    input.track-name {
+        width: 140px; max-width: 100%; min-width: 0; min-height: 28px; box-sizing: border-box;
+        padding: 4px 5px; background: #000; border: 1px solid;
+        font: 12px/1.2 'Courier New', monospace;
+    }
+    .track-signal-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: center; gap: 6px; min-width: 0; }
+    .track-signal-pair canvas, .track-signal-pair .ascii-vu-meter {
+        display: block; width: 100%; min-width: 0; height: 28px; box-sizing: border-box;
+        border: 1px solid #294047; border-radius: 2px; background: #050b0c;
+    }
+    .track-signal-pair .ascii-vu-meter { display: flex; padding: 4px; }
+    .track-signal-pair .vu-rail, .track-signal-pair .vu-clip { height: 18px; }
+    .drone-track-header {
+        display: grid; grid-template-columns: auto 140px minmax(0, 360px) minmax(0, 1fr);
+        align-items: center; gap: 8px; padding: 8px; min-height: 44px;
+    }
+    .drone-track-state { justify-self: end; font-size: 10px; }
+    @media (max-width: 600px) {
+        .drone-track-header { grid-template-columns: auto minmax(0, 1fr) auto; }
+        .drone-signal { grid-column: 1 / -1; grid-row: 2; }
+        .drone-track-state { grid-column: 3; grid-row: 1; }
+    }
+    @media (pointer: coarse) {
+        .drone-track-header .track-name { min-height: 36px; }
+    }
+    @media (max-width: 480px) {
+        .vu-detailed { gap: 6px; padding: 6px; }
+        .vu-detailed .vu-label { font-size: 9px; letter-spacing: 0; }
+        .vu-detailed .vu-readout { font-size: 10px; }
+        .vu-scale span:nth-child(4) { display: none; }
     }
     #timeline {
         height: 60px; background: repeating-linear-gradient(90deg, #000, #000 19px, #111 20px);
@@ -1843,7 +1917,7 @@ button, .std-btn, .main-tab-btn, .fx-tab-btn, .manual-tab-btn { letter-spacing: 
 /* Sampler tracks (Song Tracker view) */
 .sampler-tracks-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 8px;
 }
 .sampler-track {
@@ -1935,12 +2009,8 @@ button, .std-btn, .main-tab-btn, .fx-tab-btn, .manual-tab-btn { letter-spacing: 
     display: grid;
     gap: 3px;
 }
-.sampler-wave-wrap canvas {
-    width: 100%;
-    height: 30px;
-    box-sizing: border-box;
-    border: 1px solid color-mix(in srgb, var(--sampler-color) 48%, #333);
-    background: rgba(0, 0, 0, 0.52);
+.sampler-signal canvas {
+    border-color: color-mix(in srgb, var(--sampler-color) 48%, #333);
 }
 .sampler-wave-meta {
     display: flex;
@@ -2017,8 +2087,11 @@ button, .std-btn, .main-tab-btn, .fx-tab-btn, .manual-tab-btn { letter-spacing: 
     background: #ffce52;
     color: #050505;
 }
-@media (max-width: 760px) {
-    .sampler-tracks-grid { grid-template-columns: 1fr; }
+@media (max-width: 1100px) {
+    .sampler-tracks-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 600px) {
+    .sampler-tracks-grid { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 430px) {
     .sampler-parameter-grid { grid-template-columns: 1fr; }

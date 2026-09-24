@@ -116,11 +116,9 @@ class TrackerManager {
 
         if (state.tracker.isPlaying) {
             // Calculate next row time. If Sync is enabled, quantize start to next Bar.
-            if (state.syncEnabled && state.masterStartTime > 0) {
+            if (state.syncEnabled) {
                 const secondsPerBar = (60 / state.bpm) * state.timeSig.num;
-                const elapsed = AudioEngine.currentTime - state.masterStartTime;
-                // Quantize to next bar boundary
-                state.tracker.nextRowTime = state.masterStartTime + (Math.floor(elapsed / secondsPerBar) + 1) * secondsPerBar;
+                state.tracker.nextRowTime = SyncManager.getNextGridTime(secondsPerBar);
             } else {
                 state.tracker.nextRowTime = AudioEngine.currentTime + 0.05;
             }

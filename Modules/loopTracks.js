@@ -73,8 +73,12 @@ class SamplerTrack {
         this.isMutedBySolo = false;
         this.source = null;
         this.activeSources = new Set();
+        this.activeGains = new Map();
         this.gain = null;
         this.panNode = null;
+        this.analyser = null;
+        this.analyserData = null;
+        this.meter = {};
         this.wavePeaks = null;
         this.isLooping = true;
         this.state = 'empty';
@@ -91,6 +95,12 @@ class SamplerTrack {
         const source = state.audioContext.createBufferSource();
         const gain = state.audioContext.createGain();
         const panNode = state.audioContext.createStereoPanner();
+        // Keep one tap across queued replacements so pending meter history survives.
+        if (!this.analyser || this.analyser.context !== state.audioContext) {
+            this.analyser = state.audioContext.createAnalyser();
+            this.analyser.fftSize = 256;
+            this.analyserData = new Float32Array(this.analyser.fftSize);
+        }
         source.buffer = this.buffer;
         source.playbackRate.value = this.speed;
         source.loop = this.isLooping;
@@ -99,6 +109,7 @@ class SamplerTrack {
 
         source.onended = () => {
             this.activeSources.delete(source);
+            this.activeGains.delete(source);
             try { source.disconnect(); } catch(e) {}
             try { gain.disconnect(); } catch(e) {}
             try { panNode.disconnect(); } catch(e) {}
@@ -115,9 +126,11 @@ class SamplerTrack {
         source.connect(gain);
         gain.connect(panNode);
         AudioEngine.connectToMaster(panNode);
+        panNode.connect(this.analyser); // Parallel observation only; no second master route.
         source.start(t);
 
         this.activeSources.add(source);
+        this.activeGains.set(source, gain);
         this.source = source;
         this.gain = gain;
         this.panNode = panNode;
@@ -290,9 +303,12 @@ class SamplerManager {
     }
     static updateVolumeGraph(id) {
         const s = state.samplers[id];
-        if (s.gain && state.audioContext) {
+        if (state.audioContext) {
             const targetVol = (s.muted || s.isMutedBySolo) ? 0 : s.volume;
-            AudioEngine.scheduledFade(s.gain, targetVol, state.audioContext.currentTime, 20);
+            // The outgoing source can still be audible while its replacement is queued.
+            s.activeGains.forEach(gain => {
+                AudioEngine.scheduledFade(gain, targetVol, state.audioContext.currentTime, 20);
+            });
         }
     }
     static normalize(id) {
@@ -308,8 +324,8 @@ class SamplerManager {
         if (!sampler.buffer) return;
 
         const now = AudioEngine.currentTime;
-        const targetTime = scheduledTime > now
-            ? scheduledTime
+        const targetTime = scheduledTime > 0
+            ? Math.max(now, scheduledTime)
             : (state.syncEnabled ? SyncManager.getNextGridTime() : now);
 
         if (sampler.state === 'playing' || sampler.state === 'armed') {
@@ -387,8 +403,8 @@ class SamplerManager {
             ctx.fillRect(i, y, 1, hBar);
         }
         
-        if (now > 0 && (s.state === 'playing' || s.state === 'stopping') && s.buffer && s.speed > 0) {
-            const elapsed = Math.max(0, (now - s.startTime)) * s.speed;
+        if (now >= s.startTime && now > 0 && (s.state === 'playing' || s.state === 'stopping') && s.buffer && s.speed > 0) {
+            const elapsed = (now - s.startTime) * s.speed;
             const dur = s.buffer.duration;
             if (dur > 0) {
                 const progress = (elapsed % dur) / dur;
@@ -401,11 +417,24 @@ class SamplerManager {
         }
     }
 
-    static updateVisuals() {
-        const now = AudioEngine.currentTime;
+    static updateVisuals(now = AudioEngine.playbackTime) {
         state.samplers.forEach(s => {
             if (s.buffer && (s.state === 'playing' || s.state === 'stopping')) {
                 this.drawWaveform(s.id, now);
+            }
+        });
+    }
+
+    static updateMeters(playbackTime = AudioEngine.playbackTime) {
+        state.samplers.forEach(sampler => {
+            const active = sampler.activeSources.size > 0;
+            AudioEngine.readMeter(active ? sampler.analyser : null,
+                active ? sampler.analyserData : null, sampler.meter, playbackTime);
+            UIManager.renderMeter(document.getElementById(`sampler-vu-${sampler.id}`), sampler.meter);
+            UIManager.renderMeter(document.getElementById(`live_mm_vu_s_${sampler.id}`), sampler.meter);
+            for (const id of [`samp-vol-slider-${sampler.id}`, `mm_slider_s_${sampler.id}`, `live_mm_slider_s_${sampler.id}`]) {
+                const slider = document.getElementById(id);
+                if (slider) slider.classList.toggle('clipping-slider', sampler.meter.clipped);
             }
         });
     }
@@ -432,11 +461,14 @@ class SamplerManager {
                 </header>
                 <div class="sampler-track-body">
                     <div class="sampler-wave-wrap">
-                        <canvas id="samp-wave-${sampler.id}" width="180" height="24" aria-label="Sampler ${sampler.id + 1} waveform"></canvas>
+                        <div class="track-signal-pair sampler-signal">
+                            <canvas id="samp-wave-${sampler.id}" width="180" height="24" aria-label="Sampler ${sampler.id + 1} waveform"></canvas>
+                            <div id="sampler-vu-${sampler.id}" class="ascii-vu-meter" aria-label="Sampler ${sampler.id + 1} output level"></div>
+                        </div>
                         <div class="sampler-wave-meta"><span data-sampler-duration>${this.getDurationLabel(sampler)}</span><span class="sampler-loop-badge" data-sampler-loop-badge ${sampler.isLooping ? '' : 'hidden'}>LOOP</span></div>
                     </div>
                     <div class="sampler-parameter-grid">
-                        <label class="sampler-parameter">VOL <output id="samp_vol_${sampler.id}">${sampler.volume.toFixed(2)}</output><input type="range" min="0" max="2" step="0.01" value="${sampler.volume}" oninput="SamplerManager.setVolume(${sampler.id}, this.value)" aria-label="Sampler ${sampler.id + 1} volume"></label>
+                        <label class="sampler-parameter">VOL <output id="samp_vol_${sampler.id}">${sampler.volume.toFixed(2)}</output><input id="samp-vol-slider-${sampler.id}" type="range" min="0" max="2" step="0.01" value="${sampler.volume}" oninput="SamplerManager.setVolume(${sampler.id}, this.value)" aria-label="Sampler ${sampler.id + 1} volume"></label>
                         <label class="sampler-parameter">PAN <output id="samp_pan_${sampler.id}">${sampler.pan}</output><input type="range" min="0" max="10" step="1" value="${sampler.pan}" oninput="SamplerManager.setPan(${sampler.id}, this.value)" aria-label="Sampler ${sampler.id + 1} pan"></label>
                         <label class="sampler-parameter">SPEED <output id="samp_spd_${sampler.id}">${sampler.speed.toFixed(2)}</output><input type="range" min="0.1" max="4.0" step="0.01" value="${sampler.speed}" oninput="SamplerManager.setSpeed(${sampler.id}, this.value)" aria-label="Sampler ${sampler.id + 1} speed"></label>
                     </div>
@@ -518,7 +550,8 @@ class AudioGraph {
 
         if (this.nodes.baseGain) {
             const gainNode = this.nodes.baseGain;
-            AudioEngine.scheduledFade(gainNode, 0, now, (actualT - now) * 1000);
+            const fadeStart = Math.max(now, actualT - 0.005);
+            AudioEngine.scheduledFade(gainNode, 0, fadeStart, (actualT - fadeStart) * 1000);
             gainNode.gain.linearRampToValueAtTime(1.0, actualT + 0.010);
             this.source.connect(gainNode);
         }
@@ -565,48 +598,6 @@ class AudioGraph {
         }
         this.nodes.source = this.source;
 
-        // --- 2. Calculate Start Time ---
-        if (this.scheduledTime > 0) {
-             this.startTime = this.scheduledTime;
-             // Scheduled start (e.g. from Tracker)
-             // Correctly calculate phase offset relative to sync to prevent desync when using start slider
-             let startOffset = 0;
-             if (state.syncEnabled) {
-                 // We want the loop to play as if it's synced to Master, but shifted by startDelay.
-                 // Offset = (MasterTime - Shift) % Duration
-                 const masterElapsed = this.startTime - state.masterStartTime;
-                 const dur = this.loop.duration > 0 ? this.loop.duration : 1;
-                 const shift = this.loop.startDelay * dur;
-                 startOffset = ((masterElapsed * activeRate) - shift) % dur;
-                 if (startOffset < 0) startOffset += dur;
-             } else {
-                 startOffset = this.loop.startDelay * this.loop.duration;
-             }
-             this.startOffset = startOffset;
-             this.source.start(this.startTime, startOffset);
-        } else if (state.syncEnabled && !this.loop.isMutedBySolo && !this.immediate) { 
-            // Closed Tape Logic: 
-            // The loop is theoretically always spinning relative to Master Start Time.
-            // We calculate where the tape head *should* be right now, accounting for the phase shift (startDelay).
-            this.startTime = AudioEngine.currentTime;
-            const masterElapsed = this.startTime - state.masterStartTime;
-            
-            // Offset = (MasterTime - Shift) % Duration
-            // Improved phase
-            const dur = this.loop.duration > 0 ? this.loop.duration : 1;
-            const shift = this.loop.startDelay * dur;
-            let bufferOffset = ((masterElapsed * activeRate) - shift) % dur;
-            if (bufferOffset < 0) bufferOffset += dur;
-            
-            this.startOffset = bufferOffset;
-            this.source.start(this.startTime, bufferOffset);
-        } else {
-            // Unsynced: Just start with the delay offset applied to 0
-            this.startTime = AudioEngine.currentTime;
-            this.startOffset = this.loop.startDelay * this.loop.duration;
-            this.source.start(this.startTime, this.startOffset);
-        }
-
         // --- 3. Build Effects Chain ---
         const baseGain = state.audioContext.createGain();
         baseGain.gain.value = 1.0;
@@ -622,12 +613,6 @@ class AudioGraph {
         postEffectGain.gain.value = 0;
         lastNode.connect(postEffectGain);
         this.nodes.volume = postEffectGain;
-        
-        // Fast envelope attack (15ms) to prevent DC pop
-        const targetVol = this.loop.effectiveVolume;
-        const safeStart = Math.max(AudioEngine.currentTime, this.startTime);
-        postEffectGain.gain.setValueAtTime(0, safeStart);
-        AudioEngine.scheduledFade(postEffectGain, targetVol, safeStart, 15);
         
         // --- 5. Panning ---
         let finalNode;
@@ -656,7 +641,20 @@ class AudioGraph {
         if (this.loop.wetDestination) {
             finalNode.connect(this.loop.wetDestination);
         }
-        
+
+        // Graph construction can overrun a scheduled start; preserve phase at the actual start time.
+        this.startTime = Math.max(this.scheduledTime, AudioEngine.currentTime);
+        if (state.syncEnabled && (this.scheduledTime > 0 || (!this.loop.isMutedBySolo && !this.immediate))) {
+            const dur = this.loop.duration > 0 ? this.loop.duration : 1;
+            const shift = this.loop.startDelay * dur;
+            const offset = ((this.startTime - state.masterStartTime) * activeRate - shift) % dur;
+            this.startOffset = (offset + dur) % dur;
+        } else {
+            this.startOffset = this.loop.startDelay * this.loop.duration;
+        }
+        postEffectGain.gain.setValueAtTime(0, this.startTime);
+        AudioEngine.scheduledFade(postEffectGain, this.loop.effectiveVolume, this.startTime, 15);
+        this.source.start(this.startTime, this.startOffset);
         return true;
     }
 
@@ -1861,7 +1859,8 @@ class Loop {
             } else if (this.state === 'recording') {
                 return Math.min(1, elapsed / 10.0); // 10 sec max bar for unsynced
             }
-        } else if (this.state === 'playing' && this.duration > 0) {
+        } else if ((this.state === 'playing' || this.state === 'stopping') && this.duration > 0) {
+             if (this.graph && now < this.graph.startTime) return 0;
              // Visual progress for "Tape" mode - rotates with master clock
              if (state.syncEnabled) {
                  // Visual sync to this loop's duration relative to master clock
@@ -1874,7 +1873,7 @@ class Loop {
              } else if (this.graph) {
                  const dur = this.duration || 1;
                  const activeRate = this.effectivePlaybackRate;
-                 return (((now - this.graph.startTime) * activeRate) % this.duration) / dur;
+                 return (((now - this.graph.startTime) * activeRate + this.graph.startOffset) % this.duration) / dur;
              }
         }
         return 0;
@@ -2758,7 +2757,7 @@ class LoopManager {
      * that have accumulated error, so long sessions never drift apart.
      */
     static realignDriftedLoops() {
-        if (!state.syncEnabled || !state.audioContext || !(state.masterStartTime > 0)) return;
+        if (!state.syncEnabled || !state.audioContext || state.masterStartTime === 0) return;
         const now = AudioEngine.currentTime;
         state.loops.forEach(loop => {
             if (loop.state !== 'playing' || !loop.graph || !loop.graph.startTime || loop.graph.isDestroyed) return;
@@ -3505,6 +3504,7 @@ class UIManager {
         const loopDiv = document.createElement('div');
         loopDiv.className = `loop ${loop.state}`;
         loopDiv.id = `loop-${index}`;
+        loopDiv.dataset.fxSelected = String(EffectManager.activeTab === index);
         // Drag and Drop Events
         loopDiv.ondragover = (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; };
         loopDiv.ondrop = (e) => LoopManager.handleLoopDrop(e, index);
@@ -3512,8 +3512,11 @@ class UIManager {
         // Build loop content
         loopDiv.innerHTML = this.generateLoopHTML(loop, index);
         
-        // Auto-select effect tab when clicking anywhere on the loop card
-        loopDiv.addEventListener('click', () => EffectManager.setActiveTab(index));
+        ['pointerdown', 'focusin', 'click'].forEach(type => {
+            loopDiv.addEventListener(type, () => {
+                if (EffectManager.activeTab !== index) EffectManager.setActiveTab(index);
+            });
+        });
         
         // Add click listener to the HEADER part
         const header = loopDiv.querySelector('.loop-header');
@@ -3636,16 +3639,18 @@ class UIManager {
                         <button type="button" id="loop-action-${index}" class="loop-track-action"
                                 onclick="event.stopPropagation(); LoopManager.handleAction(${index}, 'short');"
                                 aria-label="Loop ${index + 1}: ${action}" ${action === 'SAVING' ? 'disabled' : ''}>${action}</button>
-                        <input type="text" value="${escape(loop.name || '')}" name="loop-name-${index}" placeholder="Loop ${index + 1}"
+                        <input type="text" class="track-name" value="${escape(loop.name || '')}" name="loop-name-${index}" placeholder="Loop ${index + 1}"
                                onkeydown="if(event.key==='Enter') this.blur(); event.stopPropagation();"
                                oninput="event.stopPropagation(); state.loops[${index}].name = this.value; if(window.UIManager && UIManager.updateLiveLoop) UIManager.updateLiveLoop(${index});"
                                onclick="event.stopPropagation(); EffectManager.setActiveTab(${index});" aria-label="Loop Name">
+                        <div class="track-signal-pair loop-track-signal">
+                            <canvas id="loop-wave-${index}" width="180" height="26" title="Click to Export WAV" aria-label="Loop ${index + 1} waveform" onclick="event.stopPropagation(); ProjectManager.exportLoop(${index});"></canvas>
+                            <div id="loop-ascii-vu-${index}" class="ascii-vu-meter" aria-label="Loop ${index + 1} output level"></div>
+                        </div>
                     </div>
                     <div class="loop-track-summary">
                         <span class="loop-track-state"><span id="loop-state-symbol-${index}">${stateSymbol}</span> <span id="loop-state-text-${index}">${loop.state.toUpperCase()}</span></span>
                         <span id="loop-extra-info-${index}">${mutedText}${durationText}</span>
-                        <canvas id="loop-wave-${index}" width="180" height="20" title="Click to Export WAV" aria-label="Loop ${index + 1} waveform" onclick="event.stopPropagation(); ProjectManager.exportLoop(${index});"></canvas>
-                        <pre id="loop-ascii-vu-${index}" class="ascii-vu-meter" style="display:none;">[░░░]</pre>
                     </div>
                 </div>
                 <div class="loop-controls loop-track-controls">
@@ -3742,6 +3747,50 @@ class UIManager {
                 </div>
             </div>
         `;
+    }
+
+    static formatMeterLevel(meter) {
+        if (meter.clipped) return 'CLIP';
+        return meter.peak > 0.001 ? `${meter.peakDb.toFixed(1)} dBFS` : '−∞ dBFS';
+    }
+
+    static renderMeter(el, meter, label = '') {
+        if (!el) return;
+        if (!el._vu || !el._vu.rail.isConnected) {
+            el.innerHTML = `<span class="vu-label"></span><span class="vu-body"><span class="vu-rail"><span class="vu-fill"></span><span class="vu-peak"></span></span><span class="vu-scale" aria-hidden="true"><span style="left:0%">−60</span><span style="left:40%">−36</span><span style="left:70%">−18</span><span style="left:90%">−6</span><span style="left:100%">0</span></span></span><span class="vu-readout"></span><span class="vu-clip" aria-hidden="true"></span>`;
+            el._vu = {
+                rail: el.querySelector('.vu-rail'),
+                peak: el.querySelector('.vu-peak'),
+                label: el.querySelector('.vu-label'),
+                readout: el.querySelector('.vu-readout')
+            };
+            el.setAttribute('role', 'meter');
+            el.setAttribute('aria-valuemin', '-60');
+            el.setAttribute('aria-valuemax', '0');
+            el.title = 'RMS level / held sample peak · dBFS';
+        }
+        const ui = el._vu;
+        const text = this.formatMeterLevel(meter);
+        const rms = meter.rmsPercent.toFixed(1);
+        const peak = meter.peakPercent.toFixed(1);
+        if (ui.rms !== rms) { el.style.setProperty('--vu-rms', `${rms}%`); ui.rms = rms; }
+        if (ui.peakValue !== peak) {
+            el.style.setProperty('--vu-peak', `${peak}%`);
+            ui.peak.hidden = meter.peakPercent === 0;
+            ui.peakValue = peak;
+        }
+        if (ui.text !== text) {
+            ui.readout.textContent = text;
+            el.setAttribute('aria-valuenow', Math.max(-60, Math.min(0, meter.peakDb)).toFixed(1));
+            el.setAttribute('aria-valuetext', text);
+            ui.text = text;
+        }
+        if (ui.labelText !== label) {
+            ui.label.textContent = label;
+            el.classList.toggle('vu-detailed', !!label);
+            ui.labelText = label;
+        }
+        el.classList.toggle('vu-clipped', meter.clipped);
     }
 
     /**
@@ -4013,6 +4062,8 @@ class UIManager {
 
         // Loop Tabs
         state.loops.forEach((loop, i) => {
+             const card = document.getElementById(`loop-${i}`);
+             if (card) card.dataset.fxSelected = String(EffectManager.activeTab === i);
              const btn = document.createElement('button');
              btn.className = `fx-tab-btn ${EffectManager.activeTab === i ? 'active' : ''}`;
              btn.textContent = `${i+1}`;
@@ -4150,8 +4201,7 @@ class UIManager {
     /**
      * Updates dynamic elements for all loops (progress bars, state text).
      */
-    static updateLoopDisplays() {
-        const now = AudioEngine.currentTime;
+    static updateLoopDisplays(now = AudioEngine.playbackTime) {
         // State symbols for info box
         const stateSymbols = {
             empty: '( )', armed: '(A)', recording: '(R)',
@@ -4197,19 +4247,20 @@ class UIManager {
             const cvs = loop._ui.cvs;
             
             if (cvs && cvs.offsetParent !== null) { // Only draw if visible
-                // High DPI Support for Loop Waveforms
                 const dpr = window.devicePixelRatio || 1;
-                // Get CSS size if not already set, or assume default 180x20
-            const cssWidth = 180;
-            const cssHeight = 20;
+            const cssWidth = Math.max(1, cvs.clientWidth);
+            const cssHeight = Math.max(1, cvs.clientHeight);
+            const pixelWidth = Math.round(cssWidth * dpr);
+            const pixelHeight = Math.round(cssHeight * dpr);
             
             const p = loop.state !== 'empty' ? loop.getProgress(now) : 0;
             const playheadX = Math.floor(p * cssWidth);
             
             const isRedundant = cvs._lastPlayhead === playheadX && 
                                 cvs._lastState === loop.state && 
-                                cvs._lastPeaks === loop.wavePeaks && 
-                                loop.state !== 'recording' && 
+                                cvs._lastPeaks === loop.wavePeaks &&
+                                cvs.width === pixelWidth && cvs.height === pixelHeight &&
+                                loop.state !== 'recording' &&
                                 loop.state !== 'overdubbing';
                                 
             if (!isRedundant) {
@@ -4217,12 +4268,9 @@ class UIManager {
                 cvs._lastState = loop.state;
                 cvs._lastPeaks = loop.wavePeaks;
 
-                // Set actual canvas size to scale
-                if (cvs.width !== cssWidth * dpr) {
-                    cvs.width = cssWidth * dpr;
-                    cvs.height = cssHeight * dpr;
-                    cvs.style.width = `${cssWidth}px`;
-                    cvs.style.height = `${cssHeight}px`;
+                if (cvs.width !== pixelWidth || cvs.height !== pixelHeight) {
+                    cvs.width = pixelWidth;
+                    cvs.height = pixelHeight;
                 }
 
                 const ctx = cvs.getContext('2d');
@@ -4249,9 +4297,8 @@ class UIManager {
                     
                     ctx.fillStyle = waveColor;
 
-                    for(let i=0; i<w; i++){
-                        if (i >= peaks.length) break;
-                        const mag = peaks[i];
+                    for(let i=0; i<w && peaks.length; i++){
+                        const mag = peaks[Math.floor(i / w * peaks.length)];
                         const hBar = Math.max(1, mag * amp);
                         const y = (h - hBar) / 2;
                         ctx.fillRect(i, y, 1, hBar);
