@@ -313,6 +313,51 @@ test('live mixer pairs every fader with a named vertical meter and retains zero 
     assert.doesNotThrow(() => context.MasterMixManager.renderLive(null));
 });
 
+test('tracker mixer retains silent master volume when rebuilt', () => {
+    const { context, state, drone, elements } = harness();
+    const main = fs.readFileSync(path.resolve(__dirname, '../main.js'), 'utf8');
+    vm.runInContext(main.slice(main.indexOf('class MasterMixManager'), main.indexOf('class InputChannel')) + '\nglobalThis.MasterMixManager = MasterMixManager;', context);
+    state.inputs = [];
+    drone.instances = [];
+    state.masterFx = { eq: {}, comp: {} };
+    context.EffectManager = { MASTER_EQ_PRESETS: {}, MASTER_COMP_PRESETS: {} };
+    const container = element();
+    elements.set('mastermix-content', container);
+    for (const volume of [0, 0.42, undefined]) {
+        state.masterMixVolume = volume;
+        context.MasterMixManager.render();
+        assert.match(container.html, new RegExp(`id="mm_slider_master_vol"[^>]*value="${volume ?? 1}"`));
+        assert.ok(container.html.includes(`>${(volume ?? 1).toFixed(2)}</div>`));
+    }
+});
+
+test('both mixer views reflect single-step and externally changed focused faders', () => {
+    const { context, state, elements } = harness();
+    const main = fs.readFileSync(path.resolve(__dirname, '../main.js'), 'utf8');
+    vm.runInContext(main.slice(main.indexOf('class MasterMixManager'), main.indexOf('class InputChannel')) + '\nglobalThis.MasterMixManager = MasterMixManager;', context);
+    for (const type of ['master', 'in', 'l', 'd', 's']) {
+        const suffix = type === 'master' ? 'master_vol' : `${type}_0`;
+        const textSuffix = type === 'master' ? 'master_v' : `${type}_v_0`;
+        const sliders = ['mm_', 'live_mm_'].map(prefix => {
+            const slider = element();
+            slider.value = '0.81';
+            elements.set(`${prefix}slider_${suffix}`, slider);
+            elements.set(`${prefix}${textSuffix}`, element());
+            return slider;
+        });
+        const update = value => type === 'master'
+            ? context.MasterMixManager.setMasterMixVolume(value)
+            : context.MasterMixManager.updateFader(type, 0, value);
+        update('0.82');
+        sliders.forEach(slider => assert.equal(Number(slider.value), 0.82));
+        context.document.activeElement = sliders[0];
+        update(0);
+        sliders.forEach(slider => assert.equal(Number(slider.value), 0));
+        for (const prefix of ['mm_', 'live_mm_']) assert.equal(elements.get(`${prefix}${textSuffix}`).textContent, '0.00');
+        if (type === 'master') assert.equal(state.masterMixVolume, 0);
+    }
+});
+
 test('live meters reuse one sample per channel, preserve output delay and clear after suspension', () => {
     const { app, context, state, synth, elements } = appHarness();
     const reads = {};

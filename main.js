@@ -1635,8 +1635,8 @@ class MasterMixManager {
         }
         const faders = [document.getElementById('mm_slider_master_vol'), document.getElementById('live_mm_slider_master_vol')];
         const texts = [document.getElementById('mm_master_v'), document.getElementById('live_mm_master_v')];
-        faders.forEach(f => { if (f && document.activeElement !== f && Math.abs(f.value - val) > 0.01) f.value = val; });
-        texts.forEach(t => { if (t) t.textContent = parseFloat(val).toFixed(2); });
+        faders.forEach(f => { if (f && Number(f.value) !== state.masterMixVolume) f.value = state.masterMixVolume; });
+        texts.forEach(t => { if (t) t.textContent = state.masterMixVolume.toFixed(2); });
     }
 
     static updateMuteSoloUI() {
@@ -1696,8 +1696,9 @@ class MasterMixManager {
             document.getElementById(`mm_${type}_v_${id}`),
             document.getElementById(`live_mm_${type}_v_${id}`)
         ];
-        sliders.forEach(slider => { if (slider && document.activeElement !== slider && Math.abs(slider.value - val) > 0.01) slider.value = val; });
-        texts.forEach(text => { if (text) text.textContent = parseFloat(val).toFixed(2); });
+        const volume = parseFloat(val);
+        sliders.forEach(slider => { if (slider && Number(slider.value) !== volume) slider.value = volume; });
+        texts.forEach(text => { if (text) text.textContent = volume.toFixed(2); });
     }
 
     static applyMasterEQPreset(name) {
@@ -1787,8 +1788,8 @@ class MasterMixManager {
         // 3.5 Master Volume Fader
         html += `<div style="${stripStyle} border-top:2px solid #f00; margin-left: 5px;" onwheel="event.preventDefault(); const s=document.getElementById('mm_slider_master_vol'); if(s){ s.value=Math.max(0, Math.min(2, parseFloat(s.value) + (event.deltaY < 0 ? 0.05 : -0.05))); MasterMixManager.setMasterMixVolume(s.value); }">
             <label for="mm_slider_master_vol" style="font-size:9px; color:#f00; font-weight:bold;">MASTER</label>
-            <input type="range" id="mm_slider_master_vol" min="0" max="2" step="0.01" value="${state.masterMixVolume || 1.0}" style="${sliderStyle} border-color: #f00;" oninput="MasterMixManager.setMasterMixVolume(this.value);" aria-label="Master Volume">
-            <div id="mm_master_v" style="${valStyle} color:#f00;">${(state.masterMixVolume || 1.0).toFixed(2)}</div>
+            <input type="range" id="mm_slider_master_vol" min="0" max="2" step="0.01" value="${state.masterMixVolume ?? 1.0}" style="${sliderStyle} border-color: #f00;" oninput="MasterMixManager.setMasterMixVolume(this.value);" aria-label="Master Volume">
+            <div id="mm_master_v" style="${valStyle} color:#f00;">${(state.masterMixVolume ?? 1.0).toFixed(2)}</div>
         </div>`;
         
         html += `</div>`; // End Console Strip container

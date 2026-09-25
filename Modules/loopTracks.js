@@ -166,6 +166,7 @@ class SamplerManager {
             try {
                 const ab = await file.arrayBuffer();
                 const buf = await state.audioContext.decodeAudioData(ab);
+                this._stopSampler(id);
                 state.samplers[id].buffer = buf;
                 state.samplers[id].name = file.name.substring(0, 10);
                 state.samplers[id].state = 'stopped';
@@ -329,7 +330,7 @@ class SamplerManager {
             : (state.syncEnabled ? SyncManager.getNextGridTime() : now);
 
         if (sampler.state === 'playing' || sampler.state === 'armed') {
-            this._stopSampler(id, sampler.state === 'armed' ? 0 : targetTime);
+            this._stopSampler(id, sampler.state === 'armed' && scheduledTime <= 0 ? 0 : targetTime);
         } else if (sampler.state === 'stopped' || sampler.state === 'stopping' || sampler.state === 'empty') {
             this._startSampler(id, targetTime);
         }

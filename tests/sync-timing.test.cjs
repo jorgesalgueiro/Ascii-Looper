@@ -203,6 +203,92 @@ for (const scheduledTime of [9.98, 10, 10.02, 12.125]) {
     });
 }
 
+for (const playback of ['playing', 'armed', 'replacement']) {
+    test(`loading a new sampler buffer stops ${playback} audio and cancels its timers`, async () => {
+        const h = createHarness();
+        const sampler = h.addSampler();
+        const manager = h.context.SamplerManager;
+        manager.play(sampler.id, playback === 'armed' ? 12 : 10);
+        if (playback === 'replacement') manager.play(sampler.id, 12);
+        const oldSources = [...sampler.activeSources];
+        const oldStartTimer = sampler.startTimeout;
+        const picker = { click() {} };
+        h.context.document.createElement = () => picker;
+        const samples = new Float32Array(180).fill(0.25);
+        const buffer = { duration: 2, getChannelData: () => samples };
+        h.state.audioContext.decodeAudioData = async () => buffer;
+        await manager.loadFile(sampler.id);
+        await picker.onchange({ target: { files: [{ name: 'new.wav', arrayBuffer: async () => new ArrayBuffer(8) }] } });
+        oldSources.forEach(source => assert.equal(source.stops.at(-1), 10));
+        assert.equal(sampler.startTimeout, null);
+        assert.equal(sampler.stopTimeout, null);
+        if (oldStartTimer) assert.equal(h.timers.has(oldStartTimer), false);
+        assert.equal(sampler.buffer, buffer);
+        assert.equal(sampler.name, 'new.wav');
+        assert.equal(sampler.state, 'stopped');
+        assert.equal(sampler.wavePeaks[0], 0.25);
+        manager.play(sampler.id, 10);
+        const replacement = sampler.source;
+        oldSources.forEach(source => source.onended());
+        assert.equal(sampler.source, replacement);
+        assert.equal(sampler.source.buffer, buffer);
+        assert.equal(sampler.state, 'playing');
+        assert.equal(sampler.activeSources.size, 1);
+        assert.equal(sampler.activeGains.size, 1);
+    });
+}
+
+test('cancelled or failed sampler imports preserve queued playback and the current buffer', async () => {
+    const h = createHarness();
+    const sampler = h.addSampler();
+    h.context.SamplerManager.play(sampler.id, 12);
+    const { source, buffer, startTimeout } = sampler;
+    const picker = { click() {} };
+    const alerts = [];
+    h.context.alert = message => alerts.push(message);
+    h.context.document.createElement = () => picker;
+    h.state.audioContext.decodeAudioData = async () => { throw new Error('invalid audio'); };
+    await h.context.SamplerManager.loadFile(sampler.id);
+    await picker.onchange({ target: { files: [] } });
+    await picker.onchange({ target: { files: [{ name: 'invalid.wav', arrayBuffer: async () => new ArrayBuffer(8) }] } });
+    assert.deepEqual(source.stops, []);
+    assert.equal(sampler.buffer, buffer);
+    assert.equal(sampler.state, 'armed');
+    assert.equal(sampler.startTimeout, startTimeout);
+    assert.equal(h.timers.has(startTimeout), true);
+    assert.deepEqual(alerts, ['Error loading sampler audio: invalid audio']);
+});
+
+test('tracker ON and OFF inside one lookahead retain their distinct audio deadlines', () => {
+    const h = createHarness();
+    const sampler = h.addSampler();
+    h.state.bpm = 300;
+    h.state.timeSig = { num: 1, den: 4 };
+    Object.assign(h.state.tracker, { isPlaying: true, nextRowTime: 10.04 });
+    h.state.tracker.patterns[0].data = { '0_1': 'ON', '1_1': 'OFF' };
+    h.context.TrackerManager.schedule();
+    assert.equal(h.state.tracker.currentRow, 2);
+    assert.deepEqual(sampler.source.starts, [[10.04]]);
+    assert.equal(sampler.source.stops.length, 1);
+    closeTo(sampler.source.stops[0], 10.24, 'OFF must not cancel the upcoming ON');
+    assert.equal(sampler.state, 'stopping');
+    h.setTime(10.24);
+    sampler.source.onended();
+    assert.equal(sampler.state, 'stopped');
+    assert.equal(sampler.activeSources.size, 0);
+});
+
+test('manual toggle still cancels an armed sampler immediately', () => {
+    const h = createHarness();
+    const sampler = h.addSampler();
+    h.context.SamplerManager.togglePlay(sampler.id, 12);
+    const timer = sampler.startTimeout;
+    h.context.SamplerManager.togglePlay(sampler.id);
+    assert.deepEqual(sampler.source.stops, [10]);
+    assert.equal(sampler.state, 'stopped');
+    assert.equal(h.timers.has(timer), false);
+});
+
 test('unspecified sampler and drone starts still share the next whole-loop grid', () => {
     const h = createHarness();
     const sampler = h.addSampler();
