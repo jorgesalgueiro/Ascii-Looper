@@ -19,9 +19,8 @@ class SynthInstance {
         this.isRecording = false; // For MIDI Record
         this.startTimeout = null;
         this.stopTimeout = null;
-        this.voices = {}; 
-        this.voicePool = []; 
-        this.output = null; 
+        this.voices = {};
+        this.output = null;
         this.fxInput = null;
         this.dryDestination = null;
         this.fxChain = { nodes: {}, end: null };
@@ -462,6 +461,7 @@ class DroneSynth {
                     <option value="white" ${synth.params.noiseType=='white'?'selected':''}>WHT</option>
                     <option value="pink" ${synth.params.noiseType=='pink'?'selected':''}>PNK</option>
                 </select></h5>
+                <div class="control-group"><label for="d_noiseMix_input_${id}">Noise <span id="d_noiseMix_val_${id}">${synth.params.noiseMix ?? 0.1}</span></label><input type="range" id="d_noiseMix_input_${id}" min="0" max="1" step="0.01" value="${synth.params.noiseMix ?? 0.1}" oninput="DroneSynth.setParam(${id}, 'noiseMix', parseFloat(this.value))" aria-label="Noise Mix"></div>
                 <div class="control-group"><label for="d_attack_input_${id}">Attack <span id="d_attack_val_${id}">${synth.params.attack}</span></label><input type="range" id="d_attack_input_${id}" min="0.005" max="2.0" step="0.01" value="${synth.params.attack}" oninput="DroneSynth.setParam(${id}, 'attack', this.value)" aria-label="Attack"></div>
                 <div class="control-group"><label for="d_decay_input_${id}">Decay <span id="d_decay_val_${id}">${synth.params.decay ?? 0.2}</span></label><input type="range" id="d_decay_input_${id}" min="0.005" max="5.0" step="0.01" value="${synth.params.decay ?? 0.2}" oninput="DroneSynth.setParam(${id}, 'decay', this.value)" aria-label="Envelope Decay"></div>
                 <div class="control-group"><label for="d_sustain_input_${id}">Sustain <span id="d_sustain_val_${id}">${synth.params.sustain ?? 0.8}</span></label><input type="range" id="d_sustain_input_${id}" min="0.0" max="1.0" step="0.01" value="${synth.params.sustain ?? 0.8}" oninput="DroneSynth.setParam(${id}, 'sustain', this.value)" aria-label="Envelope Sustain"></div>
@@ -555,11 +555,24 @@ class DroneSynth {
             
             const synth = this.instances[id];
             if(data.name) synth.name = data.name;
-            Object.assign(synth.params, JSON.parse(JSON.stringify(data.params)));
-            
-            // Auto-load FX if present
-            if(data.fxParams) Object.assign(synth.fxParams, data.fxParams);
+            // setParam is the only path that reaches the live voices, the sliders and
+            // the output gain; assigning the numbers left a playing drone unchanged.
+            for (const k in data.params) {
+                this.setParam(id, k, data.params[k]);
+            }
+
+            // Auto-load FX if present -- deep merge to preserve defaults for new
+            // parameters added in software updates since the preset was saved.
+            if(data.fxParams) {
+                Object.keys(data.fxParams).forEach(fxKey => {
+                    if (synth.fxParams[fxKey]) Object.assign(synth.fxParams[fxKey], data.fxParams[fxKey]);
+                    else synth.fxParams[fxKey] = data.fxParams[fxKey];
+                });
+            }
             if(data.signalChain) synth.signalChain = data.signalChain;
+            // Effects read their settings when they are built, so a new chain or knob
+            // values only take effect once the graph is rebuilt.
+            if(data.fxParams || data.signalChain) this.rebuildFxChain(id);
             
             // Add to session presets
             const pName = data.name || file.name.replace('.ald','');
@@ -568,7 +581,7 @@ class DroneSynth {
 
             this.renderAll();
         } catch(e) {
-            alert("Error loading ALD: " + e.message);
+            Log.error('DroneSynth', 'Error loading ALD:', e);
         }
         input.value = '';
     }
@@ -992,8 +1005,12 @@ class DroneSynth {
             }
         }
 
-        if (!synth.output) synth.output = state.audioContext.createGain();
-        synth.output.gain.value = synth.params.volume;
+        if (!synth.output) {
+            synth.output = state.audioContext.createGain();
+            synth.output.gain.value = 0; // a new GainNode defaults to 1.0; the ramp below sets the real level
+        }
+        // Mute/solo aware: a raw params.volume write would bring a silenced drone back.
+        this.updateOutputGain(synth.id);
 
         // Attach Analyser for Clip Detection
         if (!synth.analyser) {
@@ -1005,7 +1022,7 @@ class DroneSynth {
         try {
             lastNode.connect(synth.output);
         } catch (e) {
-            console.warn("Drone FX chain connect warning", e);
+            Log.debug('DroneSynth', 'Drone FX chain connect warning:', e);
         }
         // Reconnect output to Drone Bus and Analyser (Post-Volume/Wet)
         synth.output.disconnect();
@@ -1429,7 +1446,12 @@ class DroneSynth {
     }
 
     static createNoise(ctx, type = 'white') {
-        if (!this.noiseBuffers[type] || this.noiseCtx !== ctx) {
+        // When the AudioContext changes, ALL noise buffers are stale (they belong
+        // to the old context). Clear them all so every type is regenerated.
+        if (this.noiseCtx && this.noiseCtx !== ctx) {
+            this.noiseBuffers = {};
+        }
+        if (!this.noiseBuffers[type]) {
             const bufferSize = Math.floor(ctx.sampleRate * 2); // 2 seconds loop
             const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
             const output = buffer.getChannelData(0);
@@ -1516,7 +1538,12 @@ class DroneSynth {
             
             v.panner.pan.cancelScheduledValues(t);
             try { v.panner.pan.setValueAtTime(v.panner.pan.value || 0, t); } catch(e){}
-            
+
+            // Disconnect panner and noise source so reused voices don't accumulate
+            // duplicate parallel connections (each connect() adds a new signal path).
+            try { v.panner.disconnect(); } catch(e) {}
+            try { if (v.nodes && v.nodes[7]) v.nodes[7].disconnect(); } catch(e) {}
+
             v.isPooled = false;
             return v;
         }
@@ -1632,16 +1659,14 @@ class DroneSynth {
     }
 
     static returnVoiceToPool(v) {
+        // A scheduled stop notes every voice off, then _finishStopSynth notes the
+        // still-listed ones off again; without this the same voice enters the pool twice.
+        if (v.isPooled) return;
+        v.isPooled = true;
         if (this.voicePool.length < this.MAX_POOL_SIZE) {
             const t = state.audioContext.currentTime;
             AudioEngine.scheduledFade(v.vca, 0, t, 10);
-            
-            setTimeout(() => {
-                try { v.panner.disconnect(); } catch(e){} // Isolate completely
-                if (v.nodes[7]) try { v.nodes[7].disconnect(); } catch(e){} // Disconnect old noise source
-                v.isPooled = true;
-                this.voicePool.push(v);
-            }, 50);
+            this.voicePool.push(v);
         } else {
             // Pool full, destroy
             const t = state.audioContext.currentTime;
@@ -2250,6 +2275,7 @@ class DroneSynth {
             if (instData.lastNote) synth.lastNote = instData.lastNote;
             if (instData.synthPreset) synth.synthPreset = instData.synthPreset;
             if (instData.midiEnabled !== undefined) synth.midiEnabled = instData.midiEnabled;
+            synth.muted = instData.muted ?? false;
             
             this.instances.push(synth);
         });

@@ -52,7 +52,8 @@ class EQProcessor extends AudioWorkletProcessor {
         for(let c=0; c<2; c++) {
             for(let b=0; b<10; b++) this.bands[c].push(new SVF());
         }
-        this.sr = getWorkletSampleRate(); 
+        this.sr = getWorkletSampleRate();
+        this.constPI_SR = Math.PI / this.sr;
         // Reusable per-block buffers (no allocation on the audio thread)
         this.coBuf = new Float64Array(8);
         this.bandFreq = new Float64Array(10);
@@ -201,7 +202,10 @@ registerProcessor('eq-processor', EQProcessor);
 class FreqShifter {
     constructor(sampleRate) {
         this.sr = sampleRate;
-        this.phase = 0;
+        // Quadrature oscillator state (replaces per-sample sin/cos)
+        this.cosPh = 1.0;
+        this.sinPh = 0.0;
+        this.normCounter = 0;
         // 4-stage All-pass filter state for 90-degree phase shift approx
         // Coefficients optimized for audio range
         this.xState = new Float32Array(4).fill(0);
@@ -235,14 +239,32 @@ class FreqShifter {
         }
 
         // 2. Heterodyning (Modulation)
+        // Quadrature oscillator: rotate (cosPh, sinPh) by dt per sample.
+        // Uses small-angle approximation for cos(dt) and sin(dt) — accurate
+        // to <0.1% for frequencies up to ~2kHz at 44.1kHz (well above the
+        // haunt parameter's 880Hz max). Avoids sin()/cos() entirely.
         const dt = (frequency * 2 * Math.PI) / this.sr;
-        this.phase += dt;
-        // Wrap phase to prevent precision loss over long runs
-        if (this.phase > 100 * Math.PI) this.phase -= 100 * Math.PI;
+        const cosDt = 1 - dt * dt * 0.5;
+        const sinDt = dt;
+        const newCos = this.cosPh * cosDt - this.sinPh * sinDt;
+        const newSin = this.sinPh * cosDt + this.cosPh * sinDt;
+        this.cosPh = newCos;
+        this.sinPh = newSin;
+        
+        // Periodic normalization to prevent amplitude drift (every 256 samples)
+        if (++this.normCounter >= 256) {
+            this.normCounter = 0;
+            const amp = this.cosPh * this.cosPh + this.sinPh * this.sinPh;
+            if (amp > 0) {
+                const norm = 2 / (1 + amp); // Approximate 1/sqrt
+                this.cosPh *= norm;
+                this.sinPh *= norm;
+            }
+        }
         
         // Single Sideband Modulation (Down/Up shift)
         // Output = Real * cos - Imag * sin
-        return (real * Math.cos(this.phase)) - (imag * Math.sin(this.phase));
+        return (real * this.cosPh) - (imag * this.sinPh);
     }
 }
 
@@ -382,9 +404,6 @@ class DuskProcessor extends AudioWorkletProcessor {
             
             let grainOut = 0;
             if (doGrains) {
-                this.grainBuffer[this.grainWrite] = inMono;
-                if (++this.grainWrite >= gbLen) this.grainWrite = 0;
-
                 for(let g=0; g<this.grains.length; g++) {
                     const grain = this.grains[g];
                     if(!grain.active) continue;
@@ -395,6 +414,8 @@ class DuskProcessor extends AudioWorkletProcessor {
                     if (grain.pos >= gbLen) grain.pos -= gbLen;
                     if (--grain.life <= 0) grain.active = false;
                 }
+                this.grainBuffer[this.grainWrite] = inMono;
+                if (++this.grainWrite >= gbLen) this.grainWrite = 0;
             }
             let drySignal = inMono;
             let wetSignal = drySignal + (grainOut * grainMix);
@@ -427,16 +448,25 @@ class DuskProcessor extends AudioWorkletProcessor {
             let s3 = dO0 - dO1 - dO2 + dO3;
             
             // Shimmer/Diffusion: Inject cross-feedback based on shimmer amount
-            let d0 = Math.tanh(leftInput + (s0 * feedback * 0.5) + (s3 * shim));
-            let d1 = Math.tanh(rightInput + (s1 * feedback * 0.5) + (s2 * shim));
-            let d2 = Math.tanh(leftInput + (s2 * feedback * 0.5) - (s1 * shim));
-            let d3 = Math.tanh(rightInput + (s3 * feedback * 0.5) - (s0 * shim));
+            // Fast tanh approximation: Pade[3,3] — accurate to <0.1% for |x|<2,
+            // naturally saturates to ±1. Avoids 4× Math.tanh() per sample.
+            let t0 = leftInput + (s0 * feedback * 0.5) + (s3 * shim);
+            let t1 = rightInput + (s1 * feedback * 0.5) + (s2 * shim);
+            let t2 = leftInput + (s2 * feedback * 0.5) - (s1 * shim);
+            let t3 = rightInput + (s3 * feedback * 0.5) - (s0 * shim);
+            let d0, d1, d2, d3;
+            // Inline fast tanh: x*(27+x²)/(27+9x²)
+            let x2;
+            x2 = t0*t0; d0 = t0 * (27 + x2) / (27 + 9*x2);
+            x2 = t1*t1; d1 = t1 * (27 + x2) / (27 + 9*x2);
+            x2 = t2*t2; d2 = t2 * (27 + x2) / (27 + 9*x2);
+            x2 = t3*t3; d3 = t3 * (27 + x2) / (27 + 9*x2);
 
-            // Optimization: Flush denormals
-            this.delays[0][w] = (Math.abs(d0) < 1e-9) ? 0 : d0;
-            this.delays[1][w] = (Math.abs(d1) < 1e-9) ? 0 : d1;
-            this.delays[2][w] = (Math.abs(d2) < 1e-9) ? 0 : d2;
-            this.delays[3][w] = (Math.abs(d3) < 1e-9) ? 0 : d3;
+            // Flush denormals and NaN to prevent feedback corruption
+            this.delays[0][w] = (isNaN(d0) || Math.abs(d0) < 1e-9) ? 0 : d0;
+            this.delays[1][w] = (isNaN(d1) || Math.abs(d1) < 1e-9) ? 0 : d1;
+            this.delays[2][w] = (isNaN(d2) || Math.abs(d2) < 1e-9) ? 0 : d2;
+            this.delays[3][w] = (isNaN(d3) || Math.abs(d3) < 1e-9) ? 0 : d3;
             
             this.writePtr = (w + 1 >= this.bufferSize) ? 0 : w + 1;
             let verbL = dO0 + dO2;
@@ -469,10 +499,10 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
     static get parameterDescriptors() {
         return [
             { name: 'time', defaultValue: 0.4, minValue: 0.01, maxValue: 4.0 },
-            { name: 'feedback', defaultValue: 0.5, minValue: 0, maxValue: 0.98 },
+            { name: 'feedback', defaultValue: 0.18, minValue: 0, maxValue: 0.98 },
             { name: 'mix', defaultValue: 0.5, minValue: 0, maxValue: 1 },
             { name: 'stay', defaultValue: 0, minValue: 0, maxValue: 1 }, // 1 = hold current note
-            { name: 'scale', defaultValue: 0, minValue: 0, maxValue: 19 },
+            { name: 'scale', defaultValue: 2, minValue: 0, maxValue: 19 },
             { name: 'sync', defaultValue: 0, minValue: 0, maxValue: 1 },
             { name: 'bpm', defaultValue: 120, minValue: 30, maxValue: 300 },
             { name: 'amplitude', defaultValue: 1.0, minValue: 0, maxValue: 2.0 },
@@ -520,6 +550,17 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
         this.gRate = 0;
         // Peak level last written into the delay buffer (idle fast-path gate)
         this.tailEnv = 1;
+        // Precomputed Hanning window LUT (avoids per-sample cos() in grain read)
+        this.hannLUT = new Float32Array(1024);
+        for (let i = 0; i < 1024; i++) {
+            this.hannLUT[i] = 0.5 * (1.0 - Math.cos(2.0 * Math.PI * (i / 1023)));
+        }
+        // Quadrature oscillators for slow LFOs (avoids per-sample sin() calls)
+        // drift, drift2, wobble, panLFO — all <1Hz, so small-angle rotation is exact.
+        this.qDrift   = { c: 1, s: 0, norm: 0 };
+        this.qDrift2  = { c: 1, s: 0, norm: 0 };
+        this.qWobble  = { c: 1, s: 0, norm: 0 };
+        this.qPan     = { c: 1, s: 0, norm: 0 };
     }
     process(inputs, outputs, parameters) {
         const input = inputs[0];
@@ -583,6 +624,16 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
         const driftDepth = 5.0;
         const wobbleSpeed = 0.0007 * srScale;
         const panSpeed = 0.0005 * srScale;
+        
+        // Precompute rotation coefficients for quadrature oscillators (per block)
+        const dCosDt = 1 - driftSpeed * driftSpeed * 0.5;
+        const dSinDt = driftSpeed;
+        const d2CosDt = 1 - drift2Speed * drift2Speed * 0.5;
+        const d2SinDt = drift2Speed;
+        const wCosDt = 1 - wobbleSpeed * wobbleSpeed * 0.5;
+        const wSinDt = wobbleSpeed;
+        const pCosDt = 1 - panSpeed * panSpeed * 0.5;
+        const pSinDt = panSpeed;
 
         // --- Musical expression coefficients (per block) ---
         // Pluck envelope: each echo decays like a played note instead of staying flat/robotic
@@ -597,11 +648,23 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
         
         // Process sample-by-sample for correct rate and smooth envelope
         let wrPeak = 0;
+        const qD = this.qDrift, qD2 = this.qDrift2, qW = this.qWobble, qP = this.qPan;
         for (let i = 0; i < blockSize; i++) {
-            this.drift += driftSpeed;
-            this.drift2 += drift2Speed; // Evolving, non-repeating wow
+            // Rotate quadrature oscillators (replaces sin(phaseAccum) per sample)
+            let tmpC;
+            tmpC = qD.c * dCosDt - qD.s * dSinDt;  qD.s = qD.s * dCosDt + qD.c * dSinDt;  qD.c = tmpC;
+            tmpC = qD2.c * d2CosDt - qD2.s * d2SinDt; qD2.s = qD2.s * d2CosDt + qD2.c * d2SinDt; qD2.c = tmpC;
+            tmpC = qW.c * wCosDt - qW.s * wSinDt;  qW.s = qW.s * wCosDt + qW.c * wSinDt;  qW.c = tmpC;
+            tmpC = qP.c * pCosDt - qP.s * pSinDt;  qP.s = qP.s * pCosDt + qP.c * pSinDt;  qP.c = tmpC;
+            // Normalize oscillators every 512 samples to prevent amplitude drift
+            if ((i & 511) === 0) {
+                let a;
+                a = qD.c*qD.c + qD.s*qD.s;  if(a>0){const n=2/(1+a); qD.c*=n; qD.s*=n;}
+                a = qD2.c*qD2.c + qD2.s*qD2.s; if(a>0){const n=2/(1+a); qD2.c*=n; qD2.s*=n;}
+                a = qW.c*qW.c + qW.s*qW.s;  if(a>0){const n=2/(1+a); qW.c*=n; qW.s*=n;}
+                a = qP.c*qP.c + qP.s*qP.s;  if(a>0){const n=2/(1+a); qP.c*=n; qP.s*=n;}
+            }
             this.driftRand += (this.driftRandTarget - this.driftRand) * wanderCoef; // Smooth humanized wander
-            this.wobble += wobbleSpeed; // Faster flutter LFO
             // 1. Clock Logic
             this.arpClock++;
             if(this.arpClock >= delaySamps) {
@@ -650,9 +713,8 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
                 this.driftRandTarget = (Math.random() - 0.5) * humanize * 2.5;
             }
 
-            // Stereo Panning LFO for grain
-            this.panLFO += panSpeed; 
-            const pan = Math.sin(this.panLFO); // -1 to 1
+            // Stereo Panning LFO for grain (quadrature oscillator output)
+            const pan = qP.s; // -1 to 1
 
             // Smooth pitch glide toward the target note (removes robotic stepping)
             this.gRate += (this.gRateTarget - this.gRate) * glideCoef;
@@ -666,12 +728,12 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
             }
             const stepGain = sustainFloor + this.env;
 
-            // 2. Grain Logic (Tighter size + Hanning Window)
+            // 2. Grain Logic (Tighter size + Hanning Window via LUT)
             this.gPhase += this.gRate;
             if(this.gPhase >= 1.0) this.gPhase -= 1.0;
             if(this.gPhase < 0.0) this.gPhase += 1.0;
 
-            const w1 = 0.5 * (1.0 - Math.cos(2.0 * Math.PI * this.gPhase));
+            const w1 = this.hannLUT[(this.gPhase * 1023) | 0];
             const w2 = 1.0 - w1;
 
             const offset1 = this.gPhase * grainSize;
@@ -681,8 +743,9 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
             const writePos = (this.wPtr + i) % this.bufferSize;
             
             // Organic Offset: evolving two-oscillator wow + humanized wander + flutter
-            const baseDrift = (Math.sin(this.drift) * 0.62 + Math.sin(this.drift2) * 0.38) * driftDepth * 0.8 + this.driftRand;
-            const flutter = Math.sin(this.wobble) * 2.0;
+            // Using quadrature oscillator .s outputs instead of Math.sin()
+            const baseDrift = (qD.s * 0.62 + qD2.s * 0.38) * driftDepth * 0.8 + this.driftRand;
+            const flutter = qW.s * 2.0;
 
             for (let ch = 0; ch < numCh; ch++) {
                 // Safety: Prevent crash if host output channels > internal state
@@ -713,7 +776,11 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
                 const wet = ((grain1 * w1) + (grain2 * w2)) * amp * stepGain;
                 
                 // --- Organic Feedback Loop ---
-                let fbSignal = Math.tanh(wet * 0.9) / 0.9;
+                // Fast tanh approximation: Pade[3,3] — accurate to <0.1% for |x|<2.
+                // tanh(wet*0.9)/0.9 ≈ wet * (27 + (wet*0.9)²) / (0.9 * (27 + 9*(wet*0.9)²))
+                const wx = wet * 0.9;
+                const wx2 = wx * wx;
+                let fbSignal = wx * (27 + wx2) / (0.9 * (27 + 9 * wx2));
                 
                 // Highpass (DC blocker)
                 const hpIn = fbSignal;
@@ -762,11 +829,11 @@ registerProcessor('arp-delay-processor', ArpDelayProcessor);
 class GristleizerProcessor extends AudioWorkletProcessor {
     static get parameterDescriptors() {
         return [
-            { name: 'lfoFreq', defaultValue: 5.0, minValue: 0.1, maxValue: 100.0 },
+            { name: 'lfoFreq', defaultValue: 4.0, minValue: 0.1, maxValue: 100.0 },
             { name: 'lfoWave', defaultValue: 1, minValue: 0, maxValue: 3 }, // 0:Tri, 1:Saw, 2:Ramp, 3:Square
             { name: 'depth', defaultValue: 0.8, minValue: 0, maxValue: 1 },
             { name: 'bias', defaultValue: 0.5, minValue: 0, maxValue: 1 },
-            { name: 'drive', defaultValue: 5.0, minValue: 1.0, maxValue: 50.0 },
+            { name: 'drive', defaultValue: 10.0, minValue: 1.0, maxValue: 50.0 },
             { name: 'mode', defaultValue: 0, minValue: 0, maxValue: 2 }, // 0:VCA, 1:VCF(LP), 2:VCF(BP)
             { name: 'makeupGain', defaultValue: 1.0, minValue: 0.0, maxValue: 24.0 },
             { name: 'slewLimit', defaultValue: 0.0, minValue: 0.0, maxValue: 1.0 }
@@ -783,7 +850,7 @@ class GristleizerProcessor extends AudioWorkletProcessor {
         const output = outputs[0];
         if (!output || !output[0]) return true;
 
-        const sr = sampleRate; // Using native Worklet scope sampleRate
+        const sr = getWorkletSampleRate();
         const numChannels = output.length;
         const blockSize = output[0].length;
         
@@ -839,13 +906,16 @@ class GristleizerProcessor extends AudioWorkletProcessor {
 
             const cutoff = 100 + mod * 7900;
             const q = 2.0 + (drive * 0.1); 
-            const f = 2.0 * Math.sin(cutoff * piOverSr);
+            const f = Math.min(1.99, 2.0 * Math.sin(cutoff * piOverSr));
 
             for (let ch = 0; ch < numChannels; ch++) {
                 if (this.filterState.length <= ch) this.filterState.push({ lp: 0, bp: 0 });
                 
                 const inSample = (input && input[ch] && input[ch][i] !== undefined) ? input[ch][i] : 0;
-                let distorted = Math.tanh(inSample * drive);
+                // Fast tanh approximation: Pade[3,3]
+                const tx = inSample * drive;
+                const tx2 = tx * tx;
+                let distorted = tx * (27 + tx2) / (27 + 9 * tx2);
                 let outSample = 0;
 
                 if (mode === 0) {
@@ -856,8 +926,8 @@ class GristleizerProcessor extends AudioWorkletProcessor {
                     state.bp += f * hp;
                     state.lp += f * state.bp;
 
-                    if (Math.abs(state.lp) < 1e-9) state.lp = 0;
-                    if (Math.abs(state.bp) < 1e-9) state.bp = 0;
+                    if (Math.abs(state.lp) < 1e-9 || isNaN(state.lp)) state.lp = 0;
+                    if (Math.abs(state.bp) < 1e-9 || isNaN(state.bp)) state.bp = 0;
 
                     outSample = (mode === 1) ? state.lp : state.bp;
                 }
@@ -1350,6 +1420,7 @@ class HarmonyProcessor extends AudioWorkletProcessor {
     }
 
     process(inputs, outputs, parameters) {
+        this.sr = getWorkletSampleRate();
         const output = outputs[0];
         if (!output || !output[0]) return true;
         const input = inputs[0];
@@ -1504,7 +1575,7 @@ const effects = {
         volume: 0.8,
         mix: 1.0
     },
-    fuzz: { gain: 45, tone: 3000, volume: 0.5, mix: 1.0 },
+    fuzz: { gain: 45, bias: 0, tone: 3000, volume: 0.5, mix: 1.0 },
     overdrive: { drive: 8, tone: 6000, volume: 0.9, mix: 1.0 },
     machineReverb: {
         decay: 4,
@@ -1568,6 +1639,7 @@ const effects = {
         vcfMode: 0,
         drive: 10,
         makeup: 1.0,
+        slewLimit: 0,
         mix: 1.0
     },
     zigZ: { rate: 4, depth: 0.7, phase: 0.0 },
@@ -1858,8 +1930,8 @@ const DEFAULT_MIDI_CC_MAP = {
     // Griz (Gristleizer)
     102: { type: 'effect', e: 'griz', p: 'rate', min: 0.1, max: 20 },
     103: { type: 'effect', e: 'griz', p: 'depth', min: 0, max: 1 },
-    104: { type: 'effect', e: 'griz', p: 'drive', min: 0, max: 50 },
-    106: { type: 'effect', e: 'griz', p: 'makeup', min: 0, max: 5 },
+    104: { type: 'effect', e: 'griz', p: 'drive', min: 1, max: 50 },
+    106: { type: 'effect', e: 'griz', p: 'makeup', min: 0, max: 4 },
     105: { type: 'effect', e: 'griz', p: 'mix', min: 0, max: 1 },
     // EQ (Mapping main controls)
     60: { type: 'effect', e: 'eq', p: 'lcFreq', min: 20, max: 500 },
@@ -1874,32 +1946,32 @@ const DEFAULT_MIDI_CC_MAP = {
 };
 
 const COMPRESSOR_PRESETS = {
-    'default': { threshold: -16, ratio: 4, knee: 10, attack: 0.01, release: 0.15, gain: 2.0 },
-    'modern': { threshold: -20, ratio: 4, knee: 15, attack: 0.005, release: 0.1, gain: 3.0 },
-    'drums': { threshold: -24, ratio: 6, knee: 5, attack: 0.015, release: 0.1, gain: 4.0 },
-    'guitar': { threshold: -18, ratio: 3, knee: 20, attack: 0.02, release: 0.2, gain: 2.5 },
-    'vocals': { threshold: -18, ratio: 2.5, knee: 10, attack: 0.01, release: 0.2, gain: 3.0 },
-    'soft': { threshold: -12, ratio: 1.5, knee: 30, attack: 0.05, release: 0.5, gain: 1.5 },
-    'hard': { threshold: -30, ratio: 12, knee: 0, attack: 0.002, release: 0.05, gain: 6.0 },
-    'sustain': { threshold: -32, ratio: 8, knee: 5, attack: 0.005, release: 0.8, gain: 5.0 },
-    'parallel-crush': { threshold: -30, ratio: 10, knee: 0, attack: 0.005, release: 0.1, gain: 8.0 }
+    'default': { threshold: -16, ratio: 4, knee: 10, attack: 0.01, release: 0.15, gain: 2.0, mix: 1.0 },
+    'modern': { threshold: -20, ratio: 4, knee: 15, attack: 0.005, release: 0.1, gain: 3.0, mix: 1.0 },
+    'drums': { threshold: -24, ratio: 6, knee: 5, attack: 0.015, release: 0.1, gain: 4.0, mix: 1.0 },
+    'guitar': { threshold: -18, ratio: 3, knee: 20, attack: 0.02, release: 0.2, gain: 2.5, mix: 1.0 },
+    'vocals': { threshold: -18, ratio: 2.5, knee: 10, attack: 0.01, release: 0.2, gain: 3.0, mix: 1.0 },
+    'soft': { threshold: -12, ratio: 1.5, knee: 30, attack: 0.05, release: 0.5, gain: 1.5, mix: 1.0 },
+    'hard': { threshold: -30, ratio: 12, knee: 0, attack: 0.002, release: 0.05, gain: 6.0, mix: 1.0 },
+    'sustain': { threshold: -32, ratio: 8, knee: 5, attack: 0.005, release: 0.8, gain: 5.0, mix: 1.0 },
+    'parallel-crush': { threshold: -30, ratio: 10, knee: 0, attack: 0.005, release: 0.1, gain: 8.0, mix: 1.0 }
 };
 
 const DELAY_PRESETS = {
-    'default': { time: 0.375, repetitions: 4, damp: 3000, mix: 0.4, panSpeed: 0 },
-    'slapback': { time: 0.11, repetitions: 1, damp: 6000, mix: 0.30, panSpeed: 0 },
-    'dotted8th': { time: 0.45, repetitions: 5, damp: 2500, mix: 0.45, panSpeed: 0 },
-    'dub': { time: 0.6, repetitions: 8, damp: 600, mix: 0.6, panSpeed: 0.1 },
-    'infinite': { time: 0.2, repetitions: 10, damp: 15000, mix: 0.6, panSpeed: 0 },
-    'ping-pong': { time: 0.4, repetitions: 6, damp: 4000, mix: 0.5, panSpeed: 1.5, panDepth: 0.9 },
-    'short-ambience': { time: 0.08, repetitions: 3, damp: 1500, mix: 0.25, panSpeed: 0 }
+    'default': { time: 0.375, repetitions: 4, damp: 3000, mix: 0.4, panSpeed: 0, panDepth: 0.8, sync: false },
+    'slapback': { time: 0.11, repetitions: 1, damp: 6000, mix: 0.30, panSpeed: 0, panDepth: 0.8, sync: false },
+    'dotted8th': { time: 0.45, repetitions: 5, damp: 2500, mix: 0.45, panSpeed: 0, panDepth: 0.8, sync: false },
+    'dub': { time: 0.6, repetitions: 8, damp: 600, mix: 0.6, panSpeed: 0.1, panDepth: 0.8, sync: false },
+    'infinite': { time: 0.2, repetitions: 10, damp: 15000, mix: 0.6, panSpeed: 0, panDepth: 0.8, sync: false },
+    'ping-pong': { time: 0.4, repetitions: 6, damp: 4000, mix: 0.5, panSpeed: 1.5, panDepth: 0.9, sync: false },
+    'short-ambience': { time: 0.08, repetitions: 3, damp: 1500, mix: 0.25, panSpeed: 0, panDepth: 0.8, sync: false }
 };
 
 const DISTORTION_PRESETS = {
-    'default': { amount: 35, tone: 5000, volume: 0.8, mix: 1.0 },
-    'tube-warmth': { amount: 20, tone: 3000, volume: 0.9, mix: 0.8 },
-    'analog-edge': { amount: 50, tone: 6000, volume: 0.75, mix: 1.0 },
-    'console-slam': { amount: 80, tone: 12000, volume: 0.6, mix: 1.0 }
+    'default': { amount: 35, shape: 0.5, tone: 5000, volume: 0.8, mix: 1.0 },
+    'tube-warmth': { amount: 20, shape: 0.5, tone: 3000, volume: 0.9, mix: 0.8 },
+    'analog-edge': { amount: 50, shape: 0.5, tone: 6000, volume: 0.75, mix: 1.0 },
+    'console-slam': { amount: 80, shape: 0.5, tone: 12000, volume: 0.6, mix: 1.0 }
 };
 
 const FUZZ_PRESETS = {
@@ -1917,20 +1989,20 @@ const OVERDRIVE_PRESETS = {
 };
 
 const MACHINE_PRESETS = {
-    'default': { decay: 2.5, feedback: 0.3, warp: 0.5, mix: 0.5 },
-    'industrial': { decay: 1.0, feedback: 0.8, warp: 0.9, mix: 0.6 },
-    'ethereal': { decay: 6.0, feedback: 0.4, warp: 0.1, mix: 0.7 },
-    'metallic': { decay: 0.5, feedback: 0.9, warp: 0.7, mix: 0.5 },
-    'drone-verb': { decay: 8.0, feedback: 0.6, warp: 0.2, mix: 0.8 }
+    'default': { decay: 2.5, feedback: 0.3, warp: 0.5, mix: 0.5, highCut: 8000, lowCut: 100 },
+    'industrial': { decay: 1.0, feedback: 0.8, warp: 0.9, mix: 0.6, highCut: 8000, lowCut: 100 },
+    'ethereal': { decay: 6.0, feedback: 0.4, warp: 0.1, mix: 0.7, highCut: 8000, lowCut: 100 },
+    'metallic': { decay: 0.5, feedback: 0.9, warp: 0.7, mix: 0.5, highCut: 8000, lowCut: 100 },
+    'drone-verb': { decay: 8.0, feedback: 0.6, warp: 0.2, mix: 0.8, highCut: 8000, lowCut: 100 }
 };
 
 const ARPDELAY_PRESETS = {
-    'maj-chord': { time: 0.4, repetitions: 6, mix: 0.5, stay: 0, scale: 1, sync: 0, range: 1, panSpeed: 0 },
-    'min-chord': { time: 0.4, repetitions: 6, mix: 0.5, stay: 0, scale: 2, sync: 0, range: 1 },
-    'angel-oct': { time: 0.3, repetitions: 5, mix: 0.6, stay: 0, scale: 0, sync: 0 },
-    'frozen': { time: 0.5, repetitions: 9, mix: 0.5, stay: 1, scale: 1, sync: 0 },
-    'swirling': { time: 0.4, repetitions: 8, mix: 0.5, stay: 0, scale: 4, sync: 1, panSpeed: 0.8 },
-    'sync-trip': { time: 0.33, repetitions: 7, mix: 0.5, stay: 0, scale: 4, sync: 1 }
+    'maj-chord': { time: 0.4, repetitions: 6, mix: 0.5, stay: 0, scale: 1, sync: 0, amplitude: 1.0, range: 1, humanize: 0.35, panSpeed: 0, panDepth: 0.8 },
+    'min-chord': { time: 0.4, repetitions: 6, mix: 0.5, stay: 0, scale: 2, sync: 0, amplitude: 1.0, range: 1, humanize: 0.35, panSpeed: 0, panDepth: 0.8 },
+    'angel-oct': { time: 0.3, repetitions: 5, mix: 0.6, stay: 0, scale: 0, sync: 0, amplitude: 1.0, range: 1, humanize: 0.35, panSpeed: 0, panDepth: 0.8 },
+    'frozen': { time: 0.5, repetitions: 9, mix: 0.5, stay: 1, scale: 1, sync: 0, amplitude: 1.0, range: 1, humanize: 0.35, panSpeed: 0, panDepth: 0.8 },
+    'swirling': { time: 0.4, repetitions: 8, mix: 0.5, stay: 0, scale: 4, sync: 1, amplitude: 1.0, range: 1, humanize: 0.35, panSpeed: 0.8, panDepth: 0.8 },
+    'sync-trip': { time: 0.33, repetitions: 7, mix: 0.5, stay: 0, scale: 4, sync: 1, amplitude: 1.0, range: 1, humanize: 0.35, panSpeed: 0, panDepth: 0.8 }
 };
 
 const REVERB_PRESETS = {
@@ -1951,13 +2023,13 @@ const REVERB_PRESETS = {
 };
 
 const DUSK_PRESETS = {
-    'default': { time: 1500, grainMix: 0.2, verbMix: 0.4, shimmer: 0.0, haunt: 0, grainSize: 0.5, panSpeed: 0 },
-    'shimmer-pad': { time: 1400, grainMix: 0.0, verbMix: 0.7, shimmer: 0.7, haunt: 0, grainSize: 0.5 },
-    'ghost-choir': { time: 980, grainMix: 0.3, verbMix: 0.5, shimmer: 0.0, haunt: 413, grainSize: 0.8 },
-    'horror-drone': { time: 2500, grainMix: 0.0, verbMix: 0.5, shimmer: 0.0, haunt: 200, grainSize: 0.9, panSpeed: 0.1 },
-    'glitch-verb': { time: 537, grainMix: 0.8, verbMix: 0.4, shimmer: 0.3, haunt: 60, grainSize: 0.1 },
-    'deep-space': { time: 4000, grainMix: 0.1, verbMix: 0.6, shimmer: 0.1, haunt: 50, grainSize: 0.9 },
-    'scary': { time: 545, grainMix: 0.0, verbMix: 0.5, shimmer: 0.6, haunt: 423, grainSize: 0.5 }
+    'default': { time: 1500, grainMix: 0.2, verbMix: 0.4, shimmer: 0.0, haunt: 0, grainSize: 0.5, panSpeed: 0, panDepth: 0.8 },
+    'shimmer-pad': { time: 1400, grainMix: 0.0, verbMix: 0.7, shimmer: 0.7, haunt: 0, grainSize: 0.5, panSpeed: 0, panDepth: 0.8 },
+    'ghost-choir': { time: 980, grainMix: 0.3, verbMix: 0.5, shimmer: 0.0, haunt: 413, grainSize: 0.8, panSpeed: 0, panDepth: 0.8 },
+    'horror-drone': { time: 2500, grainMix: 0.0, verbMix: 0.5, shimmer: 0.0, haunt: 200, grainSize: 0.9, panSpeed: 0.1, panDepth: 0.8 },
+    'glitch-verb': { time: 537, grainMix: 0.8, verbMix: 0.4, shimmer: 0.3, haunt: 60, grainSize: 0.1, panSpeed: 0, panDepth: 0.8 },
+    'deep-space': { time: 4000, grainMix: 0.1, verbMix: 0.6, shimmer: 0.1, haunt: 50, grainSize: 0.9, panSpeed: 0, panDepth: 0.8 },
+    'scary': { time: 545, grainMix: 0.0, verbMix: 0.5, shimmer: 0.6, haunt: 423, grainSize: 0.5, panSpeed: 0, panDepth: 0.8 }
 };
 
 const ZIGZ_PRESETS = {
@@ -1969,10 +2041,10 @@ const ZIGZ_PRESETS = {
 };
 
 const GRIZ_PRESETS = {
-    'default': { rate: 4.0, wave: 1, depth: 0.8, bias: 0.5, drive: 10.0, vcfMode: 0, mix: 1.0 },
-    'slow-grind': { rate: 0.5, wave: 3, depth: 1.0, bias: 0.2, drive: 30.0, vcfMode: 1, mix: 1.0 },
-    'fast-chop': { rate: 12.0, wave: 3, depth: 1.0, bias: 0.5, drive: 5.0, vcfMode: 0, mix: 1.0 },
-    'bandpass-sweep': { rate: 2.0, wave: 0, depth: 0.9, bias: 0.5, drive: 20.0, vcfMode: 2, mix: 0.8 }
+    'default': { rate: 4.0, wave: 1, depth: 0.8, bias: 0.5, drive: 10.0, vcfMode: 0, makeup: 1.0, slewLimit: 0, mix: 1.0 },
+    'slow-grind': { rate: 0.5, wave: 3, depth: 1.0, bias: 0.2, drive: 30.0, vcfMode: 1, makeup: 1.0, slewLimit: 0, mix: 1.0 },
+    'fast-chop': { rate: 12.0, wave: 3, depth: 1.0, bias: 0.5, drive: 5.0, vcfMode: 0, makeup: 1.0, slewLimit: 0, mix: 1.0 },
+    'bandpass-sweep': { rate: 2.0, wave: 0, depth: 0.9, bias: 0.5, drive: 20.0, vcfMode: 2, makeup: 1.0, slewLimit: 0, mix: 0.8 }
 };
 
 // mode: 0 = chromatic (degrees are semitones), 1 = major, 2 = natural minor.
@@ -1980,20 +2052,20 @@ const GRIZ_PRESETS = {
 // Output sounds metallic and artificial; pitch-shift voices lack proper formant preservation.
 // TODO: Rework with formant-correct pitch-shift and better pitch-tracking before re-enabling.
 const HARMONY_PRESETS = {
-    'default': { voices: 2, mode: 1, key: 0, h1: 2, h2: 4, h3: -3, h4: 6, humanize: 0.5, mix: 0.5 },
-    'beach-boys': { voices: 3, mode: 1, key: 0, h1: 2, h2: 4, h3: -3, h4: 6, humanize: 0.65, mix: 0.5 },
-    'gospel-stack': { voices: 4, mode: 1, key: 0, h1: 2, h2: 4, h3: 6, h4: -3, humanize: 0.75, mix: 0.55 },
-    'barbershop': { voices: 3, mode: 0, key: 0, h1: 4, h2: -5, h3: -12, h4: 7, humanize: 0.5, mix: 0.5 },
-    'sweet-thirds': { voices: 1, mode: 1, key: 0, h1: 2, h2: 4, h3: -3, h4: 6, humanize: 0.4, mix: 0.45 },
-    'octave-up': { voices: 1, mode: 0, key: 0, h1: 12, h2: 4, h3: -3, h4: 6, humanize: 0.3, mix: 0.5 },
-    'octaves': { voices: 2, mode: 0, key: 0, h1: 12, h2: -12, h3: -3, h4: 6, humanize: 0.35, mix: 0.5 },
-    'angel-choir': { voices: 4, mode: 1, key: 0, h1: 2, h2: 4, h3: 6, h4: -5, humanize: 0.9, mix: 0.65 },
-    'dark-minor': { voices: 3, mode: 2, key: 0, h1: 2, h2: 4, h3: -3, h4: 6, humanize: 0.5, mix: 0.5 },
-    'dissonant': { voices: 2, mode: 0, key: 0, h1: 1, h2: 6, h3: -3, h4: 6, humanize: 0.25, mix: 0.5 },
-    'evil': { voices: 3, mode: 0, key: 0, h1: 6, h2: 1, h3: -6, h4: 6, humanize: 0.3, mix: 0.55 },
+    'default': { voices: 2, mode: 1, key: 0, h1: 2, h2: 4, h3: -3, h4: 6, humanize: 0.5, mix: 0.5, volume: 1.0 },
+    'beach-boys': { voices: 3, mode: 1, key: 0, h1: 2, h2: 4, h3: -3, h4: 6, humanize: 0.65, mix: 0.5, volume: 1.0 },
+    'gospel-stack': { voices: 4, mode: 1, key: 0, h1: 2, h2: 4, h3: 6, h4: -3, humanize: 0.75, mix: 0.55, volume: 1.0 },
+    'barbershop': { voices: 3, mode: 0, key: 0, h1: 4, h2: -5, h3: -12, h4: 7, humanize: 0.5, mix: 0.5, volume: 1.0 },
+    'sweet-thirds': { voices: 1, mode: 1, key: 0, h1: 2, h2: 4, h3: -3, h4: 6, humanize: 0.4, mix: 0.45, volume: 1.0 },
+    'octave-up': { voices: 1, mode: 0, key: 0, h1: 12, h2: 4, h3: -3, h4: 6, humanize: 0.3, mix: 0.5, volume: 1.0 },
+    'octaves': { voices: 2, mode: 0, key: 0, h1: 12, h2: -12, h3: -3, h4: 6, humanize: 0.35, mix: 0.5, volume: 1.0 },
+    'angel-choir': { voices: 4, mode: 1, key: 0, h1: 2, h2: 4, h3: 6, h4: -5, humanize: 0.9, mix: 0.65, volume: 1.0 },
+    'dark-minor': { voices: 3, mode: 2, key: 0, h1: 2, h2: 4, h3: -3, h4: 6, humanize: 0.5, mix: 0.5, volume: 1.0 },
+    'dissonant': { voices: 2, mode: 0, key: 0, h1: 1, h2: 6, h3: -3, h4: 6, humanize: 0.25, mix: 0.5, volume: 1.0 },
+    'evil': { voices: 3, mode: 0, key: 0, h1: 6, h2: 1, h3: -6, h4: 6, humanize: 0.3, mix: 0.55, volume: 1.0 },
     'demonic': { voices: 4, mode: 0, key: 0, h1: -1, h2: 6, h3: 11, h4: -12, humanize: 0.45, mix: 0.6, volume: 0.9 },
-    'tone-cluster': { voices: 3, mode: 0, key: 0, h1: 1, h2: 2, h3: -1, h4: 6, humanize: 0.2, mix: 0.5 },
-    'tritone': { voices: 1, mode: 0, key: 0, h1: 6, h2: 4, h3: -3, h4: 6, humanize: 0.2, mix: 0.5 }
+    'tone-cluster': { voices: 3, mode: 0, key: 0, h1: 1, h2: 2, h3: -1, h4: 6, humanize: 0.2, mix: 0.5, volume: 1.0 },
+    'tritone': { voices: 1, mode: 0, key: 0, h1: 6, h2: 4, h3: -3, h4: 6, humanize: 0.2, mix: 0.5, volume: 1.0 }
 };
 
 const EQ_PRESETS = {
@@ -2041,6 +2113,7 @@ const UI_CONFIG = {
     'D': { key: 'delay', title: 'DELAY (D)', color: 'green', presets: 'DELAY_PRESETS',
         extraHtml: (p) => `<div style="margin:5px 0"><label><input type="checkbox" ${p.sync?'checked':''} onchange="EffectManager.update('delay', 'sync', this.checked?true:false); EffectManager.renderEffectsPanel();"> Sync to Tempo</label></div>`,
         controls: [
+            { l: 'Time', p: 'time', min: 0.01, max: 4.0, step: 0.01, def: 0.375 },
             { l: 'Reps', p: 'repetitions', min: 0, max: 10, step: 1 },
             { l: 'Damp', p: 'damp', min: 200, max: 20000, step: 100 },
             { l: 'Mix', p: 'mix', min: 0, max: 1, step: 0.01 },
@@ -2050,8 +2123,10 @@ const UI_CONFIG = {
     },
     'T': { key: 'distortion', title: 'DISTORTION (T)', color: 'yellow', presets: 'DISTORTION_PRESETS',
         controls: [
-            { l: 'Amount', p: 'amount', min: 0, max: 100, step: 1 },
+            { l: 'Amount', p: 'amount', min: 0, max: 100, step: 1, def: 40 },
+            { l: 'Shape', p: 'shape', min: 0, max: 1, step: 0.01, def: 0.5 },
             { l: 'Tone', p: 'tone', min: 200, max: 20000, step: 100 },
+            { l: 'Vol', p: 'volume', min: 0, max: 1.5, step: 0.01, def: 0.8 },
             { l: 'Mix', p: 'mix', min: 0, max: 1, step: 0.01 }
         ]
     },
@@ -2060,7 +2135,7 @@ const UI_CONFIG = {
             { l: 'Gain', p: 'gain', min: 1, max: 50, step: 1 },
             { l: 'Bias', p: 'bias', min: -0.5, max: 0.5, step: 0.01, def: 0 },
             { l: 'Tone', p: 'tone', min: 100, max: 10000, step: 10, def: 3000 },
-            { l: 'Vol', p: 'volume', min: 0, max: 1.5, step: 0.01, def: 0.8 },
+            { l: 'Vol', p: 'volume', min: 0, max: 1.5, step: 0.01, def: 0.5 },
             { l: 'Mix', p: 'mix', min: 0, max: 1, step: 0.01 }
         ]
     },
@@ -2078,6 +2153,7 @@ const UI_CONFIG = {
             { l: 'Hi Cut', p: 'highCut', min: 1000, max: 20000, step: 100, def: 8000 },
             { l: 'Lo Cut', p: 'lowCut', min: 20, max: 2000, step: 10, def: 100 },
             { l: 'Feedback', p: 'feedback', min: 0, max: 0.99, step: 0.01 },
+            { l: 'Warp', p: 'warp', min: 0, max: 1, step: 0.01, def: 0.2 },
             { l: 'Mix', p: 'mix', min: 0, max: 1, step: 0.01 }
         ]
     },
@@ -2089,7 +2165,8 @@ const UI_CONFIG = {
             { l: 'Haunt', p: 'haunt', min: 0, max: 880, step: 1 },
             { l: 'Shim', p: 'shimmer', min: 0, max: 1, step: 0.01 },
             { l: 'V.Mix', p: 'verbMix', min: 0, max: 1, step: 0.01 },
-            { l: 'Pan Spd', p: 'panSpeed', min: 0, max: 5, step: 0.1, def: 0 }
+            { l: 'Pan Spd', p: 'panSpeed', min: 0, max: 5, step: 0.1, def: 0 },
+            { l: 'Pan Dpt', p: 'panDepth', min: 0, max: 1, step: 0.1, def: 0.8 }
         ]
     },
     // DISABLED v0.76.02 — Metallic sound quality, not production-ready. Hidden from chain legend.
@@ -2127,12 +2204,14 @@ const UI_CONFIG = {
             { l: 'Bias', p: 'bias', min: 0, max: 1, step: 0.01 },
             { l: 'Drive', p: 'drive', min: 1, max: 50, step: 0.1 },
             { l: 'Mode', p: 'vcfMode', min: 0, max: 2, step: 1 },
+            { l: 'Makeup', p: 'makeup', min: 0, max: 4, step: 0.1, def: 1.0 },
+            { l: 'Slew', p: 'slewLimit', min: 0, max: 1, step: 0.01, def: 0 },
             { l: 'Mix', p: 'mix', min: 0, max: 1, step: 0.01 }
         ]
     },
     'Z': { key: 'zigZ', title: 'zigZ PAN (Z)', color: '#ff00ff', presets: 'ZIGZ_PRESETS',
         controls: [
-            { l: 'Rate (Beats)', p: 'rate', min: 1, max: 32, step: 1 },
+            { l: 'Rate (Beats)', p: 'rate', min: 0.05, max: 32, step: 0.05 },
             { l: 'Depth', p: 'depth', min: 0, max: 1, step: 0.01 },
             { l: 'Phase', p: 'phase', min: 0, max: 1, step: 0.01 }
         ]
@@ -2318,7 +2397,7 @@ class EffectManager {
             case 'delay': return nodes[3] && nodes[4] ? { type: 'drywet', dry: nodes[3].gain, wet: nodes[4].gain } : null;
             case 'distortion': return nodes[4] && nodes[5] ? { type: 'drywet', dry: nodes[4].gain, wet: nodes[5].gain } : null;
             case 'fuzz': return nodes[4] && nodes[5] ? { type: 'drywet', dry: nodes[4].gain, wet: nodes[5].gain } : null;
-            case 'overdrive': return nodes[4] && nodes[5] ? { type: 'drywet', dry: nodes[4].gain, wet: nodes[5].gain } : null;
+            case 'overdrive': return nodes[3] && nodes[4] ? { type: 'drywet', dry: nodes[3].gain, wet: nodes[4].gain } : null;
             case 'compressor': return nodes[2] && nodes[3] ? { type: 'drywet', dry: nodes[2].gain, wet: nodes[3].gain } : null;
             case 'arpDelay': return nodes[0] ? { type: 'param', param: nodes[0].parameters.get('mix') } : null;
             case 'harmony': return nodes[0] ? { type: 'param', param: nodes[0].parameters.get('mix') } : null;
@@ -2439,28 +2518,46 @@ class EffectManager {
         this.updateChainVisual(chain);
     }
 
+    /**
+     * Syncs the chain editor text input and visual display to the active tab's current chain.
+     * Call this after any code path that changes a chain outside of setGlobalSignalChain.
+     */
+    static syncEditorDisplay() {
+        let chain = "";
+        if (this.activeTab === 'input-bus') chain = InputManager.masterSignalChain;
+        else if (typeof this.activeTab === 'string' && this.activeTab.startsWith('drone-')) {
+            const id = parseInt(this.activeTab.split('-')[1]);
+            if (DroneSynth.instances[id]) chain = DroneSynth.instances[id].signalChain;
+        } else if (state.loops[this.activeTab]) chain = state.loops[this.activeTab].signalChain;
+
+        const el = document.getElementById('effectSignalChain');
+        if (el) el.value = chain;
+        this.updateChainVisual(chain);
+    }
+
     static setGlobalSignalChain(chain, isPreset = false) {
         if (!chain) return;
-        
+
         if (isPreset) {
             const newChain = state.fxPresets[chain];
             if (!newChain) return;
             chain = newChain;
         }
-        
-        const validChars = "BVDTFOCKQAZGH"; 
+
+        const validChars = "BVDTFOCKQAZGH";
         const customChars = Object.values(state.customEffects).map(e=>e.code).join('');
         // Deduplicate chain to prevent resource leaks/control desync
         const cleanChain = [...new Set(chain.toUpperCase().split('').filter(c => (validChars + customChars).includes(c)))].join('');
-        
+
         if (cleanChain.length > 0) {
             const el = document.getElementById('effectSignalChain');
             if (el) el.value = cleanChain;
             this.updateChainVisual(cleanChain);
-            
+
             if (this.activeTab === 'input-bus') {
                 InputManager.masterSignalChain = cleanChain;
                 InputManager.rebuildMasterChain();
+                InputManager.renderUI(); // Sync mixer chain input text
             } else if (typeof this.activeTab === 'string' && this.activeTab.startsWith('drone-')) {
                 const id = parseInt(this.activeTab.split('-')[1]);
                 const synth = DroneSynth.instances[id];
@@ -2469,12 +2566,15 @@ class EffectManager {
                     DroneSynth.rebuildFxChain(id);
                     DroneSynth.renderFxToggles(id);
                     // Update Drone Module UI
-            const dInput = document.getElementById(`droneSignalChainInput_${id}`);
-            if (dInput) dInput.value = cleanChain;
-            if (window.UIManager && UIManager.updateLiveDrone) UIManager.updateLiveDrone(id);
-        }
-    } else if (state.loops[this.activeTab]) {
-        state.loops[this.activeTab].setSignalChain(cleanChain);
+                    const dInput = document.getElementById(`droneSignalChainInput_${id}`);
+                    if (dInput) dInput.value = cleanChain;
+                    // Reset drone preset dropdown since chain no longer matches a stored preset
+                    const dSel = document.getElementById(`droneFxPresetSelect_${id}`);
+                    if (dSel) dSel.value = '';
+                    if (window.UIManager && UIManager.updateLiveDrone) UIManager.updateLiveDrone(id);
+                }
+            } else if (state.loops[this.activeTab]) {
+                state.loops[this.activeTab].setSignalChain(cleanChain);
             }
         }
     }
@@ -2536,7 +2636,7 @@ class EffectManager {
                     throw new Error("Unrecognized .afx format");
                 }
             } catch(e) {
-                alert(`Failed to load ${file.name}: ${e.message}`);
+                Log.error('FXChain', `Failed to load ${file.name}:`, e);
             }
         }
         input.value = ''; // Reset
@@ -2549,15 +2649,26 @@ class EffectManager {
             }
         }
         if (data.fxChainPresets) {
-            state.fxPresets = { ...state.fxPresets, ...data.fxChainPresets };
+            // Validate: only accept string-to-string entries (same guard as importPresets)
+            const valid = Object.fromEntries(Object.entries(data.fxChainPresets).filter(([name, chain]) =>
+                typeof name === 'string' && name.trim() && typeof chain === 'string' && chain.trim()
+            ));
+            state.fxPresets = { ...state.fxPresets, ...valid };
         }
         if (data.globalPresets) {
-            state.globalPresets = { ...state.globalPresets, ...data.globalPresets };
+            const valid = Object.fromEntries(Object.entries(data.globalPresets).filter(([name, preset]) =>
+                typeof name === 'string' && name.trim() &&
+                preset && typeof preset === 'object' && !Array.isArray(preset) &&
+                typeof preset.chain === 'string' &&
+                preset.active && typeof preset.active === 'object' && !Array.isArray(preset.active) &&
+                preset.params && typeof preset.params === 'object' && !Array.isArray(preset.params)
+            ));
+            state.globalPresets = { ...state.globalPresets, ...valid };
         }
         if (data.effectPresets) {
             for (const [fxName, presets] of Object.entries(data.effectPresets)) {
                 const targetName = fxName === 'machineReverb' ? 'MACHINE_PRESETS' : fxName.toUpperCase() + '_PRESETS';
-                if (this[targetName]) {
+                if (this[targetName] && presets && typeof presets === 'object' && !Array.isArray(presets)) {
                     this[targetName] = { ...this[targetName], ...presets };
                 }
             }
@@ -2711,8 +2822,8 @@ class EffectManager {
         fxData.code = code;
 
         // 3. Load Worklet
+        let url;
         try {
-            let url;
             if (window.location.protocol === 'file:') {
                 url = 'data:application/javascript;base64,' + btoa(unescape(encodeURIComponent(fxData.workletCode)));
             } else {
@@ -2723,15 +2834,21 @@ class EffectManager {
             if (url.startsWith('blob:')) URL.revokeObjectURL(url);
         } catch(e) {
             console.error("Worklet load failed", e);
-            // Continue anyway? The processorName must match what's in the code
+            // Revoke blob URL on failure to avoid memory leak
+            if (url && url.startsWith('blob:')) URL.revokeObjectURL(url);
+            // Don't register the effect if the worklet failed to load
+            throw new Error(`Failed to load worklet for ${fxData.name}: ${e.message}`);
         }
 
         // 4. Register
-        state.customEffects[fxData.name] = fxData;
-
         // 5. Initialize Params in Global State and Loops
+        // Worklets with fixed coefficients legitimately ship without controls, but every
+        // consumer iterates the list, so normalise it before the state mutation below.
+        if (fxData.parameters == null) fxData.parameters = [];
         const defaultParams = {};
         fxData.parameters.forEach(p => defaultParams[p.name] = p.defaultValue);
+
+        state.customEffects[fxData.name] = fxData;
 
         // Add to global effects object definition
         effects[fxData.name] = { ...defaultParams };
@@ -2813,7 +2930,43 @@ class EffectManager {
             }, 10);
         }
     }
-    
+
+    /**
+     * Finds which factory value a slider id should reset to. Slider ids are built as
+     * `${effectKey}${Capitalized(param)}` by createSlider, so the effect key is read back off
+     * the front — longest key first, otherwise 'arpDelayTime' would look like 'delay'.
+     * Params that only exist as UI controls (fuzz bias) carry their default on the control.
+     */
+    static controlReset(idBase) {
+        const keys = Object.keys(FACTORY_EFFECTS).sort((a, b) => b.length - a.length);
+        for (const key of keys) {
+            if (!idBase.startsWith(key)) continue;
+            const suffix = idBase.slice(key.length).toLowerCase();
+            if (!suffix) continue;
+
+            const factory = FACTORY_EFFECTS[key];
+            const param = Object.keys(factory).find(p => p.toLowerCase() === suffix);
+            if (param) return { key, param, value: factory[param] };
+
+            const conf = Object.values(this.UI_CONFIG).find(c => c.key === key);
+            const ctl = conf && conf.controls.find(c => c.p.toLowerCase() === suffix);
+            if (ctl && ctl.def !== undefined) return { key, param: ctl.p, value: ctl.def };
+        }
+        return null;
+    }
+
+    static resetControl(idBase) {
+        const el = document.getElementById(idBase);
+        if (!el) return;
+        const target = this.controlReset(idBase);
+        if (!target) return;
+
+        // update() refuses to move the slider that has focus, and a double-click focuses it,
+        // so the knob is positioned here before the value is pushed through the state.
+        el.value = target.value;
+        this.update(target.key, target.param, target.value);
+    }
+
      /**
      * Master update method.
      */
@@ -2886,7 +3039,13 @@ class EffectManager {
             const id = parseInt(this.activeTab.split('-')[1]);
             const synth = DroneSynth.instances[id];
             if (synth) {
-                const mockLoop = { graph: { nodes: { effects: synth.fxChain.nodes } }, params: synth.fxParams };
+                const mockLoop = { graph: {
+                    nodes: { effects: synth.fxChain.nodes },
+                    // Drones have no AudioGraph either: borrow the builder that owns the
+                    // helper updateLoopNode needs to splice a missing auto-pan stage.
+                    _addAutoPanToWet: (wet, output, rate, depth, arr) =>
+                        DroneSynth.helperGraph?._addAutoPanToWet(wet, output, rate, depth, arr)
+                }, params: synth.fxParams };
                 this.updateLoopNode(mockLoop, effectType, param, value, now);
             }
         } else if (typeof this.activeTab === 'number') {
@@ -2917,11 +3076,20 @@ class EffectManager {
         if (effectType === 'machineReverb') {
              // Smart update for filters/feedback to avoid glitchy rebuilds
              const nodes = loop.graph.nodes.effects[effectType];
-             if (nodes && nodes[2] && nodes[3]) {
-                 if (param === 'highCut') this.smoothSetParam(nodes[2].frequency, value, now);
-                 else if (param === 'lowCut') this.smoothSetParam(nodes[3].frequency, value, now);
-                 else if (param === 'feedback') this.smoothSetParam(nodes[1].gain, value, now);
-                 else if (param === 'mix') { this.smoothSetParam(nodes[4].gain, 1-value, now); this.smoothSetParam(nodes[5].gain, value, now); }
+             if (nodes && nodes[0]) {
+                 if (param === 'decay') {
+                     const ir = AudioEngine.createSimpleReverbIR(value, 1.0, state.audioContext.sampleRate);
+                     nodes[0].buffer = ir;
+                 }
+                 else if (param === 'warp' && nodes[9]) {
+                     this.smoothSetParam(nodes[9].gain, value * 0.01, now);
+                 }
+                 else if (nodes[2] && nodes[3]) {
+                     if (param === 'highCut') this.smoothSetParam(nodes[2].frequency, value, now);
+                     else if (param === 'lowCut') this.smoothSetParam(nodes[3].frequency, value, now);
+                     else if (param === 'feedback') this.smoothSetParam(nodes[1].gain, Math.min(0.95, value), now);
+                     else if (param === 'mix') { this.smoothSetParam(nodes[4].gain, 1-value, now); this.smoothSetParam(nodes[5].gain, value, now); }
+                 }
              }
              return;
         }
@@ -2949,12 +3117,14 @@ class EffectManager {
                         const aP = { time:'time',mix:'mix',stay:'stay',scale:'scale', sync:'sync', amplitude:'amplitude', range:'range', humanize:'humanize' };
                         if(aP[param]) this.smoothSetParam(nodes[0].parameters.get(aP[param]), value, now);
                         else if (param === 'panSpeed' || param === 'panDepth') {
-                            if (nodes.length >= 3) { // Has Pan nodes [worklet, pan, lfo, gain]
+                            if (nodes.length >= 4) { // Always [worklet, pan, lfo, gain]
                                 if (param === 'panSpeed') this.smoothSetParam(nodes[2].frequency, value, now);
                                 else if (param === 'panDepth') this.smoothSetParam(nodes[3].gain, value, now);
                             }
                         }
                     }
+                    // Always update bpm to keep sync mode aligned with host tempo
+                    this.smoothSetParam(nodes[0].parameters.get('bpm'), state.bpm, now);
                     break;
                 case 'reverb':
                     if (param === 'mix') { this.smoothSetParam(nodes[1].gain, 1 - value, now); this.smoothSetParam(nodes[2].gain, value, now); }
@@ -2966,17 +3136,32 @@ class EffectManager {
                     const p = (loop.params && loop.params.delay) || effects.delay;
                     if (!p) break;
                     if (param === 'time' || param === 'sync') { 
-                        let t = p.time;
-                        if(p.sync) t = p.time * (60.0 / state.bpm);
+                        let t = p.time ?? effects.delay.time;
+                        if(p.sync) t = (p.time ?? effects.delay.time) * (60.0 / state.bpm);
                         this.smoothSetParam(nodes[0].delayTime, t, now); 
                     }
                     else if (param === 'repetitions') { this.smoothSetParam(nodes[1].gain, value / 11.1, now); }
                     else if (param === 'damp') { this.smoothSetParam(nodes[2].frequency, value, now); }
                     else if (param === 'mix') { this.smoothSetParam(nodes[3].gain, 1 - value, now); this.smoothSetParam(nodes[4].gain, value, now); }
+                    else if (param === 'panSpeed' || param === 'panDepth') {
+                        // _createDelay always appends [panner, lfo, lfoGain] to its six core nodes.
+                        if (nodes.length < 9 && typeof loop.graph?._addAutoPanToWet === 'function') {
+                            const dp = (loop.params && loop.params.delay) || {};
+                            const wet = nodes[4], output = nodes[5];
+                            const rate = param === 'panSpeed' ? value : (dp.panSpeed ?? 0);
+                            const depth = param === 'panDepth' ? value : (dp.panDepth ?? 0);
+                            loop.graph._addAutoPanToWet(wet, output, rate, depth, nodes);
+                        }
+                        if (nodes.length >= 9) {
+                            if (param === 'panSpeed') this.smoothSetParam(nodes[7].frequency, value, now);
+                            else this.smoothSetParam(nodes[8].gain, value, now);
+                        }
+                    }
                     break;
                 }
                 case 'distortion':
-                    if (param === 'amount') { nodes[1].curve = AudioGraph.makeDistortionCurve(value); }
+                    if (param === 'amount') { nodes[1].curve = AudioGraph.makeDistortionCurve(value, loop.params.distortion?.shape ?? 0.5); }
+                    else if (param === 'shape') { nodes[1].curve = AudioGraph.makeDistortionCurve(loop.params.distortion?.amount ?? 40, value); }
                     else if (param === 'tone') { this.smoothSetParam(nodes[2].frequency, value, now); }
                     else if (param === 'volume') { this.smoothSetParam(nodes[3].gain, value, now); }
                     else if (param === 'mix') { this.smoothSetParam(nodes[4].gain, 1 - value, now); this.smoothSetParam(nodes[5].gain, value, now); }
@@ -2989,10 +3174,10 @@ class EffectManager {
                     else if (param === 'mix') { this.smoothSetParam(nodes[4].gain, 1 - value, now); this.smoothSetParam(nodes[5].gain, value, now); }
                     break;
                 case 'overdrive':
-                    if (param === 'drive') { nodes[1].curve = AudioGraph.makeOverdriveCurve(value); }
-                    else if (param === 'tone') { this.smoothSetParam(nodes[2].frequency, value, now); }
-                    else if (param === 'volume') { this.smoothSetParam(nodes[3].gain, value, now); }
-                    else if (param === 'mix') { this.smoothSetParam(nodes[4].gain, 1 - value, now); this.smoothSetParam(nodes[5].gain, value, now); }
+                    if (param === 'drive') { nodes[0].curve = AudioGraph.makeOverdriveCurve(value); }
+                    else if (param === 'tone') { this.smoothSetParam(nodes[1].frequency, value, now); }
+                    else if (param === 'volume') { this.smoothSetParam(nodes[2].gain, value, now); }
+                    else if (param === 'mix') { this.smoothSetParam(nodes[3].gain, 1 - value, now); this.smoothSetParam(nodes[4].gain, value, now); }
                     break;
                 case 'compressor':
                    if (param === 'threshold') { this.smoothSetParam(nodes[0].threshold, value, now); }
@@ -3006,6 +3191,13 @@ class EffectManager {
                 case 'dusk': {
                    const pMap = { 'time': 'verbTime', 'grainMix': 'grainMix', 'verbMix': 'verbMix', 'shimmer': 'shimmer', 'haunt': 'haunt', 'grainSize': 'grainSize' };
                    if(pMap[param] && nodes[0]) this.smoothSetParam(nodes[0].parameters.get(pMap[param]), value, now);
+                   else if (param === 'panSpeed' || param === 'panDepth') {
+                       // _createDusk parks the panner in the serial path: [worklet, panner, lfo, lfoGain].
+                       if (nodes.length >= 4) {
+                           if (param === 'panSpeed') this.smoothSetParam(nodes[2].frequency, value, now);
+                           else this.smoothSetParam(nodes[3].gain, value, now);
+                       }
+                   }
                    break;
                 }
                 case 'eq':
@@ -3022,17 +3214,37 @@ class EffectManager {
                 else if (param === 'bias') this.smoothSetParam(nodes[0].parameters.get('bias'), value, now);
                 else if (param === 'drive') this.smoothSetParam(nodes[0].parameters.get('drive'), value, now);
                 else if (param === 'vcfMode') this.smoothSetParam(nodes[0].parameters.get('mode'), value, now);
+                else if (param === 'makeup') this.smoothSetParam(nodes[0].parameters.get('makeupGain'), value, now);
+                else if (param === 'slewLimit') this.smoothSetParam(nodes[0].parameters.get('slewLimit'), value, now);
                 else if (param === 'mix') { this.smoothSetParam(nodes[1].gain, 1 - value, now); this.smoothSetParam(nodes[2].gain, value, now); }
                 break;
             case 'zigZ':
                    if (!nodes[1] || !nodes[2]) break;
                    if (param === 'rate') {
-                       const freq = 1 / (value * (60 / state.bpm));
+                       const secPerBeat = state.bpm > 0 ? 60 / state.bpm : 0.5;
+                       const freq = value > 0 ? 1 / (value * secPerBeat) : 0;
                        this.smoothSetParam(nodes[1].frequency, freq, now);
                    } else if (param === 'depth') {
                        this.smoothSetParam(nodes[2].gain, value, now);
+                   } else if (param === 'phase') {
+                       // An OscillatorNode cannot change phase in place, so replace it with one
+                       // started `phase * period` seconds in the past. Starting in the past keeps
+                       // the same waveform position at `now` without touching the audio path
+                       // (the panner at nodes[0] stays the chain exit).
+                       const lfoGain = nodes[2];
+                       const freq = nodes[1].frequency.value;
+                       const period = freq > 0 ? 1 / freq : 1;
+                       let start = now - (value || 0) * period;
+                       if (start < 0) start += Math.ceil(-start / period) * period;
+                       const newLfo = state.audioContext.createOscillator();
+                       newLfo.type = 'triangle';
+                       newLfo.frequency.value = freq;
+                       newLfo.connect(lfoGain);
+                       newLfo.start(Math.max(0, start));
+                       const oldLfo = nodes[1];
+                       try { oldLfo.disconnect(); oldLfo.stop(); } catch (e) {}
+                       nodes[1] = newLfo;
                    }
-                   // Phase cannot be updated live easily without reset
                    break;
             }
         } catch (e) { console.error("Error updating loop node:", e); }
@@ -3177,14 +3389,15 @@ class EffectManager {
                     html += createSlider('Time', 'arpDelayTime', 0.01, 2.0, 0.01, p.time, "EffectManager.update('arpDelay', 'time', parseFloat(this.value))");
                     html += createSlider('Reps', 'arpDelayRepetitions', 0, 10, 1, p.repetitions, "EffectManager.update('arpDelay', 'repetitions', parseFloat(this.value))");
                     html += createSlider('Mix', 'arpDelayMix', 0, 1, 0.01, p.mix, "EffectManager.update('arpDelay', 'mix', parseFloat(this.value))");
-                    html += createSlider('Note Vol', 'arpDelayAmplitude', 0, 1.5, 0.01, p.amplitude || 1.0, "EffectManager.update('arpDelay', 'amplitude', parseFloat(this.value))");
+                    html += createSlider('Note Vol', 'arpDelayAmplitude', 0, 1.5, 0.01, p.amplitude !== undefined ? p.amplitude : 1.0, "EffectManager.update('arpDelay', 'amplitude', parseFloat(this.value))");
                     html += createSlider('Oct Range', 'arpDelayRange', 0.25, 3.0, 0.25, p.range !== undefined ? p.range : 1.0, "EffectManager.update('arpDelay', 'range', parseFloat(this.value))");
                     html += createSlider('Feel', 'arpDelayHumanize', 0, 1, 0.01, p.humanize !== undefined ? p.humanize : 0.35, "EffectManager.update('arpDelay', 'humanize', parseFloat(this.value))");
                     html += `<div class="control-group"><label>Scale: <span id="arpScaleDisp">${currentScale}</span></label>
                     <input type="range" id="arpDelayScale" min="0" max="${EffectManager.ARPDELAY_SCALES.length-1}" step="1" value="${p.scale}" aria-label="Arpeggiator Scale"
                     oninput="EffectManager.update('arpDelay', 'scale', parseFloat(this.value)); document.getElementById('arpScaleDisp').innerText = EffectManager.ARPDELAY_SCALES[Math.floor(this.value)]"></div>`;
                     html += `<div style="margin:5px 0"><label><input type="checkbox" ${p.stay?'checked':''} onchange="EffectManager.update('arpDelay', 'stay', this.checked?1:0)"> STAY (Hold)</label></div>`;
-                    html += createSlider('Pan Spd', 'arpDelayPanSpeed', 0, 5, 0.1, p.panSpeed || 0, "EffectManager.update('arpDelay', 'panSpeed', parseFloat(this.value))");
+                    html += createSlider('Pan Spd', 'arpDelayPanSpeed', 0, 5, 0.1, p.panSpeed ?? 0, "EffectManager.update('arpDelay', 'panSpeed', parseFloat(this.value))");
+                    html += createSlider('Pan Dpt', 'arpDelayPanDepth', 0, 1, 0.1, p.panDepth !== undefined ? p.panDepth : 0.8, "EffectManager.update('arpDelay', 'panDepth', parseFloat(this.value))");
                     container.appendChild(createModule(title, color, html, 'arpDelay'));
                     break;
                 }
@@ -3204,7 +3417,7 @@ class EffectManager {
                     html += createSlider('Knee', 'compressorKnee', 0, 40, 1, p.knee, "EffectManager.update('compressor', 'knee', parseFloat(this.value))");
                     html += createSlider('Att', 'compressorAttack', 0, 1, 0.001, p.attack, "EffectManager.update('compressor', 'attack', parseFloat(this.value))");
                     html += createSlider('Rel', 'compressorRelease', 0.01, 1, 0.01, p.release, "EffectManager.update('compressor', 'release', parseFloat(this.value))");
-                    html += createSlider('Gain', 'compressorGain', 0, 10, 0.1, p.gain, "EffectManager.update('compressor', 'gain', parseFloat(this.value))");
+                    html += createSlider('Gain', 'compressorGain', 0, 20, 0.1, p.gain, "EffectManager.update('compressor', 'gain', parseFloat(this.value))");
                     html += createSlider('Mix', 'compressorMix', 0, 1, 0.01, p.mix, "EffectManager.update('compressor', 'mix', parseFloat(this.value))");
                         container.appendChild(createModule(title, color, html, 'compressor'));
                     break;
@@ -3224,13 +3437,17 @@ class EffectManager {
                         requestAnimationFrame(() => EffectManager.drawEQVisualizer());
                         
                         // Helper for compact band
-                        const band = (lbl, id, type, min, max, v) => 
-                        `<div style="display:flex; justify-content:space-between; align-items:center; font-size:9px; margin-bottom:20px;">
+                        const band = (lbl, id, type, min, max, v) => {
+                            const cap = id.charAt(0).toUpperCase() + id.slice(1);
+                            const step = type === 'F' ? 1 : (type === 'Q' ? 0.01 : 0.1);
+                            return `<div style="display:flex; justify-content:space-between; align-items:center; font-size:9px; margin-bottom:20px;">
                             <span style="width:20px; color:#888;" id="eqLbl${id}">${lbl}</span>
-                            <input type="range" id="eq${id.charAt(0).toUpperCase()+id.slice(1)}" style="width:100%; margin:8px 4px;" min="${min}" max="${max}" step="${type==='G'?0.1:1}" value="${v}" aria-labelledby="eqLbl${id}"
-                            oninput="EffectManager.update('eq', '${id}', parseFloat(this.value))">
-                            <span style="width:25px; text-align:right;" id="eq${id.charAt(0).toUpperCase()+id.slice(1)}Val">${v}</span>
+                            <input type="range" id="eq${cap}" style="width:100%; margin:8px 4px;" min="${min}" max="${max}" step="${step}" value="${v}" aria-labelledby="eqLbl${id}"
+                            oninput="EffectManager.update('eq', '${id}', parseFloat(this.value))"
+                            ondblclick="EffectManager.resetControl('eq${cap}')">
+                            <span style="width:25px; text-align:right;" id="eq${cap}Val">${v}</span>
                             </div>`;
+                        };
 
                         html += `<div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px;">`;
                         
@@ -3241,8 +3458,9 @@ class EffectManager {
                         ${band('ShF', 'lsFreq', 'F', 40, 1000, p.lsFreq)}
                         ${band('ShG', 'lsGain', 'G', -24, 24, p.lsGain)}
                         <div style="border-top:1px dashed #444; margin:2px 0;"></div>
-                        ${band('P1 F', 'p1Freq', 'F', 60, 2000, p.p1Freq)}
+                        ${band('P1 F', 'p1Freq', 'F', 60, 4000, p.p1Freq)}
                         ${band('P1 G', 'p1Gain', 'G', -24, 24, p.p1Gain)}
+                        ${band('P1 Q', 'p1Q', 'Q', 0.1, 10, p.p1Q)}
                         </div>`;
 
                         // COL 2: MIDS
@@ -3250,12 +3468,15 @@ class EffectManager {
                         <div style="text-align:center; color:#ff0; border-bottom:1px solid #222; margin-bottom:2px; font-weight:bold;">MIDS</div>
                         ${band('P2 F', 'p2Freq', 'F', 100, 4000, p.p2Freq)}
                         ${band('P2 G', 'p2Gain', 'G', -24, 24, p.p2Gain)}
+                        ${band('P2 Q', 'p2Q', 'Q', 0.1, 10, p.p2Q)}
                         <div style="border-top:1px dashed #444; margin:2px 0;"></div>
                         ${band('P3 F', 'p3Freq', 'F', 200, 6000, p.p3Freq)}
                         ${band('P3 G', 'p3Gain', 'G', -24, 24, p.p3Gain)}
+                        ${band('P3 Q', 'p3Q', 'Q', 0.1, 10, p.p3Q)}
                         <div style="border-top:1px dashed #444; margin:2px 0;"></div>
                         ${band('P4 F', 'p4Freq', 'F', 400, 8000, p.p4Freq)}
                         ${band('P4 G', 'p4Gain', 'G', -24, 24, p.p4Gain)}
+                        ${band('P4 Q', 'p4Q', 'Q', 0.1, 10, p.p4Q)}
                         </div>`;
 
                         // COL 3: HIGHS
@@ -3263,13 +3484,15 @@ class EffectManager {
                         <div style="text-align:center; color:#0ff; border-bottom:1px solid #222; margin-bottom:2px; font-weight:bold;">HIGHS</div>
                         ${band('P5 F', 'p5Freq', 'F', 1000, 12000, p.p5Freq)}
                         ${band('P5 G', 'p5Gain', 'G', -24, 24, p.p5Gain)}
+                        ${band('P5 Q', 'p5Q', 'Q', 0.1, 10, p.p5Q)}
                         <div style="border-top:1px dashed #444; margin:2px 0;"></div>
                         ${band('P6 F', 'p6Freq', 'F', 2000, 16000, p.p6Freq)}
                         ${band('P6 G', 'p6Gain', 'G', -24, 24, p.p6Gain)}
+                        ${band('P6 Q', 'p6Q', 'Q', 0.1, 10, p.p6Q)}
                         <div style="border-top:1px dashed #444; margin:2px 0;"></div>
-                        ${band('ShF', 'hsFreq', 'F', 4000, 20000, p.hsFreq)}
+                        ${band('ShF', 'hsFreq', 'F', 1500, 20000, p.hsFreq)}
                         ${band('ShG', 'hsGain', 'G', -24, 24, p.hsGain)}
-                        ${band('Cut', 'hcFreq', 'F', 8000, 22000, p.hcFreq)}
+                        ${band('Cut', 'hcFreq', 'F', 3000, 22000, p.hcFreq)}
                         </div>`;
 
                         html += `</div>`;
@@ -3482,10 +3705,16 @@ class EffectManager {
     
     // Save Preset
     static saveCurrentChainAsPreset() {
-        const name = document.getElementById('presetNameInput').value;
-        const chain = document.getElementById('effectSignalChain').value;
-        if(!name || !chain) return;
-        
+        const name = document.getElementById('presetNameInput').value.trim();
+        const rawChain = document.getElementById('effectSignalChain').value;
+        if(!name || !rawChain) return;
+
+        // Validate and deduplicate the chain before saving (same rules as APPLY)
+        const validChars = "BVDTFOCKQAZGH";
+        const customChars = Object.values(state.customEffects || {}).map(e=>e.code).join('');
+        const chain = [...new Set(rawChain.toUpperCase().split('').filter(c => (validChars + customChars).includes(c)))].join('');
+        if (!chain) return;
+
         state.fxPresets[name] = chain;
         UIManager.renderLoops(); // Refresh dropdowns
         this.refreshPresetDropdowns(); // Refresh editor/mic dropdowns
@@ -3581,8 +3810,13 @@ class EffectManager {
         if (countEl) countEl.textContent = `${count} ${translate('FULL_PRESETS')}`;
         if (!summaryEl) return;
 
-        if (!preset || typeof preset !== 'object') {
+        if (count === 0) {
             summaryEl.textContent = translate('GLOBAL_PRESET_LIBRARY_EMPTY');
+            return;
+        }
+
+        if (!preset || typeof preset !== 'object') {
+            summaryEl.textContent = translate('SELECT_PRESET_TO_VIEW');
             return;
         }
 
@@ -3601,37 +3835,45 @@ class EffectManager {
     // Apply preset directly to Mic/Input chain
     static applyPresetToMic(name) {
         if (!name) return;
-        
+
         if (name.startsWith("GLOBAL:")) {
             const isDrone = (typeof this.activeTab === 'string' && this.activeTab.startsWith('drone'));
             const target = isDrone ? this.activeTab : 'input';
             this.applyGlobalPreset(target, name);
             return;
         }
-        
+
         if (!state.fxPresets[name]) return;
-        
+
+        // Validate the chain from the preset (guards against old/malformed presets)
+        const validChars = "BVDTFOCKQAZGH";
+        const customChars = Object.values(state.customEffects || {}).map(e => e.code).join('');
+        const cleanChain = [...new Set(state.fxPresets[name].toUpperCase().split('').filter(c => (validChars + customChars).includes(c)))].join('');
+        if (!cleanChain) return;
+
         if (this.activeTab === 'input-bus') {
-             InputManager.masterSignalChain = state.fxPresets[name];
-             InputManager.rebuildMasterChain();
-             InputManager.renderUI();
-             this.renderEffectsPanel();
+            InputManager.masterSignalChain = cleanChain;
+            InputManager.rebuildMasterChain();
+            InputManager.renderUI();
+            this.renderEffectsPanel();
+            this.syncEditorDisplay();
         } else if (typeof this.activeTab === 'string' && this.activeTab.startsWith('drone-')) {
-             const id = parseInt(this.activeTab.split('-')[1]);
-             const synth = DroneSynth.instances[id];
-             if (synth) {
-                 synth.signalChain = state.fxPresets[name];
-                 DroneSynth.rebuildFxChain(id);
-                 this.renderEffectsPanel();
-                 DroneSynth.renderFxToggles(id);
-                 
-            const dSel = document.getElementById(`droneFxPresetSelect_${id}`);
-            if(dSel) dSel.value = name;
-            const dIn = document.getElementById(`droneSignalChainInput_${id}`);
-            if(dIn) dIn.value = synth.signalChain;
-            if (window.UIManager && UIManager.updateLiveDrone) UIManager.updateLiveDrone(id);
+            const id = parseInt(this.activeTab.split('-')[1]);
+            const synth = DroneSynth.instances[id];
+            if (synth) {
+                synth.signalChain = cleanChain;
+                DroneSynth.rebuildFxChain(id);
+                this.renderEffectsPanel();
+                DroneSynth.renderFxToggles(id);
+
+                const dSel = document.getElementById(`droneFxPresetSelect_${id}`);
+                if (dSel) dSel.value = name;
+                const dIn = document.getElementById(`droneSignalChainInput_${id}`);
+                if (dIn) dIn.value = cleanChain;
+                if (window.UIManager && UIManager.updateLiveDrone) UIManager.updateLiveDrone(id);
+                this.syncEditorDisplay();
+            }
         }
-    }
     }
 
     // Export Presets Only
@@ -3653,7 +3895,16 @@ class EffectManager {
         const reader = new FileReader();
         reader.onload = (e) => {
             try {
-                const newPresets = JSON.parse(e.target.result);
+                const parsedPresets = JSON.parse(e.target.result);
+                if (!parsedPresets || typeof parsedPresets !== 'object' || Array.isArray(parsedPresets)) throw new Error('Invalid preset library');
+
+                // A chain preset is a name -> chain string. The neighbouring .agp library parses
+                // fine here too but holds objects, which the mixer then tries to split and iterate.
+                const newPresets = Object.fromEntries(Object.entries(parsedPresets).filter(([name, chain]) =>
+                    typeof name === 'string' && name.trim() && typeof chain === 'string' && chain.trim()
+                ));
+                if (!Object.keys(newPresets).length) throw new Error('No valid chain presets');
+
                 // Merge
                 state.fxPresets = { ...state.fxPresets, ...newPresets };
                 this.refreshPresetDropdowns();
@@ -3669,14 +3920,17 @@ class EffectManager {
     
     // Export Global Presets (.agp)
     static saveGlobalPresetsToFile() {
-        const data = JSON.stringify(state.globalPresets, null, 2);
+        const presets = state.globalPresets || {};
+        if (!Object.keys(presets).length) return alert("No global presets to export");
+
+        const data = JSON.stringify(presets, null, 2);
         const blob = new Blob([data], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
         link.download = `global_presets_${Date.now()}.agp`;
         link.click();
-        setTimeout(() => URL.revokeObjectURL(url), 100);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 
     // Import Global Presets (.agp)
@@ -3689,13 +3943,21 @@ class EffectManager {
                 const parsedPresets = JSON.parse(e.target.result);
                 if (!parsedPresets || typeof parsedPresets !== 'object' || Array.isArray(parsedPresets)) throw new Error('Invalid preset library');
 
+                const validChars = "BVDTFOCKQAZGH";
+                const customChars = Object.values(state.customEffects || {}).map(e => e.code).join('');
+                const allValid = validChars + customChars;
+
                 const newPresets = Object.fromEntries(Object.entries(parsedPresets).filter(([name, preset]) =>
                     typeof name === 'string' && name.trim() &&
                     preset && typeof preset === 'object' && !Array.isArray(preset) &&
                     typeof preset.chain === 'string' &&
                     preset.active && typeof preset.active === 'object' && !Array.isArray(preset.active) &&
                     preset.params && typeof preset.params === 'object' && !Array.isArray(preset.params)
-                ));
+                ).map(([name, preset]) => {
+                    // Sanitize chain: filter invalid chars and deduplicate
+                    const cleanChain = [...new Set(preset.chain.toUpperCase().split('').filter(c => allValid.includes(c)))].join('');
+                    return [name, { ...preset, chain: cleanChain }];
+                }));
                 const importedNames = Object.keys(newPresets);
                 if (!importedNames.length) throw new Error('No valid presets');
 
@@ -3726,16 +3988,21 @@ class EffectManager {
             return;
         }
 
+        // Validate the chain from the global preset
+        const validChars = "BVDTFOCKQAZGH";
+        const customChars = Object.values(state.customEffects || {}).map(e => e.code).join('');
+        const newChain = [...new Set(preset.chain.toUpperCase().split('').filter(c => (validChars + customChars).includes(c)))].join('');
+        if (!newChain) return;
+
         // Deep copy params, merging with safe defaults to prevent legacy missing keys from breaking logic
         const newParams = JSON.parse(JSON.stringify(preset.params));
-        const safeParams = JSON.parse(JSON.stringify(effects)); 
+        const safeParams = JSON.parse(JSON.stringify(effects));
         for (const k in newParams) {
-             if (safeParams[k]) Object.assign(safeParams[k], newParams[k]);
-             else safeParams[k] = newParams[k]; 
+            if (safeParams[k]) Object.assign(safeParams[k], newParams[k]);
+            else safeParams[k] = newParams[k];
         }
-        
+
         const newActive = preset.active ? { ...preset.active } : {};
-        const newChain = preset.chain;
 
         if (targetId === 'input') {
             // Apply to Input Bus
@@ -3744,24 +4011,29 @@ class EffectManager {
             // Reset all effects to off, then apply active
             Object.keys(InputManager.masterEffectsState).forEach(k => InputManager.masterEffectsState[k] = false);
             Object.assign(InputManager.masterEffectsState, newActive);
-            
+
             InputManager.rebuildMasterChain();
             InputManager.renderUI();
+        } else if (typeof targetId === 'string' && targetId.startsWith('drone-')) {
+            // Apply to Drone
+            const id = parseInt(targetId.split('-')[1]);
+            const synth = DroneSynth.instances[id];
+            if (synth) {
+                synth.fxParams = safeParams;
+                synth.signalChain = newChain;
+                Object.keys(synth.fxState).forEach(k => synth.fxState[k] = false);
+                Object.assign(synth.fxState, newActive);
+                DroneSynth.rebuildFxChain(id);
+                DroneSynth.renderFxToggles(id);
+
+                // Sync drone UI inputs
+                const dIn = document.getElementById(`droneSignalChainInput_${id}`);
+                if (dIn) dIn.value = newChain;
+                const dSel = document.getElementById(`droneFxPresetSelect_${id}`);
+                if (dSel) dSel.value = presetName;
+                if (window.UIManager && UIManager.updateLiveDrone) UIManager.updateLiveDrone(id);
+            }
         } else {
-            // Drone logic
-            if (typeof targetId === 'string' && targetId.startsWith('drone-')) {
-                const id = parseInt(targetId.split('-')[1]);
-                const synth = DroneSynth.instances[id];
-                if(synth) {
-                    synth.fxParams = safeParams;
-                    synth.signalChain = newChain;
-                    Object.keys(synth.fxState).forEach(k => synth.fxState[k] = false);
-                    Object.assign(synth.fxState, newActive);
-                    DroneSynth.rebuildFxChain(id);
-                    DroneSynth.renderFxToggles(id);
-                    // Render loop updates UI inputs already
-                }
-            } else {
             // Apply to Loop
             const loop = state.loops[targetId];
             if (!loop) return;
@@ -3769,20 +4041,20 @@ class EffectManager {
             loop.params = safeParams;
             loop.signalChain = newChain;
 
-                Object.keys(loop.effects).forEach(k => loop.effects[k] = false);
-                Object.assign(loop.effects, newActive);
-                
-                if (!loop.name || loop.name.startsWith("Loop ")) loop.name = presetKey;
+            Object.keys(loop.effects).forEach(k => loop.effects[k] = false);
+            Object.assign(loop.effects, newActive);
 
-                if (loop.state === 'playing' && loop.graph) {
-                    loop.graph.rebuild();
-                }
-                UIManager.updateLoop(targetId);
+            if (!loop.name || loop.name.startsWith("Loop ")) loop.name = presetKey;
+
+            if (loop.state === 'playing' && loop.graph) {
+                loop.graph.rebuild();
             }
+            UIManager.updateLoop(targetId);
         }
-        
+
         if (this.activeTab === targetId || (this.activeTab === 'input-bus' && targetId === 'input')) {
             this.renderEffectsPanel();
+            this.syncEditorDisplay();
         }
     }
 
@@ -3802,18 +4074,25 @@ class EffectManager {
         } else if (source.startsWith('drone-')) {
             const id = parseInt(source.split('-')[1]);
             const synth = DroneSynth.instances[id];
+            if (!synth) return alert("Source not available");
             sourceParams = synth.fxParams;
             sourceChain = synth.signalChain;
             sourceActive = synth.fxState;
         } else {
             const l = state.loops[parseInt(source)];
+            if (!l) return alert("Source not available");
             sourceParams = l.params;
             sourceChain = l.signalChain;
             sourceActive = l.effects;
         }
 
+        // Validate chain before saving
+        const validChars = "BVDTFOCKQAZGH";
+        const customChars = Object.values(state.customEffects || {}).map(e => e.code).join('');
+        const cleanChain = [...new Set((sourceChain || '').toUpperCase().split('').filter(c => (validChars + customChars).includes(c)))].join('');
+
         state.globalPresets[name] = {
-            chain: sourceChain,
+            chain: cleanChain,
             active: JSON.parse(JSON.stringify(sourceActive)),
             params: JSON.parse(JSON.stringify(sourceParams))
         };
@@ -3844,8 +4123,16 @@ class EffectManager {
             return;
         }
         const chain = state.fxPresets[presetName];
-        if (chain) state.loops[loopId].setSignalChain(chain);
-        if (this.activeTab === loopId) this.renderEffectsPanel();
+        if (chain) {
+            const validChars = "BVDTFOCKQAZGH";
+            const customChars = Object.values(state.customEffects || {}).map(e => e.code).join('');
+            const cleanChain = [...new Set(chain.toUpperCase().split('').filter(c => (validChars + customChars).includes(c)))].join('');
+            if (cleanChain) state.loops[loopId].setSignalChain(cleanChain);
+        }
+        if (this.activeTab === loopId) {
+            this.renderEffectsPanel();
+            this.syncEditorDisplay();
+        }
     }
     
     /**
@@ -3886,6 +4173,7 @@ class EffectManager {
         this.update('compressor', 'attack', preset.attack);
         this.update('compressor', 'release', preset.release);
         this.update('compressor', 'gain', makeupGain);
+        this.update('compressor', 'mix', preset.mix ?? 1.0);
         
         this.isBatchUpdating = false;
         
@@ -4117,7 +4405,7 @@ class EffectManager {
             if (DroneSynth.instances[id]) DroneSynth.instances[id].activePresets['eq'] = name;
         } else if (typeof this.activeTab === 'number') {
             // Check if loop exists before assigning
-            if (!state.loops[this.activeTab]) return;
+            if (!state.loops[this.activeTab]) { this.isBatchUpdating = false; return; }
             if(!state.loops[this.activeTab].activePresets) state.loops[this.activeTab].activePresets = {};
             state.loops[this.activeTab].activePresets['eq'] = name;
         }

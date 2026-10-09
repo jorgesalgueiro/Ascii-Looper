@@ -65,6 +65,30 @@ class ProjectManager {
                 };
             }));
 
+            // The tracker's S columns and the mixer both address these pads, so their audio
+            // has to travel with the project or a reload sequences one-shots that are gone.
+            const samplersData = await Promise.all(state.samplers.map(async sampler => {
+                let wavBase64 = null;
+                if (sampler.buffer) {
+                    const wavBuffer = AudioEngine.bufferToWAV(sampler.buffer);
+                    wavBase64 = await new Promise((resolve) => {
+                        const reader = new FileReader();
+                        reader.onload = () => resolve(reader.result.split(',')[1]);
+                        reader.readAsDataURL(new Blob([wavBuffer]));
+                    });
+                }
+                return {
+                    id: sampler.id,
+                    name: sampler.name,
+                    speed: sampler.speed,
+                    volume: sampler.volume,
+                    pan: sampler.pan,
+                    muted: sampler.muted,
+                    isLooping: sampler.isLooping,
+                    audioWavBase64: wavBase64
+                };
+            }));
+
             const projectData = {
                 version: VERSION,
                 projectName: projectName,
@@ -87,10 +111,14 @@ class ProjectManager {
                 inputEffectsState: InputManager.masterEffectsState,
                 inputActivePresets: InputManager.activePresets,
                 masterVolume: InputManager.masterVolume,
+                // Master Bus State (house EQ, glue comp, master fader)
+                masterFx: state.masterFx,
+                masterMixVolume: state.masterMixVolume,
                 // Input Tracks
                 inputTracks: state.inputs.map(i => ({
                     id: i.id,
                     type: i.type || 'mic',
+                    name: i.name || '',
                     volume: i.volume,
                     pan: i.pan,
                     monitor: i.monitor,
@@ -112,6 +140,7 @@ class ProjectManager {
                         activePresets: inst.activePresets,
                         fxState: inst.fxState,
                         hold: inst.hold,
+                        muted: inst.muted,
                         midiEnabled: inst.midiEnabled
                     }))
                 },
@@ -124,6 +153,7 @@ class ProjectManager {
                 tracker: {
                     playlist: state.tracker.playlist,
                     patterns: state.tracker.patterns,
+                    loopColumns: MAX_LOOPS,
                     currentPatternIdx: state.tracker.currentPatternIdx,
                     mode: state.tracker.mode
                 },
@@ -133,6 +163,7 @@ class ProjectManager {
                 
                 // Loops
                 loops: loopsData,
+                samplers: samplersData,
                 fxPresets: state.fxPresets,
                 globalPresets: state.globalPresets,
                 effectPresets: {
@@ -162,8 +193,7 @@ class ProjectManager {
             
             setTimeout(() => URL.revokeObjectURL(url), 100);
         } catch (error) {
-            console.error("Save project error:", error);
-            alert("Error saving project: " + error.message);
+            Log.error('ProjectManager', 'Error saving project:', error);
         } finally {
             saveBtns.forEach(btn => {
                 btn.textContent = btn.dataset.origText;
@@ -258,11 +288,30 @@ class ProjectManager {
             state.inputLatencyMs = parseInt(data.inputLatencyMs) || 0;
             const latSlider = document.getElementById('latencyCorrection');
             if (latSlider) latSlider.value = state.inputLatencyMs;
+
+            // Restore Master Bus (house EQ, glue comp, master fader)
+            if (data.masterFx || typeof data.masterMixVolume === 'number') {
+                if (data.masterFx) {
+                    // The EQ worklet and the compressor already exist, so the saved numbers
+                    // go to their AudioParams through the same setters the sliders use.
+                    Object.entries(data.masterFx.eq || {}).forEach(([key, value]) => AudioEngine.updateMasterEQ(key, value));
+                    Object.entries(data.masterFx.comp || {}).forEach(([key, value]) => AudioEngine.updateMasterComp(key, value));
+                }
+                if (typeof data.masterMixVolume === 'number') MasterMixManager.setMasterMixVolume(data.masterMixVolume);
+                // The console's sliders were built from the pre-load values, so the next
+                // touch would jump the sound to whatever the slider still shows.
+                MasterMixManager.render();
+            }
             
             // Restore Tracker
             if (data.tracker) {
                 state.tracker.playlist = (data.tracker.playlist && data.tracker.playlist.length > 0) ? data.tracker.playlist : [0];
-                state.tracker.patterns = data.tracker.patterns || [{rows:16, data:{}}];
+                // A project saved before loopColumns existed still tells us its width:
+                // one loop entry per strip was written whenever it was saved.
+                const savedColumns = data.tracker.loopColumns ??
+                    (Array.isArray(data.loops) && data.loops.length ? data.loops.length : MAX_LOOPS);
+                state.tracker.patterns = TrackerManager.remapLoopColumns(
+                    data.tracker.patterns || [{rows:16, data:{}}], savedColumns);
                 if (data.tracker.currentPatternIdx !== undefined) state.tracker.currentPatternIdx = data.tracker.currentPatternIdx;
                     if (data.tracker.mode) {
                         state.tracker.mode = data.tracker.mode;
@@ -279,7 +328,13 @@ class ProjectManager {
             if (data.customEffects) {
                 for (const [name, fxDef] of Object.entries(data.customEffects)) {
                     // Register without prompting for new code (true)
-                    await EffectManager.registerCustomEffect(fxDef, true); 
+                    try {
+                        await EffectManager.registerCustomEffect(fxDef, true);
+                    } catch (e) {
+                        // One unusable effect must not cost the whole project; the
+                        // missing-code warning below names the letter it lost.
+                        Log.debug('ProjectManager', `Skipped custom effect '${name}':`, e.message);
+                    }
                 }
             }
 
@@ -352,7 +407,7 @@ class ProjectManager {
                     return res;
                 };
                 state.keyMapping = {
-                    kbd: mergeArr(savedMap.kbd, defaultMapping.kbd),
+                    kbd: mergeArr(savedMap.kbd, defaultMapping.kbd).map(k => typeof k === 'string' ? k.toLowerCase() : k),
                     midi: mergeArr(savedMap.midi, defaultMapping.midi),
                     gamepad: mergeArr(savedMap.gamepad, defaultMapping.gamepad)
                 };
@@ -364,8 +419,19 @@ class ProjectManager {
            
             // FX Presets
             if (data.fxPresets) state.fxPresets = data.fxPresets; // Legacy
-            if (data.globalPresets) state.globalPresets = data.globalPresets;
-            else state.globalPresets = JSON.parse(JSON.stringify(DEFAULT_GLOBAL_PRESETS));
+            if (data.globalPresets) {
+                // Validate: only accept well-formed global preset entries
+                const valid = Object.fromEntries(Object.entries(data.globalPresets).filter(([name, preset]) =>
+                    typeof name === 'string' && name.trim() &&
+                    preset && typeof preset === 'object' && !Array.isArray(preset) &&
+                    typeof preset.chain === 'string' &&
+                    preset.active && typeof preset.active === 'object' && !Array.isArray(preset.active) &&
+                    preset.params && typeof preset.params === 'object' && !Array.isArray(preset.params)
+                ));
+                state.globalPresets = Object.keys(valid).length ? valid : JSON.parse(JSON.stringify(DEFAULT_GLOBAL_PRESETS));
+            } else {
+                state.globalPresets = JSON.parse(JSON.stringify(DEFAULT_GLOBAL_PRESETS));
+            }
 
             if (data.effectPresets) {
                 for (const [fxName, presets] of Object.entries(data.effectPresets)) {
@@ -378,7 +444,7 @@ class ProjectManager {
 
             // Restore Master Input Bus
             if (data.inputParams) {
-                InputManager.masterParams = JSON.parse(JSON.stringify(effects));
+                InputManager.masterParams = JSON.parse(JSON.stringify(data.inputParams));
                 for (const key in data.inputParams) {
                     if (InputManager.masterParams[key]) {
                         Object.assign(InputManager.masterParams[key], data.inputParams[key]);
@@ -406,6 +472,7 @@ class ProjectManager {
                     await InputManager.addInputTrack(trackData.deviceId, trackData.type || 'mic');
                     if (state.inputs.length <= countBefore) continue; // Track creation failed (e.g. permission denied)
                     const id = state.inputs.length - 1;
+                    if (trackData.name) state.inputs[id].name = trackData.name;
                     InputManager.setVolume(id, trackData.volume ?? 1.0);
                     InputManager.setPan(id, trackData.pan ?? 5);
                     InputManager.setChannelMode(id, trackData.channelMode || 'stereo');
@@ -436,6 +503,23 @@ class ProjectManager {
                 }
             }
 
+            // --- Restore Samplers ---
+            // Only when the file actually describes the pads: projects saved before this
+            // key existed carry no samplers at all, and treating that as "empty" would
+            // erase a live set's one-shots.
+            if (Array.isArray(data.samplers)) {
+                const savedPads = new Map(data.samplers.map(s => [s.id, s]));
+                for (const sampler of state.samplers) {
+                    try {
+                        await this.restoreSampler(sampler, savedPads.get(sampler.id) || null);
+                    } catch (e) {
+                        console.error(`Failed to restore sampler ${sampler.id}, skipping.`, e);
+                    }
+                }
+                SamplerManager.renderUI();
+                if (window.MasterMixManager) MasterMixManager.render();
+            }
+
             // --- Update UI ---
             // Regenerate reverb buffers for Input Bus and all Loops (IR is not saved in JSON)
             EffectManager.regenerateReverb('input-bus');
@@ -454,8 +538,7 @@ class ProjectManager {
             alert('Project loaded successfully!');
             
         } catch (error) {
-            console.error('Project load error:', error);
-            alert('Error loading project: ' + error.message);
+            Log.error('ProjectManager', 'Error loading project:', error);
         } finally {
             if (event.target) event.target.value = ''; // Clear file input
             document.body.style.cursor = 'default';
@@ -474,7 +557,10 @@ class ProjectManager {
                     const res = await fetch(`data:audio/wav;base64,${loopData.audioWavBase64}`);
                     const arrayBuffer = await res.arrayBuffer();
                     loop.audioBuffer = await state.audioContext.decodeAudioData(arrayBuffer);
-                    AudioEngine.seamlessLoopCrossfade(loop.audioBuffer, 0.01);
+                    // No seam pass here: the WAV was encoded from a take that was already
+                    // faded when it was recorded or imported, and this fade only attenuates,
+                    // so replaying it every load grinds the attack and decay of every take
+                    // down and writes the damage back into the next save.
                     loop.wavePeaks = UIManager.generateWaveformPeaks(loop.audioBuffer);
                     loop.duration = loopData.duration || loop.audioBuffer.duration;
                 } catch (error) {
@@ -509,16 +595,40 @@ class ProjectManager {
                 loop.params = JSON.parse(JSON.stringify(effects)); // Default if missing
             }
             
-           if (loopData.effects) {
+            if (loopData.effects) {
                 Object.assign(loop.effects, loopData.effects);
             }
-            
-            if (!loop.effects.dusk && loopData.effects && loopData.effects.dusk) {
-                 loop.effects.dusk = loopData.effects.dusk;
+    }
+
+    /**
+     * Helper to restore a single sampler pad. A null samplerData clears the pad.
+     */
+    static async restoreSampler(sampler, samplerData) {
+        if (!sampler) return;
+
+        // A BufferSource keeps the buffer it was started with, so a pad still sounding
+        // from the previous set would go on playing it under the new take and badge.
+        SamplerManager.stop(sampler.id);
+
+        let buffer = null;
+        if (samplerData && samplerData.audioWavBase64) {
+            try {
+                const res = await fetch(`data:audio/wav;base64,${samplerData.audioWavBase64}`);
+                buffer = await state.audioContext.decodeAudioData(await res.arrayBuffer());
+            } catch (error) {
+                console.error(`Error restoring sampler ${sampler.id} WAV audio:`, error);
             }
-            if (!loop.effects.arpDelay && loopData.effects && loopData.effects.arpDelay) {
-                 loop.effects.arpDelay = loopData.effects.arpDelay;
-            }
+        }
+
+        sampler.buffer = buffer;
+        sampler.wavePeaks = buffer ? UIManager.generateWaveformPeaks(buffer) : null;
+        sampler.name = (samplerData && samplerData.name) || `Sampler ${sampler.id + 1}`;
+        sampler.speed = samplerData?.speed ?? 1.0;
+        sampler.volume = samplerData?.volume ?? 0.8;
+        sampler.pan = samplerData?.pan ?? 5;
+        sampler.muted = samplerData?.muted ?? false;
+        sampler.isLooping = samplerData?.isLooping ?? true;
+        sampler.state = buffer ? 'stopped' : 'empty';
     }
 
     /**
@@ -549,7 +659,10 @@ class ProjectManager {
 
             // Wet
             const wasPlaying = loop.state === 'playing';
-            const dur = loop.duration + 3.0; // 3 sec tail
+            // The bounce is real time, and the graph plays at the same rate the source
+            // does, so a slowed take needs duration / rate rather than duration seconds.
+            const rate = Math.max(0.001, loop.effectivePlaybackRate || 1);
+            const dur = loop.duration / rate + 3.0; // 3 sec tail
             const dest = state.audioContext.createMediaStreamDestination();
             const rec = new MediaRecorder(dest.stream);
             const chunks = [];
@@ -559,14 +672,13 @@ class ProjectManager {
             const graph = new AudioGraph(loop, 0);
             graph.immediate = true; 
             graph.build();
-            graph.nodes.volume.disconnect(); 
-            
-            if (graph.nodes.pan && graph.nodes.pan.merger) {
-                graph.nodes.pan.merger.disconnect();
-                graph.nodes.pan.merger.connect(dest);
-            } else {
-                graph.nodes.volume.connect(dest);
-            }
+
+            // Tap the node that feeds the mix — the pan merger, or the post-FX gain when
+            // zigZ owns the panning — and point it at the recorder. Disconnecting the
+            // volume node instead would starve the merger and bounce a silent take.
+            const tap = (graph.nodes.pan && graph.nodes.pan.merger) || graph.nodes.volume;
+            tap.disconnect();
+            tap.connect(dest);
             
             rec.start();
             graph.nodes.source.loop = false;
@@ -637,14 +749,15 @@ class ProjectManager {
         const hasMix = state.masterChunks.length > 0;
         const hasInput = state.inputChunks.length > 0;
         const hasStems = state.loops.some(l => l.stemChunks && l.stemChunks.length > 0) || (window.DroneSynth && DroneSynth.instances.some(d => d.stemChunks && d.stemChunks.length > 0));
-        
+
         if (!hasLoops && !hasMix && !hasInput && !hasStems) { alert('No tracks to export.'); return; }
-        
-        document.getElementById('exportAllBtn').disabled = true;
-        document.getElementById('exportAllBtn').textContent = 'Processing...';
-        
-        const ts = Date.now(); 
-        let exported = 0; 
+
+        const exportBtn = document.getElementById('exportAllBtn');
+        if (exportBtn) { exportBtn.disabled = true; exportBtn.textContent = 'Processing...'; }
+
+        try {
+        const ts = Date.now();
+        let exported = 0;
         let errors = [];
 
         // 1. Export Dry Loops
@@ -730,6 +843,12 @@ class ProjectManager {
         let msg = `${exported} track(s) exported!`;
         if (errors.length > 0) msg += `\n\nErrors:\n${errors.join('\n')}`;
         setTimeout(() => alert(msg), 300);
+
+        } finally {
+            const btn = document.getElementById('exportAllBtn');
+            if (btn) { btn.disabled = false; btn.textContent = '[E] EXP ALL'; }
+            UIManager.updateExportButtons();
+        }
     }
     
     /**
@@ -779,7 +898,7 @@ class ProjectManager {
             if (window.TrackerManager) {
                 TrackerManager.saveSong(`${safeName}_Performance_${ts}.trk`);
             }
-        } catch (e) { alert(`Export failed: ${e.message}`); }
+        } catch (e) { Log.error('ProjectManager', 'Master export failed:', e); }
     }
 
     /**
@@ -796,7 +915,7 @@ class ProjectManager {
             AudioEngine.applyFades(buffer, 0.01);
             const wavData = AudioEngine.bufferToWAV(buffer);
         this.downloadWAV(wavData, `${safeName}_Input_Only_${ts}.wav`); 
-    } catch (e) { alert(`Export failed: ${e.message}`); }
+    } catch (e) { Log.error('ProjectManager', 'Input export failed:', e); }
 }
 }
 

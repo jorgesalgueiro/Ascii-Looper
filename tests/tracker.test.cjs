@@ -14,6 +14,8 @@ function createHarness() {
     let nextTimer = 0;
     const context = {
         console, MAX_LOOPS: 1, VERSION: 'test',
+        DebugManager: { enabled: false },
+        Log: { error: (...args) => alerts.push(args.slice(1).map(a => a instanceof Error ? a.message : String(a)).join(' ')), warn: () => {}, info: () => {}, debug: () => {} },
         state: {
             audioContext: { state: 'running' }, bpm: 120, timeSig: { num: 4, den: 4 },
             masterStartTime: 0, syncEnabled: false, loops: [], samplers: [], keyMapping: { kbd: [] },
@@ -31,7 +33,7 @@ function createHarness() {
         SyncManager: { updateSettings() {
             context.state.bpm = Number(elements.get('bpmInput').value);
             context.state.timeSig = { num: Number(elements.get('timeSigNum').value), den: Number(elements.get('timeSigDen').value) };
-        } }
+        } },
     };
     context.window = context;
     vm.createContext(context);

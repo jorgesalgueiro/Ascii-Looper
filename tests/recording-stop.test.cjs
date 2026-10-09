@@ -54,7 +54,9 @@ function createHarness() {
         },
         SyncManager: { getQuantizeOffset: () => 2, getLoopLength: () => 1, updateSettings() {} },
         setTimeout: (callback, delay) => { timers.set(++timerId, { callback, delay }); return timerId; },
-        clearTimeout: id => timers.delete(id), alert: message => alerts.push(message)
+        clearTimeout: id => timers.delete(id), alert: message => alerts.push(message),
+        DebugManager: { enabled: false },
+        Log: { error: () => {}, warn: () => {}, info: () => {}, debug: () => {} }
     };
     context.window = context;
     vm.createContext(context);

@@ -74,6 +74,7 @@ class SamplerTrack {
         this.source = null;
         this.activeSources = new Set();
         this.activeGains = new Map();
+        this.activePanNodes = new Map();
         this.gain = null;
         this.panNode = null;
         this.analyser = null;
@@ -110,6 +111,7 @@ class SamplerTrack {
         source.onended = () => {
             this.activeSources.delete(source);
             this.activeGains.delete(source);
+            this.activePanNodes.delete(source);
             try { source.disconnect(); } catch(e) {}
             try { gain.disconnect(); } catch(e) {}
             try { panNode.disconnect(); } catch(e) {}
@@ -131,6 +133,7 @@ class SamplerTrack {
 
         this.activeSources.add(source);
         this.activeGains.set(source, gain);
+        this.activePanNodes.set(source, panNode);
         this.source = source;
         this.gain = gain;
         this.panNode = panNode;
@@ -140,6 +143,8 @@ class SamplerTrack {
     stop(time = 0) {
         const now = state.audioContext ? state.audioContext.currentTime : 0;
         const t = time > 0 ? time : now;
+        if (this.startTimeout) { clearTimeout(this.startTimeout); this.startTimeout = null; }
+        if (this.stopTimeout) { clearTimeout(this.stopTimeout); this.stopTimeout = null; }
         this.activeSources.forEach(source => {
             try { source.stop(t); } catch(e) {}
         });
@@ -174,7 +179,7 @@ class SamplerManager {
                 this.renderUI();
                 if (window.MasterMixManager) MasterMixManager.render();
             } catch(err) {
-                alert("Error loading sampler audio: " + err.message);
+                Log.error('Sampler', 'Error loading sampler audio:', err);
             }
         };
         input.click();
@@ -259,15 +264,19 @@ class SamplerManager {
     }
     static setSpeed(id, val) {
         const sampler = state.samplers[id];
+        if (!sampler) return;
         sampler.speed = parseFloat(val);
         const disp = document.getElementById(`samp_spd_${id}`);
         if (disp) disp.textContent = sampler.speed.toFixed(2);
-        if (sampler.source && state.audioContext) {
-            sampler.source.playbackRate.setValueAtTime(sampler.speed, state.audioContext.currentTime);
+        if (state.audioContext) {
+            sampler.activeSources.forEach(source => {
+                source.playbackRate.setValueAtTime(sampler.speed, state.audioContext.currentTime);
+            });
         }
     }
     static setVolume(id, val) {
         const sampler = state.samplers[id];
+        if (!sampler) return;
         sampler.volume = parseFloat(val);
         this.updateVolumeGraph(id);
         const disp = document.getElementById(`samp_vol_${id}`);
@@ -278,16 +287,20 @@ class SamplerManager {
     }
     static setPan(id, val) {
         const sampler = state.samplers[id];
+        if (!sampler) return;
         sampler.pan = parseInt(val);
-        if (sampler.panNode && state.audioContext) {
+        if (state.audioContext) {
             const panPosition = (sampler.pan / 5.0) - 1.0;
-            sampler.panNode.pan.setValueAtTime(panPosition, state.audioContext.currentTime);
+            sampler.activePanNodes.forEach(panNode => {
+                panNode.pan.setValueAtTime(panPosition, state.audioContext.currentTime);
+            });
         }
         const disp = document.getElementById(`samp_pan_${id}`);
         if (disp) disp.textContent = sampler.pan;
     }
     static toggleMute(id) {
         const sampler = state.samplers[id];
+        if (!sampler) return;
         sampler.muted = !sampler.muted;
         this.updateVolumeGraph(id);
         this.updateTrackUI(id);
@@ -304,6 +317,7 @@ class SamplerManager {
     }
     static updateVolumeGraph(id) {
         const s = state.samplers[id];
+        if (!s) return;
         if (state.audioContext) {
             const targetVol = (s.muted || s.isMutedBySolo) ? 0 : s.volume;
             // The outgoing source can still be audible while its replacement is queued.
@@ -314,7 +328,9 @@ class SamplerManager {
     }
     static normalize(id) {
         const s = state.samplers[id];
+        if (!s) return;
         if (!s.buffer) return;
+        this._stopSampler(id);
         if (AudioEngine.normalizeBuffer(s.buffer)) {
             s.wavePeaks = UIManager.generateWaveformPeaks(s.buffer);
             this.drawWaveform(id);
@@ -322,6 +338,7 @@ class SamplerManager {
     }
     static togglePlay(id, scheduledTime = 0) {
         const sampler = state.samplers[id];
+        if (!sampler) return;
         if (!sampler.buffer) return;
 
         const now = AudioEngine.currentTime;
@@ -337,6 +354,7 @@ class SamplerManager {
     }
     static _startSampler(id, scheduledTime = 0) {
         const sampler = state.samplers[id];
+        if (!sampler) return;
         if (sampler.startTimeout) { clearTimeout(sampler.startTimeout); sampler.startTimeout = null; }
         if (sampler.stopTimeout) { clearTimeout(sampler.stopTimeout); sampler.stopTimeout = null; }
 
@@ -356,6 +374,7 @@ class SamplerManager {
     }
     static _stopSampler(id, scheduledTime = 0) {
         const sampler = state.samplers[id];
+        if (!sampler) return;
         if (sampler.startTimeout) { clearTimeout(sampler.startTimeout); sampler.startTimeout = null; }
         if (sampler.stopTimeout) { clearTimeout(sampler.stopTimeout); sampler.stopTimeout = null; }
 
@@ -366,13 +385,21 @@ class SamplerManager {
     }
     static toggleLoop(id) {
         const sampler = state.samplers[id];
+        if (!sampler) return;
         sampler.isLooping = !sampler.isLooping;
-        if (sampler.source) sampler.source.loop = sampler.isLooping;
+        sampler.activeSources.forEach(source => {
+            source.loop = sampler.isLooping;
+        });
         this.updateTrackUI(id);
     }
     static reverse(id) {
         const sampler = state.samplers[id];
+        if (!sampler) return;
         if (!sampler.buffer) return;
+        // A BufferSource keeps the buffer object it was started with, so a pad that is
+        // sounding would go on playing the forward take under the reversed waveform and
+        // badge. loadFile stops first for the same reason.
+        this._stopSampler(id);
         sampler.buffer = AudioEngine.getReversedBuffer(sampler.buffer);
         if (window.UIManager && UIManager.generateWaveformPeaks) {
             sampler.wavePeaks = UIManager.generateWaveformPeaks(sampler.buffer);
@@ -544,7 +571,10 @@ class AudioGraph {
         this.source.loopEnd = loopRef.duration;
 
         const activeRate = loopRef.effectivePlaybackRate;
-        if (Number.isFinite(activeRate) && activeRate > 0) {
+        const safeRate = (Number.isFinite(activeRate) && activeRate > 0) ? activeRate : 1.0;
+        if (safeRate !== activeRate) {
+            this.source.playbackRate.setValueAtTime(Math.max(0.001, safeRate), actualT);
+        } else {
             this.source.playbackRate.setValueAtTime(Math.max(0.001, activeRate), actualT);
         }
         this.nodes.source = this.source;
@@ -563,7 +593,7 @@ class AudioGraph {
             const masterElapsed = this.startTime - state.masterStartTime;
             const dur = loopRef.duration > 0 ? loopRef.duration : 1;
             const shift = loopRef.startDelay * dur;
-            startOffset = ((masterElapsed * activeRate) - shift) % dur;
+            startOffset = ((masterElapsed * safeRate) - shift) % dur;
             if (startOffset < 0) startOffset += dur;
         } else {
             startOffset = loopRef.startDelay * loopRef.duration;
@@ -679,33 +709,14 @@ class AudioGraph {
                 if (reuseCache && reuseCache[effectName]) {
                     // Reuse existing nodes to preserve state (Delay buffer, Reverb tail)
                     const cached = reuseCache[effectName];
-                    // Reconnect logic: Input -> [0] -> ... -> [last] -> Output
-                    // Disconnect input of first node from *previous* parent (handled in cleanup)
-                    
-                    if (cached[0]) currentNode.connect(cached[0]);
-                    
-                    // Reconnect dry paths that split from the input node!
-                    if (effectName === 'reverb' && cached[1]) currentNode.connect(cached[1]);
-                    else if (effectName === 'machineReverb' && cached[4]) currentNode.connect(cached[4]);
-                    else if (effectName === 'delay' && cached[3]) currentNode.connect(cached[3]);
-                    else if (effectName === 'distortion' && cached[4]) currentNode.connect(cached[4]);
-                    else if (effectName === 'fuzz' && cached[4]) currentNode.connect(cached[4]);
-                    else if (effectName === 'overdrive' && cached[4]) currentNode.connect(cached[4]);
-                    else if (effectName === 'compressor' && cached[2]) currentNode.connect(cached[2]);
+                    // Re-thread audio through the entry/exit the factory recorded, and
+                    // re-feed the dry gain: it splits from the chain input, which the
+                    // rebuild disconnected.
+                    const entry = cached.chainEntry;
+                    if (entry) currentNode.connect(entry);
+                    if (cached.chainDry) currentNode.connect(cached.chainDry);
 
-                    // The cached array is [inputNode, ..., outputNode] usually, or just nodes
-                    // We need to identify the output node (usually last).
-                    // EXCEPT ArpDelay with Pan: nodes=[worklet, pan, lfo, gain]. Output is pan (index 1).
-                    
-                    let outNode = cached[cached.length - 1]; // Default assumption
-                    
-                    // Special Handling for complex nodes
-                    if (effectName === 'arpDelay' && cached.length > 2) outNode = cached[1]; // Pan node
-                    else if (effectName === 'dusk' && cached.length > 2) outNode = cached[1]; // Pan node
-                    else if (effectName === 'delay' && cached.length > 5) outNode = cached[5]; // Standard delay output
-                    else if (effectName === 'zigZ' && cached.length > 0) outNode = cached[0]; // Panner
-                    
-                    effectNodes = { output: outNode, nodes: cached };
+                    effectNodes = { output: cached.chainExit, nodes: cached };
                     // Remove from reuseCache so it doesn't get destroyed later
                     delete reuseCache[effectName];
                 } else {
@@ -739,7 +750,9 @@ class AudioGraph {
                     depth: p.depth ?? 0.8,
                     bias: p.bias ?? 0.5,
                     drive: p.drive ?? 10.0,
-                    mode: p.vcfMode ?? 0
+                    mode: p.vcfMode ?? 0,
+                    makeupGain: p.makeup ?? 1.0,
+                    slewLimit: p.slewLimit ?? 0
                 }
             });
         } catch(e) {
@@ -752,7 +765,7 @@ class AudioGraph {
         wet.gain.value = p.mix ?? 1.0;
         inputNode.connect(node); node.connect(wet); inputNode.connect(dry);
         dry.connect(output); wet.connect(output);
-        return { output, nodes: [node, dry, wet, output] };
+        return { output, nodes: [node, dry, wet, output], dry };
     }
 
     /**
@@ -785,14 +798,26 @@ class AudioGraph {
     }
     /**
      * Factory method to create a specific effect's node graph.
-     * @returns {object} { output: AudioNode, nodes: Array<AudioNode> }
+     * @returns {object} { output: AudioNode, nodes: Array<AudioNode>, input?: AudioNode, dry?: AudioNode }
      */
     _createEffectNode(effectName, inputNode) {
-        // Check if custom
-        if (state.customEffects[effectName]) {
-            return this._createCustomEffect(effectName, inputNode);
-        }
+        const created = state.customEffects[effectName]
+            ? this._createCustomEffect(effectName, inputNode)
+            : this._createNativeEffect(effectName, inputNode);
 
+        // A rebuild disconnects every link into a reused effect, so reuse has to know
+        // which node audio enters and leaves through. The nodes array cannot say: index
+        // 0 is not always the entry (reverb enters through its pre-delay) and the last
+        // index is not always the exit (reverb ends there, arp delays end at their pan).
+        if (created.nodes.length > 0) {
+            created.nodes.chainEntry = created.input || created.nodes[0];
+            created.nodes.chainExit = created.output;
+            created.nodes.chainDry = created.dry || null;
+        }
+        return created;
+    }
+
+    _createNativeEffect(effectName, inputNode) {
         switch (effectName) {
             case 'reverb':        return this._createReverb(inputNode);
             case 'machineReverb': return this._createMachineReverb(inputNode);
@@ -851,8 +876,8 @@ class AudioGraph {
         if (p.impulseBuffer instanceof AudioBuffer) convolver.buffer = p.impulseBuffer;
         else {
             // Fallback: Generate IR if missing (e.g. after load) or use global fallback
-            const dur = p.duration || 1.2;
-            const dec = p.decay || 1.8;
+            const dur = p.duration ?? 1.2;
+            const dec = p.decay ?? 1.8;
             const buf = AudioEngine.createSimpleReverbIR(dur, dec, state.audioContext.sampleRate);
             convolver.buffer = buf;
             p.impulseBuffer = buf; // Cache it to prevent stutter on rebuild
@@ -874,7 +899,7 @@ class AudioGraph {
         wet.connect(output);
         dry.connect(output);
 
-        return { output, nodes: [convolver, dry, wet, output, damp, predelay] };
+        return { output, input: predelay, dry, nodes: [convolver, dry, wet, output, damp, predelay] };
     }
     
     _createMachineReverb(inputNode) {
@@ -887,32 +912,46 @@ class AudioGraph {
         const wet = state.audioContext.createGain();
         const output = state.audioContext.createGain();
         
+        const warpDelay = state.audioContext.createDelay(0.1);
+        const lfo = state.audioContext.createOscillator();
+        const lfoGain = state.audioContext.createGain();
+        
         const ir = AudioEngine.createSimpleReverbIR(p.decay, 1.0, state.audioContext.sampleRate);
         convolver.buffer = ir;
         
-        feedback.gain.value = Math.min(0.95, p.feedback);
+        feedback.gain.value = Math.min(0.95, p.feedback ?? 0.4);
         lpFilter.type = 'lowpass';
-        lpFilter.frequency.value = p.highCut || 8000;
+        lpFilter.frequency.value = p.highCut ?? 8000;
         hpFilter.type = 'highpass';
-        hpFilter.frequency.value = p.lowCut || 100;
+        hpFilter.frequency.value = p.lowCut ?? 100;
         
-        // Feedback loop
+        const warpAmt = p.warp ?? 0.2;
+        warpDelay.delayTime.value = 0.005;
+        lfo.frequency.value = 0.5;
+        lfoGain.gain.value = warpAmt * 0.01;
+        lfo.connect(lfoGain);
+        lfoGain.connect(warpDelay.delayTime);
+        lfo.start();
+        
+        // Feedback loop with warp modulation
         convolver.connect(hpFilter);
         hpFilter.connect(lpFilter);
-        lpFilter.connect(feedback);
+        lpFilter.connect(warpDelay);
+        warpDelay.connect(feedback);
         feedback.connect(convolver);
         
-        dry.gain.value = 1 - p.mix;
-        wet.gain.value = p.mix;
+        const mixVal = p.mix ?? 0.4;
+        dry.gain.value = 1 - mixVal;
+        wet.gain.value = mixVal;
         
         inputNode.connect(dry);
-        inputNode.connect(convolver); // Connect input to wet path
-        convolver.connect(wet);     // Connect wet path to wet gain
+        inputNode.connect(convolver);
+        convolver.connect(wet);
         
         dry.connect(output);
         wet.connect(output);
         
-        return { output, nodes: [convolver, feedback, lpFilter, hpFilter, dry, wet, output] };
+        return { output, nodes: [convolver, feedback, lpFilter, hpFilter, dry, wet, output, warpDelay, lfo, lfoGain], dry };
     }
 
     _createDelay(inputNode) {
@@ -952,11 +991,12 @@ class AudioGraph {
         wet.connect(output);
 
         // PING PONG / AUTO PAN LOGIC
-        if (p.panSpeed > 0) {
-            this._addAutoPanToWet(wet, output, p.panSpeed, p.panDepth, nodes);
-        }
+        // Built unconditionally: rebuild() reuses these cached nodes rather than calling
+        // the factory again, so a stage gated on panSpeed > 0 could never be switched on
+        // mid-pass. A 0 Hz LFO emits silence, so depth can be armed ahead of the rate.
+        this._addAutoPanToWet(wet, output, p.panSpeed ?? 0, p.panDepth ?? effects.delay.panDepth, nodes);
 
-        return { output, nodes: nodes };
+        return { output, nodes: nodes, dry };
     }
 
     _createDistortion(inputNode) {
@@ -969,7 +1009,7 @@ class AudioGraph {
         const wet = state.audioContext.createGain();
         const output = state.audioContext.createGain();
 
-        shaper.curve = AudioGraph.makeDistortionCurve(p.amount ?? 35);
+        shaper.curve = AudioGraph.makeDistortionCurve(p.amount ?? 40, p.shape ?? 0.5);
         shaper.oversample = '4x';
         tone.type = 'lowpass';
         tone.frequency.value = p.tone ?? 5000;
@@ -988,14 +1028,13 @@ class AudioGraph {
         dry.connect(output);
         wet.connect(output);
 
-        return { output, nodes: [preGain, shaper, tone, volume, dry, wet, output] };
+        return { output, nodes: [preGain, shaper, tone, volume, dry, wet, output], dry };
     }
     
-    static makeDistortionCurve(amount) {
-        // Warm asymmetric soft-clip (tube-like). Amount ranges 0-100.
-        // The negative half saturates slightly softer than the positive half,
-        // which adds even harmonics for a warmer, more "natural" drive (a purely
-        // symmetric tanh only makes odd harmonics and sounds harsh/flat).
+    static makeDistortionCurve(amount, shape) {
+        // Warm soft-clip with controllable asymmetry. Amount ranges 0-100.
+        // Shape (0-1) controls asymmetry: 0 = symmetric (odd harmonics only),
+        // 0.5 = moderate asymmetry (even harmonics), 1 = max asymmetry.
         // ODD length over the exact [-1,1] grid makes the exact-zero input map to
         // an exact-zero output sample (no interpolation/DC artifact). One-time
         // generation -> no per-sample or latency cost.
@@ -1003,7 +1042,8 @@ class AudioGraph {
         const samples = 4097;
         const curve = new Float32Array(samples);
         const drive = 1 + k * 0.5;
-        const driveNeg = drive * 0.75; // softer negative half -> even harmonics
+        const s = shape ?? 0.5;
+        const driveNeg = drive * (1.0 - s * 0.5);
         for (let i = 0; i < samples; ++i) {
             const x = i * 2 / (samples - 1) - 1;
             curve[i] = x >= 0 ? Math.tanh(drive * x) : Math.tanh(driveNeg * x);
@@ -1042,7 +1082,7 @@ class AudioGraph {
         dry.connect(output);
         wet.connect(output);
 
-        return { output, nodes: [fuzzGain, clipper, tone, volume, dry, wet, output] };
+        return { output, nodes: [fuzzGain, clipper, tone, volume, dry, wet, output], dry };
     }
 
     static makeFuzzCurve(bias = 0) {
@@ -1071,7 +1111,6 @@ class AudioGraph {
 
     _createOverdrive(inputNode) {
         const p = this.loop.params.overdrive || effects.overdrive;
-        const preGain = state.audioContext.createGain();
         const shaper = state.audioContext.createWaveShaper();
         const tone = state.audioContext.createBiquadFilter();
         const volume = state.audioContext.createGain();
@@ -1087,8 +1126,7 @@ class AudioGraph {
         dry.gain.value = 1 - (p.mix ?? 1.0);
         wet.gain.value = p.mix ?? 1.0;
 
-        inputNode.connect(preGain);
-        preGain.connect(shaper);
+        inputNode.connect(shaper);
         shaper.connect(tone);
         tone.connect(volume);
         volume.connect(wet);
@@ -1098,7 +1136,7 @@ class AudioGraph {
         dry.connect(output);
         wet.connect(output);
 
-        return { output, nodes: [preGain, shaper, tone, volume, dry, wet, output] };
+        return { output, nodes: [shaper, tone, volume, dry, wet, output], dry };
     }
 
     static makeOverdriveCurve(drive) {
@@ -1148,48 +1186,50 @@ class AudioGraph {
        dry.connect(output);
        wet.connect(output);
 
-       return { output, nodes: [compressor, makeup, dry, wet, output] };
+       return { output, nodes: [compressor, makeup, dry, wet, output], dry };
    }
     
     _createArpDelay(inputNode) {
         const p = this.loop.params.arpDelay || effects.arpDelay;
         // Map Repetitions (0-10) to Feedback (0-0.9)
-        const reps = (p.repetitions !== undefined) ? p.repetitions : 6;
+        const reps = (p.repetitions !== undefined) ? p.repetitions : 2;
         const fb = reps / 11.1;
         const nodes = [];
         let node;
+        let panNode;
         try {
+            const d = effects.arpDelay;
             node = new AudioWorkletNode(state.audioContext, 'arp-delay-processor', {
-                outputChannelCount: [2], // Force Stereo to prevent mono summing issues
+                outputChannelCount: [2],
                 parameterData: {
-                    time: p.time, feedback: fb, mix: p.mix, stay: p.stay ? 1 : 0, scale: p.scale, sync: p.sync?1:0, bpm: state.bpm,
-                    amplitude: (p.amplitude !== undefined) ? p.amplitude : 1.0,
-                    range: (p.range !== undefined) ? p.range : 1.0,
-                    humanize: (p.humanize !== undefined) ? p.humanize : 0.35
+                    time: p.time ?? d.time, feedback: fb, mix: p.mix ?? d.mix, stay: p.stay ? 1 : 0, scale: p.scale ?? d.scale, sync: p.sync?1:0, bpm: state.bpm,
+                    amplitude: (p.amplitude !== undefined) ? p.amplitude : d.amplitude,
+                    range: (p.range !== undefined) ? p.range : d.range,
+                    humanize: (p.humanize !== undefined) ? p.humanize : d.humanize
                 }
             });
             nodes.push(node);
             inputNode.connect(node); // Connect Audio!
-            
-            if (p.panSpeed > 0) {
-                // Arp delay works differently, we insert pan after
-                const panNode = state.audioContext.createStereoPanner();
-                const lfo = state.audioContext.createOscillator();
-                const lfoGain = state.audioContext.createGain();
-                lfo.frequency.value = p.panSpeed;
-                lfoGain.gain.value = p.panDepth || 0.8;
-                lfo.connect(lfoGain);
-                lfoGain.connect(panNode.pan);
-                lfo.start();
-                node.connect(panNode);
-                nodes.push(panNode, lfo, lfoGain);
-                return { output: panNode, nodes: nodes };
-            }
-        } catch(e) { 
-            console.error(e); 
+
+            // Arp delay works differently, we insert pan after. The stage is built even
+            // when panSpeed starts at 0 because rebuild() reuses these cached nodes instead
+            // of re-running the factory, so an on-demand stage could never appear mid-pass.
+            // A 0 Hz LFO emits silence, so depth can be armed ahead of the rate.
+            panNode = state.audioContext.createStereoPanner();
+            const lfo = state.audioContext.createOscillator();
+            const lfoGain = state.audioContext.createGain();
+            lfo.frequency.value = p.panSpeed ?? 0;
+            lfoGain.gain.value = p.panDepth ?? 0.8;
+            lfo.connect(lfoGain);
+            lfoGain.connect(panNode.pan);
+            lfo.start();
+            node.connect(panNode);
+            nodes.push(panNode, lfo, lfoGain);
+        } catch(e) {
+            Log.error('ArpDelay', 'Failed to create auto-pan stage:', e);
             return { output: inputNode, nodes: [] };
         }
-        return { output: node, nodes: nodes };
+        return { output: panNode, nodes: nodes };
     }
 
     /**
@@ -1200,14 +1240,15 @@ class AudioGraph {
         const nodes = [];
         let duskNode;
         try {
+             const d = effects.dusk;
              duskNode = new AudioWorkletNode(state.audioContext, 'dusk-processor', {
                 parameterData: {
-                    verbTime: p.time,
-                    grainMix: p.grainMix,
-                    verbMix: p.verbMix,
-                    shimmer: p.shimmer,
-                    haunt: p.haunt,
-                    grainSize: p.grainSize
+                    verbTime: p.time ?? d.time,
+                    grainMix: p.grainMix ?? d.grainMix,
+                    verbMix: p.verbMix ?? d.verbMix,
+                    shimmer: p.shimmer ?? d.shimmer,
+                    haunt: p.haunt ?? d.haunt,
+                    grainSize: p.grainSize ?? d.grainSize
                 }
             });
         } catch(e) {
@@ -1218,22 +1259,21 @@ class AudioGraph {
         nodes.push(duskNode);
         inputNode.connect(duskNode);
 
-        if (p.panSpeed > 0) {
-             const panNode = state.audioContext.createStereoPanner();
-             const lfo = state.audioContext.createOscillator();
-             const lfoGain = state.audioContext.createGain();
-             lfo.frequency.value = p.panSpeed;
-             lfoGain.gain.value = p.panDepth || 0.8;
-             lfo.connect(lfoGain);
-             lfoGain.connect(panNode.pan);
-             lfo.start();
-             
-             duskNode.connect(panNode);
-             nodes.push(panNode, lfo, lfoGain);
-             return { output: panNode, nodes: nodes };
-        }
-        
-        return { output: duskNode, nodes: nodes };
+        // Built unconditionally: rebuild() reuses these cached nodes rather than calling
+        // the factory again, so a stage gated on panSpeed > 0 could never be switched on
+        // mid-pass. A 0 Hz LFO emits silence, so depth can be armed ahead of the rate.
+        const panNode = state.audioContext.createStereoPanner();
+        const lfo = state.audioContext.createOscillator();
+        const lfoGain = state.audioContext.createGain();
+        lfo.frequency.value = p.panSpeed ?? 0;
+        lfoGain.gain.value = p.panDepth ?? 0.8;
+        lfo.connect(lfoGain);
+        lfoGain.connect(panNode.pan);
+        lfo.start();
+
+        duskNode.connect(panNode);
+        nodes.push(panNode, lfo, lfoGain);
+        return { output: panNode, nodes: nodes };
     }
 
     /**
@@ -1296,18 +1336,19 @@ class AudioGraph {
         const p = this.loop.params.eq || effects.eq;
         let eqNode;
         try {
+            const d = effects.eq;
             eqNode = new AudioWorkletNode(state.audioContext, 'eq-processor', {
                 parameterData: {
-                    lcFreq: p.lcFreq,
-                    lsFreq: p.lsFreq, lsGain: p.lsGain,
-                    p1Freq: p.p1Freq, p1Gain: p.p1Gain, p1Q: p.p1Q,
-                    p2Freq: p.p2Freq, p2Gain: p.p2Gain, p2Q: p.p2Q,
-                    p3Freq: p.p3Freq, p3Gain: p.p3Gain, p3Q: p.p3Q,
-                    p4Freq: p.p4Freq, p4Gain: p.p4Gain, p4Q: p.p4Q,
-                    p5Freq: p.p5Freq, p5Gain: p.p5Gain, p5Q: p.p5Q,
-                    p6Freq: p.p6Freq, p6Gain: p.p6Gain, p6Q: p.p6Q,
-                    hsFreq: p.hsFreq, hsGain: p.hsGain,
-                    hcFreq: p.hcFreq
+                    lcFreq: p.lcFreq ?? d.lcFreq,
+                    lsFreq: p.lsFreq ?? d.lsFreq, lsGain: p.lsGain ?? d.lsGain,
+                    p1Freq: p.p1Freq ?? d.p1Freq, p1Gain: p.p1Gain ?? d.p1Gain, p1Q: p.p1Q ?? d.p1Q,
+                    p2Freq: p.p2Freq ?? d.p2Freq, p2Gain: p.p2Gain ?? d.p2Gain, p2Q: p.p2Q ?? d.p2Q,
+                    p3Freq: p.p3Freq ?? d.p3Freq, p3Gain: p.p3Gain ?? d.p3Gain, p3Q: p.p3Q ?? d.p3Q,
+                    p4Freq: p.p4Freq ?? d.p4Freq, p4Gain: p.p4Gain ?? d.p4Gain, p4Q: p.p4Q ?? d.p4Q,
+                    p5Freq: p.p5Freq ?? d.p5Freq, p5Gain: p.p5Gain ?? d.p5Gain, p5Q: p.p5Q ?? d.p5Q,
+                    p6Freq: p.p6Freq ?? d.p6Freq, p6Gain: p.p6Gain ?? d.p6Gain, p6Q: p.p6Q ?? d.p6Q,
+                    hsFreq: p.hsFreq ?? d.hsFreq, hsGain: p.hsGain ?? d.hsGain,
+                    hcFreq: p.hcFreq ?? d.hcFreq
                 }
             });
         } catch(e) {
@@ -1327,18 +1368,19 @@ class AudioGraph {
         const lfoGain = state.audioContext.createGain();
 
         lfo.type = 'triangle';
-        const beatsPerCycle = p.rate || 1.0;
-        const freq = 1 / (beatsPerCycle * (60 / state.bpm));
+        const beatsPerCycle = p.rate ?? 1.0;
+        const secPerBeat = state.bpm > 0 ? 60 / state.bpm : 0.5;
+        const freq = beatsPerCycle > 0 ? 1 / (beatsPerCycle * secPerBeat) : 0;
         lfo.frequency.value = freq;
-        lfoGain.gain.value = p.depth;
+        lfoGain.gain.value = p.depth ?? effects.zigZ.depth;
 
         lfo.connect(lfoGain);
         lfoGain.connect(panner.pan);
         
         // Ensure start time is positive.
         // Phase logic: offset is negative time shift.
-        const period = 1/freq;
-        const offset = (p.phase || 0) * period;
+        const period = freq > 0 ? 1 / freq : 1;
+        const offset = (p.phase ?? 0) * period;
         let t = state.masterStartTime - offset;
         if (t < 0) {
              const cycles = Math.ceil(Math.abs(t) / period);
@@ -1381,18 +1423,12 @@ class AudioGraph {
      */
     detachEffects(nodeMap) {
         if (!nodeMap) return;
-        
-        for (const [effectName, cached] of Object.entries(nodeMap)) {
+
+        for (const cached of Object.values(nodeMap)) {
             if (Array.isArray(cached) && cached.length > 0) {
-                let outNode = cached[cached.length - 1]; // Default assumption
-                
-                // Special Handling for complex nodes
-                if (effectName === 'arpDelay' && cached.length > 2) outNode = cached[1]; // Pan node
-                else if (effectName === 'dusk' && cached.length > 2) outNode = cached[1]; // Pan node
-                else if (effectName === 'delay' && cached.length > 5) outNode = cached[5]; // Standard delay output
-                else if (effectName === 'zigZ' && cached.length > 0) outNode = cached[0]; // Panner
-                
-                try { outNode.disconnect(); } catch(e){}
+                // Sever only the link leaving the chain: internal wiring is what the
+                // reuse path in buildEffectsChain threads back up.
+                try { cached.chainExit.disconnect(); } catch(e){}
             }
         }
     }
@@ -1434,45 +1470,37 @@ class AudioGraph {
                  console.error("Cannot rebuild graph: missing base or volume nodes.");
                  return;
             }
-            
-            // Smoother transitions to prevent clicks in Master Rec
+
+            // Synchronous rebuild during fade-out ramp to eliminate silence gap.
+            // The fade runs on the audio thread, so the main thread is free to
+            // rebuild the chain while it happens — no setTimeout needed.
             const now = AudioEngine.currentTime;
             const volNode = this.nodes.volume;
-            const targetVol = this.loop.effectiveVolume;
+            const FADE_MS = 20;
 
-            // 1. Fast fade out (15ms) - Optimized for responsiveness
-            AudioEngine.scheduledFade(volNode, 0, now, 15);
-            
-            if (this.rebuildTimer) clearTimeout(this.rebuildTimer);
+            // 1. Schedule fade-out on audio thread (runs independently)
+            AudioEngine.scheduledFade(volNode, 0, now, FADE_MS);
 
-            // 2. Rebuild graph during silence
-            this.rebuildTimer = setTimeout(() => {
-                try {
-                    if (this.isDestroyed || !this.nodes?.baseGain || !volNode) return;
-                    
-                    // 1. Detach current effects but keep them for potential reuse
-                    const oldEffects = this.nodes.effects;
-                    this.detachEffects(oldEffects);
-                    this.nodes.baseGain.disconnect(); // Disconnect base
-                    
-                    // 2. Build new chain, scavenging from oldEffects where possible
-                    let lastNode = this.buildEffectsChain(this.nodes.baseGain, oldEffects, fadeInEffectName, mixTimeMs);
-                    lastNode.connect(volNode);
-                    
-                    // 3. Destroy whatever wasn't reused
-                    this.destroyEffects(oldEffects);
-                    
-                    // 4. Fast fade in (10ms)
-                    if (volNode && volNode.gain) {
-                        const resumeTime = AudioEngine.currentTime;
-                        volNode.gain.setValueAtTime(0, resumeTime);
-                        AudioEngine.scheduledFade(volNode, targetVol, resumeTime, 15);
-                    }
-                    this.rebuildTimer = null;
-                } catch (err) {
-                    console.warn("Async effect rebuild interrupted:", err);
-                }
-            }, 15); // Execute slightly after fade-out completes
+            // 2. Rebuild immediately on main thread while fade-out ramps down
+            const oldEffects = this.nodes.effects;
+            this.detachEffects(oldEffects);
+            this.nodes.baseGain.disconnect();
+
+            // 3. Build new chain, scavenging from oldEffects where possible
+            let lastNode = this.buildEffectsChain(this.nodes.baseGain, oldEffects, fadeInEffectName, mixTimeMs);
+            lastNode.connect(volNode);
+
+            // 4. Destroy whatever wasn't reused
+            this.destroyEffects(oldEffects);
+
+            // 5. Schedule fade-in to start when fade-out completes
+            if (volNode && volNode.gain) {
+                const fadeInStart = now + FADE_MS / 1000;
+                volNode.gain.setValueAtTime(0, fadeInStart);
+                // Re-read the level: a mute/solo/fader change during the fade-out
+                // window would be overwritten by a target captured before it.
+                AudioEngine.scheduledFade(volNode, this.loop.effectiveVolume, fadeInStart, FADE_MS);
+            }
 
         } catch(e) {
             console.error("Effect chain rebuild failed for loop", this.loop.id, e);
@@ -1685,10 +1713,17 @@ class Loop {
     }
     
     saveStateForUndo() {
-        if (!this.audioBuffer) return;
+        if (!this.audioBuffer) return false;
         this.undoStack.push(AudioEngine.cloneBuffer(this.audioBuffer));
-        if (this.undoStack.length > 5) this.undoStack.shift(); // Limit history to prevent OOM
+        if (this.undoStack.length > 5) { // Limit history to prevent OOM
+            this.undoStack.shift();
+            // Drop the global entry owning the evicted snapshot too, or global undo would
+            // keep pointing at this loop with nothing left to restore.
+            const oldest = state.undoStack.indexOf(this.id);
+            if (oldest !== -1) state.undoStack.splice(oldest, 1);
+        }
         this.redoStack = [];
+        return true;
     }
 
     undo() {
@@ -1884,7 +1919,14 @@ class Loop {
      * Sets the signal chain for this loop and rebuilds the graph if playing.
      */
     setSignalChain(chain) {
-        this.signalChain = chain || "QCATFODBVKZG";
+        if (!chain) {
+            this.signalChain = "QCATFODBVKZG";
+        } else {
+            // Filter to valid characters and deduplicate
+            const validChars = "BVDTFOCKQAZGH";
+            const customChars = Object.values(state.customEffects || {}).map(e => e.code).join('');
+            this.signalChain = [...new Set(chain.toUpperCase().split('').filter(c => (validChars + customChars).includes(c)))].join('') || "QCATFODBVKZG";
+        }
         if (this.state === 'playing' && this.graph) {
             this.graph.rebuild();
         }
@@ -1930,7 +1972,11 @@ class Loop {
             console.warn('Could not resume audio context for playback');
             return;
         }
-        if (request !== this.playRequest || generation !== LoopManager.transportGeneration || !this.audioBuffer) return;
+        if (request !== this.playRequest || generation !== LoopManager.transportGeneration || !this.audioBuffer) {
+            // If we were restarting and the play was invalidated, restore a safe state
+            if (this.state === 'restarting') this.state = this.audioBuffer ? 'stopped' : 'empty';
+            return;
+        }
 
         this.state = 'playing';
         this.graph = new AudioGraph(this, startTime);
@@ -1965,13 +2011,20 @@ class Loop {
         
         // Flag state to bypass play guard
         this.state = 'restarting';
-        
+
         // Start new graph at 't'
+        const prevRequest = this.playRequest;
         this.play(t);
-        
-        // Cleanup old graph after transition (100ms buffer)
+
+        // If play() failed synchronously (e.g. no audioBuffer), restore state
+        if (this.state === 'restarting' && this.playRequest === prevRequest) {
+            this.state = this.audioBuffer ? 'stopped' : 'empty';
+            return;
+        }
+
+        // Cleanup old graph after transition (100ms buffer) — only if a new graph was created
         setTimeout(() => {
-            if (oldGraph && typeof oldGraph.cleanup === 'function') {
+            if (this.graph !== oldGraph && oldGraph && typeof oldGraph.cleanup === 'function') {
                 oldGraph.cleanup();
             }
         }, (t > AudioEngine.currentTime ? (t - AudioEngine.currentTime)*1000 : 0) + 100);
@@ -2060,9 +2113,9 @@ class Loop {
         this.isStuttering = true;
 
         const now = AudioEngine.currentTime;
-        const masterElapsed = (now - this.graph.startTime) * this.effectivePlaybackRate;
+        const position = this.graph.startOffset + (now - this.graph.startTime) * this.effectivePlaybackRate;
         const dur = this.duration > 0 ? this.duration : 1;
-        const phase = ((masterElapsed % dur) + dur) % dur;
+        const phase = ((position % dur) + dur) % dur;
 
         const beatLen = 60 / state.bpm;
         const fragmentBeats = 0.25;
@@ -2204,7 +2257,7 @@ class LoopManager {
     static pushUndoState(loopId) {
         const loop = state.loops[loopId];
         if (!loop) return;
-        loop.saveStateForUndo();
+        if (!loop.saveStateForUndo()) return;
         state.undoStack.push(loopId);
         if (state.undoStack.length > 50) state.undoStack.shift();
         state.redoStack = [];
@@ -2475,7 +2528,7 @@ class LoopManager {
                 break;
 
             default:
-                console.warn("Unknown loop action:", action);
+                Log.debug('LoopManager', 'Unknown loop action:', action);
         }
     }
     
@@ -2512,7 +2565,7 @@ class LoopManager {
      */
     static async startRecording(loopId) {
         if (state.isRecording) {
-            console.warn("Already recording a loop. Stop current recording first.");
+            Log.warn('LoopManager', 'Already recording a loop. Stop current recording first.');
             return; // Abort to prevent race conditions and data corruption
         }
         const loop = state.loops[loopId];
@@ -2544,8 +2597,7 @@ class LoopManager {
         try {
             state.loopRecorder = new AudioWorkletNode(state.audioContext, 'recorder-processor');
         } catch (e) {
-            console.error("AudioWorklet creation failed:", e);     
-            alert("Worklet failed. Ensure HTTPS or localhost.");
+            Log.error('LoopManager', 'AudioWorklet creation failed:', e);
             state.isRecording = false;
             return;
         }
@@ -2638,7 +2690,9 @@ class LoopManager {
                     const osc = ctx.createOscillator();
                     const gain = ctx.createGain();
                     osc.connect(gain);
-                    gain.connect(state.masterLimiter || ctx.destination);
+                    // Like the metronome, a cue is monitor-only: entering the bus at the
+                    // limiter would print it into the Master REC tap next to the mix.
+                    gain.connect(ctx.destination);
                     
                     // Higher pitch on the last beat (1), lower on others
                     osc.frequency.value = (i === 1) ? 880 : 440; 
@@ -2706,7 +2760,7 @@ class LoopManager {
                  try { inputNode.disconnect(state.loopRecorder); } catch(e) {
                     // Ignore disconnect errors if node already disconnected or graph changed
                     if (e.name !== 'InvalidAccessError') {
-                        console.warn("Disconnect warning:", e);
+                        Log.debug('LoopManager', 'Disconnect warning:', e);
                     }
                  }
              }
@@ -2912,8 +2966,7 @@ class LoopManager {
             }
 
         } catch (e) {
-            console.error("Error processing recorded audio:", e);
-            alert("Failed to process recorded audio. Loop will be cleared.");
+            Log.error('LoopManager', 'Failed to process recorded audio:', e);
             loop.clear();
         }
         if (state.loopRecorder !== recorder || state.recordingLoopId !== loopId) return;
@@ -2971,13 +3024,13 @@ class LoopManager {
      */
     static async startOverdub(loopId, isSubstitute = false) {
         if (state.isRecording) {
-            console.warn("Already recording/overdubbing.");
+            Log.warn('LoopManager', 'Already recording/overdubbing.');
             return;
         }
         
         const loop = state.loops[loopId];
         if (loop.state !== 'playing') {
-            console.warn("Can only overdub on a playing loop.");
+            Log.warn('LoopManager', 'Can only overdub on a playing loop.');
             return;
         }
 
@@ -3015,7 +3068,7 @@ class LoopManager {
                 }
             };
         } catch (e) {
-            console.error(e);
+            Log.error('LoopManager', 'Overdub recorder setup failed:', e);
             this.forceCleanupRecording(loop);
             return;
         }
@@ -3028,7 +3081,9 @@ class LoopManager {
             const now = AudioEngine.currentTime;
             const elapsed = now - state.masterStartTime;
             const shift = loop.startDelay * len;
-            let positionInLoop = ((elapsed * loop.playbackRate) - shift) % len;
+            // Grid-fit stretch makes the effective rate differ from the track speed;
+            // the playhead follows it, so the punch-in phase must too (see Loop.getPhase).
+            let positionInLoop = ((elapsed * loop.effectivePlaybackRate) - shift) % len;
             if (positionInLoop < 0) positionInLoop += len;
             state.recordingStartOffset = positionInLoop;
         } else {
@@ -3036,8 +3091,8 @@ class LoopManager {
             const now = AudioEngine.currentTime;
             if (loop.graph && loop.graph.startTime) {
                 const elapsed = now - loop.graph.startTime;
-                // Account for playback rate in overdub offset calculation
-                state.recordingStartOffset = ((elapsed * loop.playbackRate) % loop.duration);
+                // Account for playback rate and the offset the source started at
+                state.recordingStartOffset = ((elapsed * loop.effectivePlaybackRate) + (loop.graph.startOffset || 0)) % loop.duration;
             }
         }
         
@@ -3154,9 +3209,8 @@ class LoopManager {
 
         } catch (e) {
             if (state.loopRecorder !== recorder || state.recordingLoopId !== loopId) return;
-            console.error("Error processing overdubbed audio:", e);
+            Log.error('LoopManager', 'Failed to process overdubbed audio:', e);
             this.forceCleanupRecording(loop);
-            alert("Failed to process overdubbed audio. Existing loop retained.");
             return;
         }
         if (state.loopRecorder !== recorder || state.recordingLoopId !== loopId) return;
@@ -3187,13 +3241,13 @@ class LoopManager {
      */
     static async startMultiply(loopId) {
         if (state.isRecording) {
-            console.warn("Already recording/overdubbing.");
+            Log.warn('LoopManager', 'Already recording/overdubbing.');
             return;
         }
 
         const loop = state.loops[loopId];
         if (loop.state !== 'playing') {
-            console.warn("Can only multiply on a playing loop.");
+            Log.warn('LoopManager', 'Can only multiply on a playing loop.');
             return;
         }
 
@@ -3229,7 +3283,7 @@ class LoopManager {
                 }
             };
         } catch (e) {
-            console.error(e);
+            Log.error('LoopManager', 'Multiply recorder setup failed:', e);
             state.isRecording = false;
             state.recordingLoopId = -1;
             loop.state = 'playing';
@@ -3319,8 +3373,7 @@ class LoopManager {
                 loop.restart();
             }
         } catch (e) {
-            console.error("Error processing multiply audio:", e);
-            alert("Failed to process multiply audio. Loop state restored.");
+            Log.error('LoopManager', 'Failed to process multiply audio:', e);
             if (loop.audioBuffer && loop.graph) loop.state = 'playing';
         }
 
@@ -3390,7 +3443,8 @@ class LoopManager {
             dest.state = 'stopped';
         } else {
             LoopManager.pushUndoState(destId);
-            await AudioEngine.mixBuffersCircular(dest.audioBuffer, src.audioBuffer, 0);
+            // The mixer default is the overdub decay; a merge leaves the destination whole.
+            await AudioEngine.mixBuffersCircular(dest.audioBuffer, src.audioBuffer, 0, 1.0);
         }
         dest.wavePeaks = UIManager.generateWaveformPeaks(dest.audioBuffer);
         UIManager.updateLoop(destId);
@@ -3410,7 +3464,6 @@ class LoopManager {
         if (!file || !state.loops[loopId]) return;
         
         const loop = state.loops[loopId];
-        loop.clear(); // Clear existing content
         
         try {
             if (!await AudioEngine.resume()) { // Ensure context is running
@@ -3418,8 +3471,17 @@ class LoopManager {
             }
             const arrayBuffer = await file.arrayBuffer();
             const audioBuffer = await state.audioContext.decodeAudioData(arrayBuffer);
+
+            // Clear only once the new take is decodable: clearing up front meant a
+            // rejected file wiped the loop's recording, and that clear() also edits
+            // shared state (sync-source BPM, solo) that a failed load must not touch.
+            loop.clear();
             
             loop.audioBuffer = audioBuffer;
+            // A file's first and last samples are unrelated to each other, so the loop
+            // point would click on every bar until this pass ran somewhere. It belongs
+            // here rather than at project load, where a stored take would get it twice.
+            AudioEngine.seamlessLoopCrossfade(loop.audioBuffer, 0.005);
             loop.duration = audioBuffer.duration;
             loop.originalBpm = state.bpm;
             loop.wavePeaks = UIManager.generateWaveformPeaks(loop.audioBuffer);
@@ -3431,9 +3493,7 @@ class LoopManager {
             alert(`Audio loaded to Loop ${loopId + 1}`);
             
         } catch (e) {
-            console.error(`Error loading audio to loop ${loopId + 1}:`, e);
-            alert(`Error loading audio: ${e.message}`);
-            loop.clear();
+            Log.error('LoopManager', `Error loading audio to loop ${loopId + 1}:`, e);
         }
     }
 
@@ -3955,6 +4015,7 @@ class UIManager {
             
         }
 
+        const previousRate = loop.effectivePlaybackRate;
         loop.playbackRate = finalSpeed;
         const slider = document.getElementById(`loop-speed-slider-${loopId}`);
         if (slider && (state.syncEnabled || document.activeElement !== slider)) slider.value = finalSpeed;
@@ -3962,7 +4023,16 @@ class UIManager {
         // Update live audio graph if playing
         if (loop.graph && loop.graph.nodes.source) {
             const activeRate = loop.effectivePlaybackRate;
-            loop.graph.nodes.source.playbackRate.setValueAtTime(Math.max(0.001, activeRate), AudioEngine.currentTime);
+            const now = AudioEngine.currentTime;
+            if (activeRate !== previousRate && loop.state === 'playing' && loop.graph.startTime && loop.duration > 0) {
+                // The anchor describes the ramp at the old rate, so move it to where the
+                // source actually is before the new one takes over (see Loop.getProgress).
+                let position = (loop.graph.startOffset + (now - loop.graph.startTime) * previousRate) % loop.duration;
+                if (position < 0) position += loop.duration;
+                loop.graph.startOffset = position;
+                loop.graph.startTime = now;
+            }
+            loop.graph.nodes.source.playbackRate.setValueAtTime(Math.max(0.001, activeRate), now);
         }
 
         // Update UI (speed display and reset button)

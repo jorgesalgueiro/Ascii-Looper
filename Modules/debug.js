@@ -557,5 +557,73 @@ registerProcessor('dropout-detector-processor', DropoutDetectorProcessor);
     }
 }
 
+// =============================================
+// MODULE: STRUCTURED LOGGING
+// =============================================
+// Lightweight namespaced logger. Replaces raw console.warn/error calls
+// across the app. debug/info are gated behind DebugManager.enabled so
+// they only appear when verbose debug is on. warn/error always reach
+// the browser console. All levels are mirrored into the debug log panel
+// when debug is enabled.
+
+class Log {
+    static _loggers = new Map();
+
+    static module(name) {
+        let logger = Log._loggers.get(name);
+        if (!logger) {
+            logger = new Log._Logger(name);
+            Log._loggers.set(name, logger);
+        }
+        return logger;
+    }
+
+    // Format a single argument for log output.
+    static _fmtArg(a) {
+        if (a === null) return 'null';
+        if (a === undefined) return 'undefined';
+        if (a instanceof Error) {
+            const stack = a.stack ? a.stack.split('\n').slice(1, 3).join(' | ').trim() : '';
+            return `${a.message}${stack ? ' [' + stack + ']' : ''}`;
+        }
+        if (typeof a === 'string') return a;
+        if (typeof a === 'number' || typeof a === 'boolean') return String(a);
+        if (typeof a === 'function') return `fn(${a.name || 'anon'})`;
+        if (ArrayBuffer.isView(a)) return `${a.constructor.name}(${a.length})`;
+        try { return JSON.stringify(a); } catch { return String(a); }
+    }
+
+    static _fmt(args) {
+        return args.map(a => Log._fmtArg(a)).join(' ');
+    }
+}
+
+Log._Logger = class {
+    constructor(name) { this.name = name; this._prefix = `[${name}]`; }
+
+    debug(...args) {
+        if (!DebugManager.enabled) return;
+        const msg = `${this._prefix} ${Log._fmt(args)}`;
+        console.log(msg);
+    }
+
+    info(...args) {
+        if (!DebugManager.enabled) return;
+        const msg = `${this._prefix} ${Log._fmt(args)}`;
+        console.info(msg);
+    }
+
+    warn(...args) {
+        const msg = `${this._prefix} ${Log._fmt(args)}`;
+        console.warn(msg);
+    }
+
+    error(...args) {
+        const msg = `${this._prefix} ${Log._fmt(args)}`;
+        console.error(msg);
+    }
+};
+
 window.DebugManager = DebugManager;
+window.Log = Log;
 DebugManager.install();

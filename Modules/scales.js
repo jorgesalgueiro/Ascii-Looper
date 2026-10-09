@@ -270,7 +270,7 @@ class SyncManager {
         }
 
         if (totalBeats <= 0 || totalBeats > 256) { // Sanity check
-             console.warn("Invalid beat count:", totalBeats);
+             Log.debug('Scales', 'Invalid beat count:', totalBeats);
              return;
         }
 
@@ -477,6 +477,11 @@ class MetronomeScheduler {
             this.node.parameters.get('playing').setValueAtTime(0, state.audioContext.currentTime);
         }
         if (this.blinkTimer) clearTimeout(this.blinkTimer);
+        if (this.blinkResetTimer) clearTimeout(this.blinkResetTimer);
+        // Switching off on a beat catches the flash mid-animation; without this the
+        // pending repaint re-dresses the stopped button in the running-state colours.
+        const btn = document.getElementById('metronomeBtn');
+        if (btn) btn.style.backgroundColor = 'transparent';
     }
 
     static scheduleVisualBlink() {
@@ -493,7 +498,7 @@ class MetronomeScheduler {
             if (btn) {
                 btn.style.backgroundColor = '#0f0';
                 btn.style.color = '#000';
-                setTimeout(() => {
+                this.blinkResetTimer = setTimeout(() => {
                     btn.style.backgroundColor = 'transparent';
                     btn.style.color = '#0f0';
                 }, 100);

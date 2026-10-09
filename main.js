@@ -6,7 +6,7 @@
 // MODULE 1: CONSTANTS & GLOBALS
 // =============================================
 
-const VERSION = "v0.76.07"; // Version aligned with blueprint
+const VERSION = "v0.76.08"; // Version aligned with blueprint
 let MAX_LOOPS = 10;
 const SAMPLER_HOTKEYS = ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'ç']; // Specific to Sampler Tracks
 const AUDIO_FORMATS= {
@@ -24,6 +24,7 @@ const state = {
     // --- Master Bus FX ---
     masterEQ: null,
     masterComp: null,
+    masterCompGain: null,
     masterSoftClip: null,
     masterFx: {
         eq: {
@@ -239,12 +240,12 @@ class KeyMapManager {
                 };
 
                 state.keyMapping = { 
-                    kbd: mergeArr(parsedMap.kbd, state.keyMapping.kbd),
+                    kbd: mergeArr(parsedMap.kbd, state.keyMapping.kbd).map(k => typeof k === 'string' ? k.toLowerCase() : k),
                     midi: mergeArr(parsedMap.midi, state.keyMapping.midi),
                     gamepad: mergeArr(parsedMap.gamepad, state.keyMapping.gamepad)
                 };
             }
-        } catch(e) { console.warn("Could not load keymap from localStorage", e); }
+        } catch(e) { Log.debug('InputManager', 'Could not load keymap from localStorage:', e); }
 
         this.renderLayout();
         this.renderUI();
@@ -326,7 +327,7 @@ class KeyMapManager {
             for (let i = 0; i < 33; i++) {
                 const el = document.getElementById(`map-${type}-${i}`);
                 if (el) {
-                    el.value = state.keyMapping[type][i] || '';
+                    el.value = state.keyMapping[type][i] != null ? String(state.keyMapping[type][i]) : '';
                 }
             }
         }
@@ -391,7 +392,7 @@ class KeyMapManager {
             // Restore old value if no new input was received
             if (element.value === '...') {
                 const [, type, loopId] = element.id.split('-');
-                element.value = state.keyMapping[type][loopId] || '';
+                element.value = state.keyMapping[type][loopId] != null ? String(state.keyMapping[type][loopId]) : '';
             }
         }
     }
@@ -424,9 +425,10 @@ class KeyMapManager {
                 inputs.push(val);
             }
 
-            // Check for duplicates within the same type
+            // Check for duplicates within the same type (case-insensitive for keyboard)
             const nonEmpty = inputs.filter(v => v !== '');
-            const duplicates = nonEmpty.filter((item, index) => nonEmpty.indexOf(item) !== index);
+            const checkArr = type === 'kbd' ? nonEmpty.map(v => v.toLowerCase()) : nonEmpty;
+            const duplicates = checkArr.filter((item, index) => checkArr.indexOf(item) !== index);
             
             if (duplicates.length > 0) {
                 validationErrors.push(`Duplicate ${type.toUpperCase()}: ${duplicates.join(', ')}`);
@@ -436,7 +438,8 @@ class KeyMapManager {
                 // Convert numeric strings to actual numbers or null
                 newMappings[type] = inputs.map(v => (v === '' ? null : parseInt(v, 10)));
             } else {
-                newMappings[type] = inputs;
+                // Normalize keyboard bindings to lowercase
+                newMappings[type] = inputs.map(v => v.toLowerCase());
             }
         }
 
@@ -534,13 +537,13 @@ class App {
                         window.SoundTouch = module.SoundTouch;
                         window.SimpleFilter = module.SimpleFilter;
                     } catch(e) {
-                        console.warn("SoundTouchJS not loaded (CDN & Local failed). Will use SOLA fallback.");
+                        Log.debug('AudioEngine', 'SoundTouchJS not loaded (CDN & Local failed). Will use SOLA fallback.');
                         if (driverInfo) {
                             driverInfo.innerHTML += "<br><span style='color:#ff0'>[WARN] SoundTouch Lib missing. Using basic time-stretch (SOLA).</span>";
                         }
                     }
                 } else {
-                    console.warn("Skipping SoundTouch local import due to file:// protocol restrictions.");
+                    Log.debug('AudioEngine', 'Skipping SoundTouch local import due to file:// protocol restrictions.');
                     if (driverInfo) {
                         driverInfo.innerHTML += "<br><span style='color:#ff0'>[WARN] SoundTouch Lib missing. Using basic time-stretch (SOLA).</span>";
                     }
@@ -585,7 +588,7 @@ class App {
                     
                     if (state.audioContext.state === 'running') break;
                 } catch (e) {
-                    console.warn(`Resume attempt ${resumeAttempts + 1} failed:`, e);
+                    Log.debug('AudioEngine', `Resume attempt ${resumeAttempts + 1} failed:`, e);
                 }
                 resumeAttempts++;             
             }
@@ -634,11 +637,10 @@ class App {
 			this.startAnimationLoop();
 
             // Hide overlay and start
-            overlay.style.display = 'none';
+            if (overlay) overlay.style.display = 'none';
 
         } catch (error) {
-            console.error("Startup Error:", error);
-            alert(`Initialization Failed:\n${error.message}\n\nReturning to selection.`);
+            Log.error('App', 'Startup Error:', error);
             
             // Show error to user and allow retry
             if (loadingText) loadingText.style.display = 'none';
@@ -676,7 +678,18 @@ class App {
         if (window.DroneSynth) DroneSynth.stopAll();
         if (window.TrackerManager) TrackerManager.stop();
         if (state.masterRecording) await App.toggleMasterRecording();
-        
+
+        // Clean up any active loop recording
+        if (state.isRecording && state.loopRecorder) {
+            try { state.loopRecorder.stop(); } catch(e) {}
+            state.loopRecorder = null;
+        }
+        if (state.recordingTimeout) { clearTimeout(state.recordingTimeout); state.recordingTimeout = null; }
+        if (state.recordingStartTimeout) { clearTimeout(state.recordingStartTimeout); state.recordingStartTimeout = null; }
+        state.recordingLoopId = -1;
+        state.isFinishingRecording = false;
+        state.loopRecordedChunks = [];
+
         // Force state reset
         state.isRecording = false;
         state.masterRecording = false;
@@ -696,7 +709,7 @@ class App {
         const midiStatus = document.getElementById('midiStatus');
         // Handle cases where startApp fails or user denies
         if (!midiStatus) {
-            console.warn("requestMIDIAccess called, but midiStatus element not found.");
+            Log.debug('MIDI', 'requestMIDIAccess called, but midiStatus element not found.');
             return;
         }
         try {
@@ -706,22 +719,38 @@ class App {
             }
             
             state.midiAccess = await navigator.requestMIDIAccess({ sysex: false });
-            state.midiInputs = [];
-            state.midiAccess.inputs.forEach(input => {
-                state.midiInputs.push(input);
-                input.onmidimessage = this.handleMIDIMessage.bind(this);
-                midiStatus.textContent = `Connected: ${input.name}`;
-            });
-            
-            if (state.midiInputs.length === 0) {
-                midiStatus.textContent = 'No MIDI devices found';
-            }
+            this.bindMIDIInputs();
+            // A device that appears later (hot-plug, late wake-up, USB drop) arrives as a
+            // brand new MIDIInput object, so the handlers bound above cannot follow it.
+            state.midiAccess.onstatechange = () => this.bindMIDIInputs();
             
         } catch (error) {
             console.warn("MIDI access denied:", error);
             midiStatus.textContent = 'MIDI access denied';
             // Do not re-throw, allow app to continue without MIDI
         }
+    }
+
+    /**
+     * Attaches the message handler to every input the access object reports and
+     * refreshes the status line. Safe to call repeatedly: onmidimessage is a
+     * property, so rebinding a device that is already live cannot double-trigger it.
+     */
+    static bindMIDIInputs() {
+        state.midiInputs = [];
+        state.midiAccess.inputs.forEach(input => {
+            state.midiInputs.push(input);
+            input.onmidimessage = this.handleMIDIMessage.bind(this);
+        });
+
+        const midiStatus = document.getElementById('midiStatus');
+        if (!midiStatus) return;
+        // Chrome leaves an unplugged device in the map, just closed.
+        const live = state.midiInputs.filter(input =>
+            !input.connection || input.connection === 'open' || input.connection === 'connected');
+        midiStatus.textContent = live.length > 0
+            ? `Connected: ${live[live.length - 1].name}`
+            : 'No MIDI devices found';
     }
 
     /**
@@ -849,7 +878,7 @@ class App {
 
         // Check for API support
         if (!navigator.getGamepads) {
-            console.warn('Gamepad API not supported');
+            Log.debug('Gamepad', 'Gamepad API not supported');
             return;
         }
 
@@ -928,6 +957,11 @@ class App {
                         if (gamepadStatus) {
                             gamepadStatus.textContent = 'Disconnected';
                         }
+                    } else if (gamepadFound && state.gamepadIndex !== null && !gamepads[state.gamepadIndex]) {
+                        // A sleeping pad leaves a hole in its slot: drop the latch so the
+                        // next frame picks up a pad that is actually reporting.
+                        state.gamepadIndex = null;
+                        state.lastButtonStates = [];
                     }
             } catch(e) {
                 console.error("Gamepad poll error", e);
@@ -1125,25 +1159,13 @@ class App {
         // Prevent input before app start to avoid "Mic not available" errors
         if (document.getElementById('startOverlay').style.display !== 'none') return;
         if (state.listeningForInput.active && state.listeningForInput.type === 'kbd') {
-             KeyMapManager.receiveInput('kbd', event.key);
+             KeyMapManager.receiveInput('kbd', event.key.toLowerCase());
              event.preventDefault();
              return;
          }
         
-        // Allow global hotkeys on sliders/checkboxes, block only on text editing
-        const tag = event.target.tagName.toUpperCase();
-        if (tag === 'TEXTAREA' || tag === 'SELECT') return;
-        if (tag === 'INPUT' && !['CHECKBOX', 'RADIO', 'RANGE', 'BUTTON', 'FILE', 'SUBMIT', 'RESET'].includes(event.target.type.toUpperCase())) return;
-        
-        // --- Sampler Tracks Hotkeys ---
-        const samplerIdx = SAMPLER_HOTKEYS.indexOf(event.key.toLowerCase());
-        if (samplerIdx !== -1) {
-            event.preventDefault();
-            SamplerManager.togglePlay(samplerIdx);
-            return;
-        }
-
-        // Cancel MIDI Learn safely
+        // Cancel MIDI Learn safely -- must run before the text-field guard so Escape
+        // always works even when a text input has focus.
         if (event.code === 'Escape' && state.midiLearn && state.midiLearn.active) {
             if (state.midiLearn.element) state.midiLearn.element.style.outline = '';
             if (state.midiLearn.restoreLabel) state.midiLearn.restoreLabel();
@@ -1151,6 +1173,25 @@ class App {
             KeyMapManager.setStatus('MIDI Learn Cancelled');
             setTimeout(() => KeyMapManager.setStatus(''), 2000);
             return;
+        }
+
+        // Allow global hotkeys on sliders/checkboxes, block only on text editing
+        const tag = event.target.tagName.toUpperCase();
+        if (tag === 'TEXTAREA' || tag === 'SELECT') return;
+        if (tag === 'INPUT' && !['CHECKBOX', 'RADIO', 'RANGE', 'BUTTON', 'FILE', 'SUBMIT', 'RESET'].includes(event.target.type.toUpperCase())) return;
+        
+        // --- Sampler Tracks Hotkeys ---
+        // Ctrl/Cmd/Alt combos belong to the browser (Ctrl+S saves the page, Alt+D focuses
+        // the address bar), and OS key repeat would machine-gun togglePlay, so neither may
+        // fire a pad. A bare repeat is still swallowed here: letting it fall through would
+        // hand 'h' to the half-speed fallback on every echo of one held key.
+        if (!event.ctrlKey && !event.metaKey && !event.altKey) {
+            const samplerIdx = SAMPLER_HOTKEYS.indexOf(event.key.toLowerCase());
+            if (samplerIdx !== -1) {
+                event.preventDefault();
+                if (!event.repeat) SamplerManager.togglePlay(samplerIdx);
+                return;
+            }
         }
 
         // Calc ID early to check for remapping conflicts
@@ -1195,7 +1236,7 @@ class App {
 
         // --- GLOBAL: UI ADVERTISED HOTKEYS (Fallback if unmapped) ---
         if (event.code === 'KeyS' && loopId === -1) { event.preventDefault(); ProjectManager.save(); return; }
-        if (event.code === 'KeyL' && loopId === -1) { event.preventDefault(); document.getElementById('loadFile').click(); return; }
+        if (event.code === 'KeyL' && loopId === -1) { event.preventDefault(); const loadBtn = document.getElementById('loadFile'); if (loadBtn) loadBtn.click(); return; }
         if (event.code === 'KeyX' && loopId === -1) { event.preventDefault(); LoopManager.clearAll(); return; }
         if (event.code === 'KeyN' && loopId === -1) { event.preventDefault(); MetronomeScheduler.toggle(); return; }
         if (event.code === 'KeyM' && loopId === -1) { event.preventDefault(); App.toggleMasterRecording(); return; }
@@ -1242,7 +1283,7 @@ class App {
         } else if (loopId === 32) {
              App.toggleGlobalSus();
         } else if (loopId !== -1) {
-            App.handleInputPress(loopId, 'kbd_' + event.key);
+            App.handleInputPress(loopId, App.keyboardPressId(event));
         }
     }
 
@@ -1254,13 +1295,16 @@ class App {
         if (tag === 'TEXTAREA' || tag === 'SELECT') return;
         if (tag === 'INPUT' && !['CHECKBOX', 'RADIO', 'RANGE', 'BUTTON', 'FILE', 'SUBMIT', 'RESET'].includes(event.target.type.toUpperCase())) return;
 
-        const loopId = state.keyMapping.kbd.indexOf(event.key.toLowerCase());
-        if (loopId !== -1) {
-            App.handleInputRelease(loopId, 'kbd_' + event.key);
+        const sourceKey = App.keyboardPressId(event);
+        const pressData = state.inputPressTimers[sourceKey];
+        if (pressData) {
+            App.handleInputRelease(pressData.loopId, sourceKey);
         }
-        
-        // Extended: Handle Shift+Digit releases (mapped to loops 11-20) only if unmapped
-        if (loopId === -1 && event.shiftKey && event.code.startsWith('Digit')) {
+
+        // Extended: end the Shift+Digit presses (loops 11-20). Neither shiftKey nor the
+        // digit mapping may gate it: shift is often up before the digit is released, and a
+        // leaked press would let its long-press timer clear or stop the loop.
+        if (event.code.startsWith('Digit')) {
             const idx = parseInt(event.code.replace('Digit', ''));
             // Map Digit to Loop ID 10-19
             let loopIdx = idx;
@@ -1268,6 +1312,16 @@ class App {
             loopIdx += 10;
             App.handleInputRelease(loopIdx, 'kbd_Shift+' + idx);
         }
+    }
+
+    /**
+     * Identity a keyboard press is tracked under, built from the physical key. event.key is
+     * the character for that event's modifiers, so Shift flipping mid-hold turns '1' into '!'
+     * and 'q' into 'Q': a text-based id makes the release miss its press, which leaves the
+     * long-press timer to clear the take and the stale entry to swallow later taps.
+     */
+    static keyboardPressId(event) {
+        return 'kbd_' + (event.code || event.key.toLowerCase());
     }
 
     /**
@@ -1379,7 +1433,8 @@ class App {
             state.masterChunks = [];
             state.inputChunks = [];
             state.stemRecorders = [];
-            
+
+            try {
             // Start Wet Stem Recorders
             state.loops.forEach(l => {
                 if (l.audioBuffer && l.wetDestination) {
@@ -1397,17 +1452,17 @@ class App {
                     }
                 });
             }
-            
+
             // Collect active inputs
             const recordingNode = InputManager && InputManager.getRecordingNode ? InputManager.getRecordingNode() : null;
             let monitoredInputNode = recordingNode;
-            
+
             // Connect monitored input to *both* rec destinations
             if (monitoredInputNode) {
                 monitoredInputNode.connect(state.inputDestination);
                 // Also add monitored input to the master mix
             }
-        
+
             // Setup Recorders
             const mixTrack = this.setupTrackRecorder(state.masterDestination.stream, state.masterChunks);
             state.masterRecorder = mixTrack.recorder;
@@ -1418,17 +1473,28 @@ class App {
                 state.inputRecorder = inputTrack.recorder;
                 state.inputMimeType = inputTrack.usedMimeType;
             }
+            } catch (e) {
+                Log.error('App', 'Recorder setup failed:', e);
+                (state.stemRecorders || []).forEach(r => { try { r.stop(); } catch(_) {} });
+                state.stemRecorders = [];
+                state.masterRecorder = null;
+                state.masterRecording = false;
+                UIManager.updateStatus();
+                return;
+            }
             
-            document.getElementById('exportAllBtn').disabled = true;
-            document.getElementById('exportMasterBtn').disabled = true;
+            const expAllBtn = document.getElementById('exportAllBtn');
+            const expMasterBtn = document.getElementById('exportMasterBtn');
+            if (expAllBtn) expAllBtn.disabled = true;
+            if (expMasterBtn) expMasterBtn.disabled = true;
             
             const recTimeEl = document.getElementById('masterRecTimeDisplay');
             if (recTimeEl) recTimeEl.style.display = 'block';
             
         } else {
             // --- STOP ---
-            document.getElementById('masterRecBtn').textContent = 'Processing...';
-            document.getElementById('masterRecBtn').disabled = true;
+            const masterRecBtn = document.getElementById('masterRecBtn');
+            if (masterRecBtn) { masterRecBtn.textContent = 'Processing...'; masterRecBtn.disabled = true; }
             
             const recTimeEl = document.getElementById('masterRecTimeDisplay');
             if (recTimeEl) recTimeEl.style.display = 'none';
@@ -1458,7 +1524,8 @@ class App {
                 try { recordingNode.disconnect(state.inputDestination); } catch(e) {}
             }
             
-            document.getElementById('masterRecBtn').disabled = false;
+            const masterRecBtnStop = document.getElementById('masterRecBtn');
+            if (masterRecBtnStop) masterRecBtnStop.disabled = false;
             
             const statusText = state.masterChunks.length > 0 ? 'STOPPED' : 'OFF';
             const mBtn = document.getElementById('masterRecBtn');
@@ -1711,7 +1778,7 @@ class MasterMixManager {
     static applyMasterCompPreset(name) {
         const p = (typeof EffectManager !== 'undefined') && EffectManager.MASTER_COMP_PRESETS && EffectManager.MASTER_COMP_PRESETS[name];
         if (!p) return;
-        ['threshold', 'ratio', 'knee', 'attack', 'release'].forEach(k => {
+        ['threshold', 'ratio', 'knee', 'attack', 'release', 'gain'].forEach(k => {
             if (p[k] !== undefined) AudioEngine.updateMasterComp(k, p[k]);
         });
         this.render();
@@ -1732,12 +1799,11 @@ class MasterMixManager {
         // 1. Inputs
         state.inputs.forEach(i => {
             html += `<div style="${stripStyle} border-top:2px solid #0ff;" onwheel="event.preventDefault(); const s=document.getElementById('mm_slider_in_${i.id}'); if(s){ s.value=Math.max(0, Math.min(2, parseFloat(s.value) + (event.deltaY < 0 ? 0.05 : -0.05))); InputManager.setVolume(${i.id}, s.value); }">
-                <label for="mm_slider_in_${i.id}" style="font-size:9px; color:#0ff; font-weight:bold;">IN ${i.id+1}</label>
+                <label for="mm_slider_in_${i.id}" style="font-size:9px; color:#0ff; font-weight:bold;">${i.name || `IN ${i.id+1}`}</label>
                 <input type="range" id="mm_slider_in_${i.id}" min="0" max="2" step="0.01" value="${i.volume}" style="${sliderStyle}" oninput="InputManager.setVolume(${i.id}, this.value);" aria-label="Input ${i.id+1} Volume">
                 <div id="mm_in_v_${i.id}" style="${valStyle}">${i.volume.toFixed(2)}</div>
                 <div style="display:flex; gap:2px; margin:2px 0;">
                     <button id="mm_mute_in_${i.id}" class="small" style="${btnMuteStyle} background:${!i.monitor ? '#f00' : '#222'}; color:${!i.monitor ? '#000' : '#fff'};" onclick="InputManager.toggleMonitor(${i.id})">M</button>
-                    <button class="small" style="${btnMuteStyle} visibility:hidden;">S</button>
                 </div>
             </div>`;
         });
@@ -1757,6 +1823,7 @@ class MasterMixManager {
         });
 
         // 3. Drones
+        if (typeof DroneSynth !== 'undefined') {
         DroneSynth.instances.forEach(d => {
             // Get Hotkey Label safely
             const label = (d.id < 10 && state.keyMapping.kbd[20 + d.id]) ? state.keyMapping.kbd[20 + d.id].toUpperCase() : `D${d.id+1}`;
@@ -1770,6 +1837,7 @@ class MasterMixManager {
                 </div>
             </div>`;
         });
+        } // end DroneSynth guard
 
         // 4. Samplers
         state.samplers.forEach((s, idx) => {
@@ -1802,7 +1870,7 @@ class MasterMixManager {
             <div class="retro-module" style="border-color:#4fd;">
                 <div class="module-header" style="background:#4fd; color:#000;">MASTER EQ (AIR/SMILE)</div>
                 <div class="module-content">
-                    <div class="control-group"><label for="m_eq_preset">Preset</label><select id="m_eq_preset" onchange="MasterMixManager.applyMasterEQPreset(this.value)" aria-label="Master EQ Preset"><option value="">-- PRESET --</option>${Object.keys(EffectManager.MASTER_EQ_PRESETS).map(k => `<option value="${k}">${k}</option>`).join('')}</select></div>
+                    <div class="control-group"><label for="m_eq_preset">Preset</label><select id="m_eq_preset" onchange="MasterMixManager.applyMasterEQPreset(this.value)" aria-label="Master EQ Preset"><option value="">-- PRESET --</option>${Object.keys(EffectManager.MASTER_EQ_PRESETS || {}).map(k => `<option value="${k}">${k}</option>`).join('')}</select></div>
                     <div class="control-group"><label for="m_lsGain_slide">Low Gain <span id="m_lsGain">${eq.lsGain}</span></label><input id="m_lsGain_slide" type="range" min="-12" max="12" step="0.1" value="${eq.lsGain}" oninput="AudioEngine.updateMasterEQ('lsGain', parseFloat(this.value)); document.getElementById('m_lsGain').textContent=this.value;" aria-label="Master Low Shelf Gain"></div>
                     <div class="control-group"><label for="m_lcFreq_slide">Low Cut <span id="m_lcFreq">${eq.lcFreq}</span></label><input id="m_lcFreq_slide" type="range" min="20" max="200" step="1" value="${eq.lcFreq}" oninput="AudioEngine.updateMasterEQ('lcFreq', parseFloat(this.value)); document.getElementById('m_lcFreq').textContent=this.value;" aria-label="Master Low Cut Frequency"></div>
                     <div class="control-group"><label for="m_hsGain_slide">Hi Gain <span id="m_hsGain">${eq.hsGain}</span></label><input id="m_hsGain_slide" type="range" min="-12" max="12" step="0.1" value="${eq.hsGain}" oninput="AudioEngine.updateMasterEQ('hsGain', parseFloat(this.value)); document.getElementById('m_hsGain').textContent=this.value;" aria-label="Master High Shelf Gain"></div>
@@ -1813,7 +1881,7 @@ class MasterMixManager {
             <div class="retro-module" style="border-color:#afa;">
                 <div class="module-header" style="background:#afa; color:#000;">MASTER COMP (GLUE)</div>
                 <div class="module-content">
-                    <div class="control-group"><label for="m_comp_preset">Preset</label><select id="m_comp_preset" onchange="MasterMixManager.applyMasterCompPreset(this.value)" aria-label="Master Comp Preset"><option value="">-- PRESET --</option>${Object.keys(EffectManager.MASTER_COMP_PRESETS).map(k => `<option value="${k}">${k}</option>`).join('')}</select></div>
+                    <div class="control-group"><label for="m_comp_preset">Preset</label><select id="m_comp_preset" onchange="MasterMixManager.applyMasterCompPreset(this.value)" aria-label="Master Comp Preset"><option value="">-- PRESET --</option>${Object.keys(EffectManager.MASTER_COMP_PRESETS || {}).map(k => `<option value="${k}">${k}</option>`).join('')}</select></div>
                     <div class="control-group"><label for="m_cThresh_slide">Thresh <span id="m_cThresh">${cp.threshold}</span></label><input id="m_cThresh_slide" type="range" min="-60" max="0" step="0.5" value="${cp.threshold}" oninput="AudioEngine.updateMasterComp('threshold', parseFloat(this.value)); document.getElementById('m_cThresh').textContent=this.value;" aria-label="Master Comp Threshold"></div>
                     <div class="control-group"><label for="m_cRatio_slide">Ratio <span id="m_cRatio">${cp.ratio}</span></label><input id="m_cRatio_slide" type="range" min="1" max="20" step="0.1" value="${cp.ratio}" oninput="AudioEngine.updateMasterComp('ratio', parseFloat(this.value)); document.getElementById('m_cRatio').textContent=this.value;" aria-label="Master Comp Ratio"></div>
                     <div class="control-group"><label for="m_cAtt_slide">Attack <span id="m_cAtt">${cp.attack}</span></label><input id="m_cAtt_slide" type="range" min="0" max="1" step="0.01" value="${cp.attack}" oninput="AudioEngine.updateMasterComp('attack', parseFloat(this.value)); document.getElementById('m_cAtt').textContent=this.value;" aria-label="Master Comp Attack"></div>
@@ -1844,7 +1912,7 @@ class MasterMixManager {
 
         state.inputs.forEach(i => {
             html += `<div style="${stripStyle} border-top:2px solid #0ff;" onwheel="event.preventDefault(); const s=document.getElementById('live_mm_slider_in_${i.id}'); if(s){ s.value=Math.max(0, Math.min(2, parseFloat(s.value) + (event.deltaY < 0 ? 0.05 : -0.05))); InputManager.setVolume(${i.id}, s.value); }">
-                <label for="live_mm_slider_in_${i.id}" style="font-size:9px; color:#0ff; font-weight:bold;">IN ${i.id+1}</label>
+                <label for="live_mm_slider_in_${i.id}" style="font-size:9px; color:#0ff; font-weight:bold;">${i.name || `IN ${i.id+1}`}</label>
                 <div class="live-mixer-fader">
                     <input type="range" id="live_mm_slider_in_${i.id}" min="0" max="2" step="0.01" value="${i.volume}" style="${sliderStyle}" oninput="InputManager.setVolume(${i.id}, this.value);" aria-label="Input ${i.id+1} Volume">
                     <div id="live_mm_vu_in_${i.id}" class="ascii-vu-meter vu-vertical" aria-label="Input ${i.id+1} capture level"></div>
@@ -1852,7 +1920,6 @@ class MasterMixManager {
                 <div id="live_mm_in_v_${i.id}" style="${valStyle}">${i.volume.toFixed(2)}</div>
                 <div style="display:flex; gap:2px; margin:2px 0;">
                     <button id="live_mm_mute_in_${i.id}" class="small" style="${btnMuteStyle} background:${!i.monitor ? '#f00' : '#222'}; color:${!i.monitor ? '#000' : '#fff'};" onclick="InputManager.toggleMonitor(${i.id})">M</button>
-                    <button class="small" style="${btnMuteStyle} visibility:hidden;">S</button>
                 </div>
             </div>`;
         });
@@ -1920,6 +1987,7 @@ class InputChannel {
     constructor(id, type = 'mic') {
         this.id = id;
         this.type = type; // 'mic' or 'system'
+        this.name = ''; // User-defined label (e.g. "Vocals", "Guitar")
         this.stream = null;
         this.source = null;
         this.gain = null;
@@ -2082,7 +2150,7 @@ class InputManager {
                 } catch (err) {
                     if (deviceId) {
                          delete constraints.audio.deviceId;
-                         console.warn(`Input ${id} specific device failed, trying default.`, err);
+                         Log.warn('InputManager', `Input ${id} specific device failed, trying default.`, err);
                          input.stream = await navigator.mediaDevices.getUserMedia(constraints);
                     } else throw err;
                 }
@@ -2154,83 +2222,88 @@ class InputManager {
     static rebuildMasterChain(fadeInEffectName = null, mixTimeMs = 0) {
         if (!this.inputBus) return;
 
-        // Smooth Transition for Master Input
+        // Synchronous rebuild during fade-out ramp to eliminate silence gap.
+        // The fade runs on the audio thread, so the main thread is free to
+        // rebuild the chain while it happens — no setTimeout needed.
         const now = AudioEngine.currentTime;
-        
-        // 1. Fade out existing gain
+        const FADE_MS = 20;
+
+        // 1. Schedule fade-out on audio thread (runs independently)
         if (this.masterGain) {
-            AudioEngine.scheduledFade(this.masterGain, 0, now, 15);
+            AudioEngine.scheduledFade(this.masterGain, 0, now, FADE_MS);
         }
-        
-        if (this.rebuildTimer) clearTimeout(this.rebuildTimer);
 
-        // 2. Rebuild logic deferred
-        this.rebuildTimer = setTimeout(() => {
-            // Clean old FX nodes (disconnecting them naturally severs link to masterGain)
-            if (this.helperGraph) {
-                this.helperGraph.destroyEffects(this.masterChain.nodes);
-            } else {
-                Object.values(this.masterChain.nodes).forEach(group => {
-                     if (Array.isArray(group)) group.forEach(n => { try {n.disconnect()} catch(e){} });
-                });
-            }
-            this.masterChain.nodes = {};
+        // 2. Clean old FX nodes immediately
+        if (this.helperGraph) {
+            this.helperGraph.destroyEffects(this.masterChain.nodes);
+        } else {
+            Object.values(this.masterChain.nodes).forEach(group => {
+                 if (Array.isArray(group)) group.forEach(n => { try {n.disconnect()} catch(e){} });
+            });
+        }
+        this.masterChain.nodes = {};
 
-            let lastNode = this.inputBus;
-            this.helperGraph.loop.params = this.masterParams;
+        // 3. Build new chain
+        let lastNode = this.inputBus;
+        this.helperGraph.loop.params = this.masterParams;
 
-            for (const char of this.masterSignalChain) {
-                const fxName = this.helperGraph._getEffectByChar(char);
-                if (fxName && this.masterEffectsState[fxName]) {
-                    const res = this.helperGraph._createEffectNode(fxName, lastNode);
-                    lastNode = res.output;
-                    this.masterChain.nodes[fxName] = res.nodes;
-                    
-                    if (fxName === fadeInEffectName && mixTimeMs > 20) {
-                        EffectManager.applyMixInFade(res.nodes, fxName, mixTimeMs, this.masterParams);
-                    }
+        for (const char of this.masterSignalChain) {
+            const fxName = this.helperGraph._getEffectByChar(char);
+            if (fxName && this.masterEffectsState[fxName]) {
+                const res = this.helperGraph._createEffectNode(fxName, lastNode);
+                lastNode = res.output;
+                this.masterChain.nodes[fxName] = res.nodes;
+
+                if (fxName === fadeInEffectName && mixTimeMs > 20) {
+                    EffectManager.applyMixInFade(res.nodes, fxName, mixTimeMs, this.masterParams);
                 }
             }
+        }
 
-            // Ensure Master Gain exists (it should be created in setupMasterBus, but double check)
-            if (!this.masterGain) {
-                this.masterGain = state.audioContext.createGain();
-            }
-            
-            // Re-verify connections
-            try { this.masterGain.disconnect(); } catch(e){} // Clear old connections
-            this.masterGain.connect(this.masterAnalyser);
-            AudioEngine.connectToMaster(this.masterGain);
+        // Ensure Master Gain exists
+        if (!this.masterGain) {
+            this.masterGain = state.audioContext.createGain();
+        }
 
-            // Restore Recorder Connection if active
-            // NOTE: Master Gain is the recording tap point for LOOPS.
-            if (state.isRecording && state.loopRecorder) {
-                try { this.masterGain.connect(state.loopRecorder); } catch(e){}
-            }
-            
-            // Restore Master Recording Connection
-            // NOTE: masterDestination is the recording tap point for MASTER REC.
-            if (state.masterRecording && state.inputDestination) {
-                try { this.masterGain.connect(state.inputDestination); } catch(e){}
-            }
-            
-            try { this.inputBus.disconnect(this.masterGain); } catch(e){}
+        // Re-verify connections
+        try { this.masterGain.disconnect(); } catch(e){}
+        this.masterGain.connect(this.masterAnalyser);
+        AudioEngine.connectToMaster(this.masterGain);
 
-            lastNode.connect(this.masterGain);
-            this.masterChain.end = this.masterGain;
+        // Restore Recorder Connection if active
+        if (state.isRecording && state.loopRecorder) {
+            try { this.masterGain.connect(state.loopRecorder); } catch(e){}
+        }
 
-            // 3. Fade In
-            const resumeTime = AudioEngine.currentTime;
-            this.masterGain.gain.setValueAtTime(0, resumeTime);
-            AudioEngine.scheduledFade(this.masterGain, this.masterVolume, resumeTime, 20);
-            this.rebuildTimer = null;
-        }, 20);
+        // Restore Master Recording Connection
+        if (state.masterRecording && state.inputDestination) {
+            try { this.masterGain.connect(state.inputDestination); } catch(e){}
+        }
+
+        try { this.inputBus.disconnect(this.masterGain); } catch(e){}
+
+        lastNode.connect(this.masterGain);
+        this.masterChain.end = this.masterGain;
+
+        // 4. Schedule fade-in to start when fade-out completes
+        const fadeInStart = now + FADE_MS / 1000;
+        this.masterGain.gain.setValueAtTime(0, fadeInStart);
+        AudioEngine.scheduledFade(this.masterGain, this.masterVolume, fadeInStart, FADE_MS);
     }
 
     static updateMasterNode(effectType, param, value, now) {
         const nodes = this.masterChain.nodes[effectType];
         if (!nodes) return; 
-        const mockLoop = { graph: { nodes: { effects: this.masterChain.nodes } }, params: this.masterParams };
+        // updateLoopNode can splice a missing auto-pan stage into a live chain, and it
+        // reaches for that helper through the loop's graph. The input bus has no
+        // AudioGraph of its own, so hand it the shared builder that made these nodes.
+        const mockLoop = {
+            graph: {
+                nodes: { effects: this.masterChain.nodes },
+                _addAutoPanToWet: (wet, output, rate, depth, arr) => this.helperGraph?._addAutoPanToWet(wet, output, rate, depth, arr)
+            },
+            params: this.masterParams
+        };
         
         EffectManager.updateLoopNode(mockLoop, effectType, param, value, now);
     }
@@ -2248,6 +2321,23 @@ class InputManager {
                 }
             }
         }
+        this.renderUI();
+        if (window.MasterMixManager) MasterMixManager.updateMuteSoloUI();
+    }
+
+    static toggleMonitorAll() {
+        const allOn = state.inputs.length > 0 && state.inputs.every(i => i.monitor);
+        const targetState = !allOn;
+        state.inputs.forEach(input => {
+            input.monitor = targetState;
+            if (input.panNode && this.inputBus) {
+                if (targetState) {
+                    try { input.panNode.connect(this.inputBus); } catch(e) {}
+                } else {
+                    try { input.panNode.disconnect(this.inputBus); } catch(e) {}
+                }
+            }
+        });
         this.renderUI();
         if (window.MasterMixManager) MasterMixManager.updateMuteSoloUI();
     }
@@ -2325,6 +2415,16 @@ class InputManager {
             input.channelMode = mode;
             this.rebuildInputGraph(id); // Re-route audio without re-requesting stream
         }
+        this.renderUI();
+    }
+
+    static renameInput(id) {
+        const input = state.inputs[id];
+        if (!input) return;
+        const current = input.name || '';
+        const newName = prompt(`Name for Input ${id + 1}:`, current);
+        if (newName === null) return; // Cancelled
+        input.name = newName.trim();
         this.renderUI();
     }
 
@@ -2423,7 +2523,9 @@ class InputManager {
                  if (state.inputs[id].deviceId === d.deviceId) opt.selected = true;
                  sel.appendChild(opt);
              });
-        } catch(e) {}
+        } catch(e) {
+            Log.warn('InputManager', 'Failed to enumerate audio devices:', e);
+        }
     }
 
     static updateMeters() {
@@ -2481,12 +2583,12 @@ class InputManager {
         state.inputs.forEach(inp => {
             const div = document.createElement('div');
             const isSys = inp.type === 'system';
-            div.className = `mixer-row input-track-row${inp.monitor ? ' input-monitoring' : ''}`;
+            div.className = `mixer-row input-track-row${inp.monitor ? ' input-monitoring' : ' input-muted'}`;
             div.style.display = 'block'; // Override grid for this layout
             
             div.innerHTML = `
             <div style="display:flex; gap:4px; margin-bottom:2px; align-items:center;">
-                <label for="in-dev-${inp.id}" style="color:${inp.monitor ? '#0f0' : '#666'}; font-weight:bold; width:15px; font-size:9px;" data-i18n-title="TIP_IN_MON">${inp.id + 1}</label>
+                <span id="in-label-${inp.id}" style="color:${inp.monitor ? '#0f0' : '#666'}; font-weight:bold; min-width:15px; max-width:60px; font-size:9px; cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${inp.name || `Input ${inp.id + 1}`} (double-click to rename)" ondblclick="InputManager.renameInput(${inp.id})">${inp.name || (inp.id + 1)}</span>
                 <select id="in-dev-${inp.id}" style="flex:1; font-size:9px;" ${isSys ? 'disabled' : ''} onchange="InputManager.changeDevice(${inp.id}, this.value)" aria-label="Input Device">
                     ${isSys ? '<option>APP/SYS AUDIO</option>' : ''}
                 </select>
@@ -2520,9 +2622,12 @@ class InputManager {
         const btnGrid = document.createElement('div');
         btnGrid.className = "std-btn-grid";
         btnGrid.style.marginTop = "5px";
+        const anyMonitored = state.inputs.some(i => i.monitor);
+        const allMonitored = state.inputs.length > 0 && state.inputs.every(i => i.monitor);
         btnGrid.innerHTML = `
             <button onclick="InputManager.addInputTrack(null, 'mic')" class="std-btn small btn-cyan">+ MIC/LINE</button>
             <button onclick="InputManager.addInputTrack(null, 'system')" class="std-btn small btn-purple">+ APP/SYS</button>
+            <button onclick="InputManager.toggleMonitorAll()" class="std-btn small" style="border-color:${anyMonitored ? '#0f0' : '#444'}; color:${anyMonitored ? '#0f0' : '#888'};">MON ALL: ${allMonitored ? 'ON' : 'OFF'}</button>
             <button onclick="InputManager.toggleDroneRec()" class="std-btn small ${this.droneRecord ? 'btn-red' : ''}" style="border-color:${this.droneRecord ? '#f00' : '#444'}; color:${this.droneRecord ? '#f00' : '#888'};">DRONE REC: ${this.droneRecord ? 'ON' : 'OFF'}</button>
         `;
         container.appendChild(btnGrid);
@@ -2646,6 +2751,7 @@ window.MetronomeScheduler = MetronomeScheduler;
 window.ProjectManager     = ProjectManager;
 window.SampleLab          = SampleLab;
 window.SoloManager        = SoloManager;
+window.SyncManager        = SyncManager;
 window.TrackerManager     = TrackerManager;
 window.UIManager          = UIManager;
 

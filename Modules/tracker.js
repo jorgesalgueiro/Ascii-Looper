@@ -135,6 +135,7 @@ class TrackerManager {
             type: 'ascii_tracker_song',
             playlist: state.tracker.playlist,
             patterns: state.tracker.patterns,
+            loopColumns: MAX_LOOPS,
             bpm: state.bpm,
             timeSig: state.timeSig
         };
@@ -168,6 +169,28 @@ class TrackerManager {
         return patterns;
     }
 
+    /**
+     * Pattern columns address positions, not strips, so a song written against a
+     * narrower station lands its drone and sampler commands on empty loop strips.
+     * Shift only upwards: the range a wider station vacates holds no loop cells,
+     * while pulling a wide song down would overwrite existing loops.
+     */
+    static remapLoopColumns(patterns, savedLoopColumns) {
+        if (!Number.isInteger(savedLoopColumns) || savedLoopColumns < 1) return patterns;
+        if (savedLoopColumns > MAX_LOOPS && savedLoopColumns <= 20) {
+            MAX_LOOPS = savedLoopColumns;
+        }
+        const shift = MAX_LOOPS - savedLoopColumns;
+        if (shift <= 0) return patterns;
+        return patterns.map(pattern => ({
+            ...pattern,
+            data: Object.fromEntries(Object.entries(pattern.data).map(([key, command]) => {
+                const [row, column] = key.split('_');
+                return Number(column) < savedLoopColumns ? [key, command] : [`${row}_${Number(column) + shift}`, command];
+            }))
+        }));
+    }
+
     static async loadSong(event) {
         const file = event.target.files[0];
         if (!file) return;
@@ -187,7 +210,7 @@ class TrackerManager {
             const importTempo = data.bpm !== undefined && confirm(`Import Song Tempo (${data.bpm} BPM)?`);
 
             this.stop();
-            state.tracker.patterns = patterns;
+            state.tracker.patterns = this.remapLoopColumns(patterns, data.loopColumns ?? MAX_LOOPS);
             state.tracker.playlist = this.normalizePlaylist(data.playlist);
 
             if (importTempo) {
@@ -207,7 +230,7 @@ class TrackerManager {
             this.updateControlUI();
             alert("Song loaded!");
         } catch(e) {
-            alert("Error loading song: " + e.message);
+            Log.error('Tracker', 'Error loading song:', e);
         }
         event.target.value = '';
     }
@@ -377,11 +400,13 @@ class TrackerManager {
 
     static triggerCommand(loopId, cmd, time) {
         // Determine if this is a loop or drone column
-        const isDrone = loopId >= MAX_LOOPS && loopId < MAX_LOOPS + DroneSynth.instances.length;
-        const isSampler = loopId >= MAX_LOOPS + DroneSynth.instances.length;
-        
+        const droneCount = (typeof DroneSynth !== 'undefined') ? DroneSynth.instances.length : 0;
+        const isDrone = loopId >= MAX_LOOPS && loopId < MAX_LOOPS + droneCount;
+        const isSampler = loopId >= MAX_LOOPS + droneCount;
+
         if (isSampler) {
-            const sId = loopId - MAX_LOOPS - DroneSynth.instances.length;
+            const sId = loopId - MAX_LOOPS - droneCount;
+            if (!state.samplers[sId]) return;
             if (cmd === 'ON' || cmd === 'LOP') {
                 if (state.samplers[sId].state === 'stopped' || state.samplers[sId].state === 'stopping' || state.samplers[sId].state === 'empty') SamplerManager.togglePlay(sId, time);
             }
@@ -694,6 +719,7 @@ class SampleLab {
 
     static init() {
         this.canvas = document.getElementById('labCanvas');
+        this._ctx = this.canvas ? this.canvas.getContext('2d') : null;
         this._dragging = false;
         this._dragHandle = null;
         this.isProcessing = false;
@@ -857,7 +883,13 @@ class SampleLab {
         const btn = document.getElementById('labRecBtn');
         if (this.isRecording) {
             this.isRecording = false;
-            if (this.recorder) this.recorder.port.postMessage({ command: 'stop' });
+            const rec = this.recorder;
+            this.recorder = null;
+            if (rec) {
+                try { rec.port.postMessage({ command: 'stop' }); } catch(e) {}
+                // Disconnect after a tick so the stop message flushes
+                setTimeout(() => { try { rec.disconnect(); } catch(e) {} }, 50);
+            }
             if (btn) {
                 btn.innerHTML = I18n.t('REC_SAMPLER');
                 btn.classList.remove('blink-text');
@@ -869,8 +901,12 @@ class SampleLab {
             this.recChunks = [];
             try {
                 this.recorder = new AudioWorkletNode(state.audioContext, 'recorder-processor');
+                const capturedRecorder = this.recorder;
                 this.recorder.port.onmessage = (e) => {
-                    if (e.data.event === 'recorded') this.finishRecording(e.data.chunks);
+                    if (e.data.event === 'recorded') {
+                        // Guard: only accept if this recorder is still current
+                        if (this.recorder === capturedRecorder) this.finishRecording(e.data.chunks);
+                    }
                 };
                 inputNode.connect(this.recorder);
                 this.recorder.connect(state.audioContext.destination);
@@ -878,7 +914,7 @@ class SampleLab {
                 this.isRecording = true;
                 if (btn) { btn.innerHTML = "STOP REC"; btn.classList.add('blink-text'); }
                 document.getElementById('labStatus').textContent = "RECORDING...";
-            } catch (e) { console.error(e); alert("Recorder failed to start"); }
+            } catch (e) { Log.error('SampleLab', 'Recorder failed to start:', e); }
         }
     }
     
@@ -923,15 +959,25 @@ class SampleLab {
     static async load(e) {
         const file = e.target.files[0];
         if (!file) return;
-        
+
         document.getElementById('labStatus').textContent = "DECODING...";
-        const ab = await file.arrayBuffer();
-        this.rawBuffer = await state.audioContext.decodeAudioData(ab);
-        this.processedBuffer = null;
-        this.clearUndo();
-        this.updateDisplays();
-        this.renderWaveform();
-        document.getElementById('labStatus').textContent = `LOADED: ${this.rawBuffer.duration.toFixed(2)}s`;
+        try {
+            const ab = await file.arrayBuffer();
+            const buffer = await state.audioContext.decodeAudioData(ab);
+            this.rawBuffer = buffer;
+            this.processedBuffer = null;
+            this.clearUndo();
+            this.updateDisplays();
+            this.renderWaveform();
+            document.getElementById('labStatus').textContent = `LOADED: ${this.rawBuffer.duration.toFixed(2)}s`;
+        } catch (error) {
+            Log.error('SampleLab', 'Error loading sample:', error);
+            document.getElementById('labStatus').textContent = "LOAD ERROR.";
+        } finally {
+            // A file input only fires change when its value differs, so leaving the path
+            // here makes the very same file impossible to pick again.
+            e.target.value = '';
+        }
     }
 
     static updateDisplays() {
@@ -989,12 +1035,19 @@ class SampleLab {
     static renderWaveform() {
         const cvs = this.canvas;
         if (!cvs) return;
-        // Match backing store to displayed width so the waveform is crisp and
-        // 1px on screen == 1px in the buffer (canvas clicks map 1:1).
-        if (cvs.clientWidth > 0 && cvs.width !== cvs.clientWidth) cvs.width = cvs.clientWidth;
-        const ctx = cvs.getContext('2d');
-        const w = cvs.width;
-        const h = cvs.height;
+        // Scale the backing store by devicePixelRatio so the waveform is crisp
+        // on HiDPI screens. CSS size stays the same; the buffer just gets bigger.
+        const dpr = window.devicePixelRatio || 1;
+        const cssW = cvs.clientWidth;
+        const cssH = cvs.clientHeight;
+        if (cssW > 0 && (cvs.width !== cssW * dpr || cvs.height !== cssH * dpr)) {
+            cvs.width = cssW * dpr;
+            cvs.height = cssH * dpr;
+        }
+        const ctx = this._ctx || (this._ctx = cvs.getContext('2d'));
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        const w = cssW;
+        const h = cssH;
 
         ctx.clearRect(0, 0, w, h);
 
@@ -1122,7 +1175,9 @@ class SampleLab {
             const sId = parseInt(targetVal.substring(1));
             const sampler = state.samplers[sId];
             if (sampler.buffer && !confirm(`Overwrite Sampler ${sId+1}?`)) return;
-            if (sampler.state === 'playing' || sampler.state === 'stopping') SamplerManager.stop(sId);
+            // 'armed' belongs here: a queued source already bound the old buffer, and its
+            // pending start would promote it to PLAYING on top of the sample being PUT.
+            if (sampler.state === 'playing' || sampler.state === 'armed' || sampler.state === 'stopping') SamplerManager.stop(sId);
             sampler.buffer = this.cloneBuffer(bufferToSend);
             sampler.speed = 1.0;
             if (UIManager.generateWaveformPeaks) sampler.wavePeaks = UIManager.generateWaveformPeaks(sampler.buffer);
@@ -1135,6 +1190,12 @@ class SampleLab {
             if (!confirm(`Overwrite Loop ${loopId+1}?`)) return;
             LoopManager.pushUndoState(loopId);
         }
+        // Abandon a capture this loop owns before overwriting it. loop.stop() cannot cancel a
+        // recording (LoopTrack.stop returns early for 'armed'), and the loop no longer looks
+        // armed afterwards, so nothing would ever stop the recorder or clear state.isRecording
+        // — recording would stay locked out for every pad until reload. Loop.clear() uses the
+        // same guard.
+        if (state.isRecording && state.recordingLoopId === loopId) LoopManager.forceCleanupRecording(loop);
         if (loop.state === 'playing' || loop.state === 'stopping' || loop.state === 'overdubbing' || loop.state === 'substituting') loop.stop();
         loop.audioBuffer = this.cloneBuffer(bufferToSend);
         AudioEngine.seamlessLoopCrossfade(loop.audioBuffer, 0.01); // Ensure smooth looping
@@ -1165,7 +1226,10 @@ class SampleLab {
                  tStart = this.snapToZeroCross(this.rawBuffer, tStart);
                  tEnd = this.snapToZeroCross(this.rawBuffer, tEnd);
              }
-             if (tEnd - tStart < 0.0001) tEnd = Math.min(1, tStart + 0.001);
+             // Sliders step by 0.001, so under half a step is an empty selection. Extending it
+             // forward runs off the end when both handles sit on END, and sliceBuffer answers an
+             // empty range with the raw buffer itself, which the fade below would chew through.
+             if (tEnd - tStart < 0.0005) return alert("Selection too short.");
              buf = AudioEngine.sliceBuffer(this.rawBuffer, tStart, tEnd);
              AudioEngine.applyFades(buf, 0.005); // Smooth edges
         }
@@ -1272,7 +1336,7 @@ class SampleLab {
                     this.playBuf(result);
                     statusEl.textContent = `DONE. NEW DUR: ${result.duration.toFixed(2)}s`;
                 } catch (e) {
-                    console.error("DSP Error:", e);
+                    Log.error('SampleLab', 'DSP error:', e);
                     statusEl.textContent = "DSP ERROR.";
                 } finally {
                     this.isProcessing = false;
@@ -1326,30 +1390,42 @@ class SampleLab {
         st.pitch = Math.pow(2, pitchSemi / 12);
 
         const filter = new SimpleFilter(source, st);
-        const outSamples = [];
         const blockSize = 1024;
         const temp = new Float32Array(blockSize * channels);
-        const maxBlocks = Math.ceil(expectedOut / blockSize) * 4 + 64; // safety against runaway
+        const maxFrames = expectedOut * 4 + blockSize * 64; // safety against runaway
+        // Pre-allocate the output buffer instead of pushing millions of samples
+        // into a growing array — push() on hundreds of thousands of entries is
+        // the dominant cost for long stretches.
+        let outBuf = new Float32Array(maxFrames * channels);
+        let outPos = 0;
 
         let blocks = 0;
-        while (blocks < maxBlocks && Math.floor(outSamples.length / channels) < expectedOut) {
+        const maxBlocks = Math.ceil(maxFrames / blockSize);
+        while (blocks < maxBlocks && Math.floor(outPos / channels) < expectedOut) {
             const frames = filter.extract(temp, blockSize);
             blocks++;
             if (frames === 0) break;
-            for (let i = 0; i < frames * channels; i++) {
-                outSamples.push(temp[i]);
+            const count = frames * channels;
+            if (outPos + count > outBuf.length) {
+                // Grow the buffer if the safety estimate was too tight
+                const grown = new Float32Array(outBuf.length * 2);
+                grown.set(outBuf);
+                // Can't reassign a const, but this path is rare; use a mutable ref
+                outBuf = grown;
             }
+            outBuf.set(temp.subarray(0, count), outPos);
+            outPos += count;
         }
 
         // 4. De-interleave (trim to exact expected length)
-        const outLen = Math.min(Math.floor(outSamples.length / channels), expectedOut);
+        const outLen = Math.min(Math.floor(outPos / channels), expectedOut);
         if (outLen <= 0) return buffer;
         const dest = state.audioContext.createBuffer(channels, outLen, rate);
         
         for (let ch = 0; ch < channels; ch++) {
             const data = dest.getChannelData(ch);
             for (let i = 0; i < outLen; i++) {
-                data[i] = outSamples[i * channels + ch];
+                data[i] = outBuf[i * channels + ch];
             }
         }
         
@@ -1399,8 +1475,13 @@ class SampleLab {
 
     static normalize() {
         if (!this.rawBuffer) return;
+        // normalizeBuffer scales rawBuffer in place, so the snapshot has to be taken first.
+        // It is only committed once the gain really landed, or an already-maxed take would
+        // overwrite the undo slot left by the previous edit.
+        const before = AudioEngine.cloneBuffer(this.rawBuffer);
         if (AudioEngine.normalizeBuffer(this.rawBuffer)) {
-            this.pushUndo();
+            this._undoBuffer = before;
+            this.updateUndoBtn();
             this.processedBuffer = null;
             this.updateDisplays();
             this.renderWaveform();
@@ -1414,11 +1495,18 @@ class SampleLab {
     static crop() {
         if (!this.rawBuffer) return alert("No sample loaded.");
         if (this.isRecording) return;
-        const s = parseFloat(document.getElementById('labStart').value);
-        const e = parseFloat(document.getElementById('labEnd').value);
-        const tStart = Math.min(s, e);
-        const tEnd = Math.max(s, e);
+        let s = parseFloat(document.getElementById('labStart').value);
+        let e = parseFloat(document.getElementById('labEnd').value);
+        let tStart = Math.min(s, e);
+        let tEnd = Math.max(s, e);
+        if (tEnd - tStart < 0.0005) return alert("Selection too short.");
         if (tEnd - tStart >= 0.999) return alert("Selection covers the whole sample.");
+        // Honour the ZC snap so destructive cuts don't introduce clicks
+        if (this.zcEnabled()) {
+            tStart = this.snapToZeroCross(this.rawBuffer, tStart);
+            tEnd = this.snapToZeroCross(this.rawBuffer, tEnd);
+            if (tEnd - tStart < 0.0005) return alert("Selection too short after zero-crossing snap.");
+        }
         this.stopPreview();
         this.pushUndo();
         this.rawBuffer = AudioEngine.sliceBuffer(this.rawBuffer, tStart, tEnd);
@@ -1431,9 +1519,11 @@ class SampleLab {
     }
 
     static save() {
-        if(!this.processedBuffer) return alert("Process audio first.");
-        const wav = AudioEngine.bufferToWAV(this.processedBuffer);
-        ProjectManager.downloadWAV(wav, `sampler_processed_${Date.now()}.wav`);
+        const buf = this.processedBuffer || this.rawBuffer;
+        if (!buf) return alert("No audio to save.");
+        const label = this.processedBuffer ? 'processed' : 'edited';
+        const wav = AudioEngine.bufferToWAV(buf);
+        ProjectManager.downloadWAV(wav, `sampler_${label}_${Date.now()}.wav`);
     }
 }
 

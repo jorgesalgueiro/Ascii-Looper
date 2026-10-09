@@ -170,17 +170,18 @@ class AudioEngine {
             // Master EQ
             try {
                 const p = state.masterFx.eq;
+                const d = (typeof effects !== 'undefined' && effects.eq) || {};
                 state.masterEQ = new AudioWorkletNode(state.audioContext, 'eq-processor', {
                     parameterData: {
-                        lcFreq: p.lcFreq, lsFreq: p.lsFreq, lsGain: p.lsGain,
-                        hsFreq: p.hsFreq, hsGain: p.hsGain, hcFreq: p.hcFreq
+                        lcFreq: p.lcFreq ?? d.lcFreq, lsFreq: p.lsFreq ?? d.lsFreq, lsGain: p.lsGain ?? d.lsGain,
+                        hsFreq: p.hsFreq ?? d.hsFreq, hsGain: p.hsGain ?? d.hsGain, hcFreq: p.hcFreq ?? d.hcFreq
                     }
                 });
                 // Set Peaks
                 for(let i=1; i<=6; i++) {
-                    state.masterEQ.parameters.get(`p${i}Freq`).value = p[`p${i}Freq`];
-                    state.masterEQ.parameters.get(`p${i}Gain`).value = p[`p${i}Gain`];
-                    state.masterEQ.parameters.get(`p${i}Q`).value = p[`p${i}Q`];
+                    state.masterEQ.parameters.get(`p${i}Freq`).value = p[`p${i}Freq`] ?? d[`p${i}Freq`];
+                    state.masterEQ.parameters.get(`p${i}Gain`).value = p[`p${i}Gain`] ?? d[`p${i}Gain`];
+                    state.masterEQ.parameters.get(`p${i}Q`).value = p[`p${i}Q`] ?? d[`p${i}Q`];
                 }
             } catch(e) { console.warn("Master EQ init failed", e); state.masterEQ = null; }
             
@@ -193,11 +194,16 @@ class AudioEngine {
             state.masterComp.attack.value = cp.attack;
             state.masterComp.release.value = cp.release;
             
+            // Master Comp Makeup Gain
+            state.masterCompGain = state.audioContext.createGain();
+            state.masterCompGain.gain.value = cp.gain ?? 1.0;
+            
             // --- Final Routing ---
-            // Gain -> EQ -> Comp -> SoftClip -> Limiter -> Out
+            // Gain -> EQ -> Comp -> MakeupGain -> SoftClip -> Limiter -> Out
             let lastNode = state.masterGain;
             if (state.masterEQ) { lastNode.connect(state.masterEQ); lastNode = state.masterEQ; }
             if (state.masterComp) { lastNode.connect(state.masterComp); lastNode = state.masterComp; }
+            if (state.masterCompGain) { lastNode.connect(state.masterCompGain); lastNode = state.masterCompGain; }
             
             // Safe routing with fallbacks if nodes failed to initialize
             if (state.masterSoftClip) {
@@ -271,7 +277,7 @@ class AudioEngine {
             param.cancelScheduledValues(startTime);
             try { param.setValueAtTime(param.value, startTime); } catch(e){}
             param.linearRampToValueAtTime(targetValue, startTime + durSec);
-        } catch(e) { console.warn("scheduledFade error:", e); }
+        } catch(e) { Log.debug('AudioEngine', 'scheduledFade error:', e); }
     }
     
     /**
@@ -412,6 +418,18 @@ class AudioEngine {
     }
     static updateMasterComp(param, val) {
         state.masterFx.comp[param] = val;
+        if (param === 'gain') {
+            if (state.masterCompGain) {
+                try {
+                    state.masterCompGain.gain.cancelScheduledValues(this.currentTime);
+                    try { state.masterCompGain.gain.setValueAtTime(state.masterCompGain.gain.value, this.currentTime); } catch(e){}
+                    state.masterCompGain.gain.setTargetAtTime(val, this.currentTime, 0.05);
+                } catch(e) {
+                    state.masterCompGain.gain.setValueAtTime(val, this.currentTime);
+                }
+            }
+            return;
+        }
         if (state.masterComp) {
             if (state.masterComp[param]) {
                 try {
@@ -686,11 +704,11 @@ class AudioEngine {
         
         for (let c = 0; c < audioBuffer.numberOfChannels; c++) {
             const data = audioBuffer.getChannelData(c);
-            
+
             for (let i = 0; i < fadeSamples; i++) {
                 const fade = Math.sin((i / fadeSamples) * (Math.PI / 2));
-                data[i] *= fade;
-                data[len - 1 - i] *= fade;
+                // Crossfade: blend the tail (fading out) into the head (fading in)
+                data[i] = data[i] * fade + data[len - fadeSamples + i] * (1 - fade);
             }
         }
     }

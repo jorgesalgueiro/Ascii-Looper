@@ -8,7 +8,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#291a0a">
     <meta name="description" content="ASCII Looper - Browser-based 10-track loop station with effects and sequencing.">
-    <title>ASCII Looper v0.76.07</title>
+    <title>ASCII Looper v0.76.08</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="styles.css">
     <link rel="dns-prefetch" href="//www.google.com">
@@ -175,8 +175,8 @@
                 <div class="module-header"><span data-i18n="SAMPLE_LAB">SAMPLE LAB</span><span data-i18n="OFFLINE">OFFLINE DSP</span></div>
                 <div class="module-content">
                     <div style="display:flex; gap:5px; margin-bottom:5px;">
-                        <button onclick="document.getElementById('labFile').click()" class="std-btn btn-orange" style="flex:1" data-i18n="LOAD_SAMPLER">LOAD SAMPLER</button>
-                        <button onclick="SampleLab.toggleRecord()" id="labRecBtn" class="std-btn btn-red" style="flex:1" data-i18n="REC_SAMPLER">REC SAMPLER</button>
+                        <button onclick="document.getElementById('labFile').click()" class="std-btn btn-orange" style="flex:1" data-i18n="LOAD_SAMPLER" aria-label="Load audio file into Sample Lab">LOAD SAMPLER</button>
+                        <button onclick="SampleLab.toggleRecord()" id="labRecBtn" class="std-btn btn-red" style="flex:1" data-i18n="REC_SAMPLER" aria-label="Record from input into Sample Lab">REC SAMPLER</button>
                         <input type="file" id="labFile" accept="audio/*" style="display:none;" onchange="SampleLab.load(event)">
                     </div>
                     <div style="display:flex; gap:5px; margin-bottom:5px; align-items:center;">
@@ -185,15 +185,15 @@
                         <button onclick="if(window.SampleLab) SampleLab.loadFromLoop()" class="std-btn btn-cyan" style="flex:1;" title="Import from selected loop">GET</button>
                         <button onclick="if(window.SampleLab) SampleLab.sendToLoop()" class="std-btn btn-cyan" style="flex:1;" title="Export to selected loop">PUT</button>
                     </div>
-                    <canvas id="labCanvas" class="lab-canvas" width="300" height="40"></canvas>
+                    <canvas id="labCanvas" class="lab-canvas" width="300" height="60"></canvas>
                     <div style="display:flex; gap:8px; align-items:center; margin-bottom:5px; font-size:9px;">
                         <label style="display:flex; align-items:center; gap:3px; cursor:pointer; color:#aaa;" title="Snap slice points to the nearest zero crossing (clickless edits)">
                             <input type="checkbox" id="labZC" style="margin:0;" aria-label="Zero-crossing snap"> ZC SNAP
                         </label>
                         <span id="labPeak" style="color:#888;">PEAK: --</span>
                         <span style="flex:1;"></span>
-                        <button onclick="SampleLab.crop()" class="std-btn btn-yellow" style="padding:1px 8px; font-size:9px;" title="Destructively trim the sample to the current selection">CROP</button>
-                        <button onclick="SampleLab.undo()" id="labUndoBtn" class="std-btn btn-yellow" style="padding:1px 8px; font-size:9px;" disabled title="Undo the last destructive edit">UNDO</button>
+                        <button onclick="SampleLab.crop()" class="std-btn btn-yellow" style="padding:1px 8px; font-size:9px;" title="Destructively trim the sample to the current selection" aria-label="Crop sample to selection">CROP</button>
+                        <button onclick="SampleLab.undo()" id="labUndoBtn" class="std-btn btn-yellow" style="padding:1px 8px; font-size:9px;" disabled title="Undo the last destructive edit" aria-label="Undo last edit">UNDO</button>
                     </div>
                     <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-bottom:5px;">
                         <div>
@@ -209,7 +209,7 @@
                          <label style="font-size:10px;" for="labStretch">Ratio:</label>
                          <input type="number" id="labStretch" value="1.0" step="0.1" style="width:50px" ondblclick="this.value=1.0" aria-label="Time Stretch Ratio">
                          <input type="number" id="labTargetBars" value="1" min="0.25" step="0.25" style="width:35px" title="Target Bars for Sync" aria-label="Target Bars for Sync">
-                         <button onclick="SampleLab.calcSyncRatio()" class="small btn-yellow" title="Calc Ratio to match Target Bars">SyncR</button>
+                         <button onclick="SampleLab.calcSyncRatio()" class="small btn-yellow" title="Calc Ratio to match Target Bars" aria-label="Calculate sync ratio">SyncR</button>
                          <label style="font-size:10px;" for="labPitch">Pitch:</label>
                          <input type="range" id="labPitch" min="-12" max="12" step="1" value="0" style="flex:1" oninput="document.getElementById('labPitchDisp').textContent=(this.value>0?'+':'')+this.value" ondblclick="this.value=0; document.getElementById('labPitchDisp').textContent='0'" aria-label="Pitch Shift">
                          <span id="labPitchDisp" style="font-size:10px; width:25px; text-align:right;">0</span>
@@ -217,8 +217,8 @@
                     <div class="std-btn-grid">
                         <button onclick="SampleLab.preview()" class="std-btn btn-green" data-i18n="PREVIEW">PREVIEW</button>
                         <button onclick="SampleLab.process()" class="std-btn btn-green" data-i18n="PROCESS">PROCESS</button>
-                        <button onclick="SampleLab.reverse()" class="std-btn btn-yellow">REV</button>
-                        <button onclick="SampleLab.normalize()" class="std-btn btn-yellow">NORM</button>
+                        <button onclick="SampleLab.reverse()" class="std-btn btn-yellow" aria-label="Reverse sample">REV</button>
+                        <button onclick="SampleLab.normalize()" class="std-btn btn-yellow" aria-label="Normalize sample volume">NORM</button>
                     </div>
                     <div style="display:flex; gap:5px; margin-top:5px; align-items:center;">
                         <button onclick="SampleLab.save()" class="std-btn btn-blue" style="flex:1;" data-i18n="SAVE_WAV">SAVE WAV</button>
@@ -1376,6 +1376,7 @@
 </div>
 <!-- Module scripts: load order matters — data modules first, then engines, then managers, then main. -->
 <script src="./Modules/i18n.js" defer></script>
+<script src="./Modules/debug.js" defer></script>
 <script src="./Modules/effects.js" defer></script>
 <script src="./Modules/scales.js" defer></script>
 <script src="./Modules/droneSynth.js" defer></script>
@@ -1383,7 +1384,6 @@
 <script src="./Modules/loopTracks.js" defer></script>
 <script src="./Modules/tracker.js" defer></script>
 <script src="./Modules/projectManager.js" defer></script>
-<script src="./Modules/debug.js" defer></script>
 <script src="main.js" defer></script>
 
 <!-- Styled tooltip engine: mirror title -> data-tip so [data-tip] CSS tooltips

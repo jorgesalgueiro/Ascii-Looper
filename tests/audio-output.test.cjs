@@ -211,7 +211,8 @@ test('both compressors and EQ stay intact; meter joins post-limiter recording/ou
     assert.deepEqual(state.masterMixer.connections, [state.masterGain]);
     assert.deepEqual(state.masterGain.connections, [state.masterEQ]);
     assert.deepEqual(state.masterEQ.connections, [state.masterComp]);
-    assert.deepEqual(state.masterComp.connections, [state.masterSoftClip]);
+    assert.deepEqual(state.masterComp.connections, [state.masterCompGain]);
+    assert.deepEqual(state.masterCompGain.connections, [state.masterSoftClip]);
     assert.deepEqual(state.masterSoftClip.connections, [state.masterLimiter]);
     assert.deepEqual(state.masterLimiter.connections, [state.audioContext.destination, state.masterDestination, state.masterMeter]);
     assert.deepEqual(state.masterMeter.connections, []);

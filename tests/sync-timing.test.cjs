@@ -112,7 +112,9 @@ function createHarness() {
             return timerId;
         },
         clearTimeout: id => timers.delete(id),
-        requestAnimationFrame: callback => frames.push(callback)
+        requestAnimationFrame: callback => frames.push(callback),
+        DebugManager: { enabled: false },
+        Log: { error: () => {}, warn: () => {}, info: () => {}, debug: () => {} }
     };
     context.window = context;
     vm.createContext(context);
@@ -246,6 +248,7 @@ test('cancelled or failed sampler imports preserve queued playback and the curre
     const picker = { click() {} };
     const alerts = [];
     h.context.alert = message => alerts.push(message);
+    h.context.Log = { error: (...args) => alerts.push(args.slice(1).map(a => a instanceof Error ? a.message : String(a)).join(' ')), warn: () => {}, info: () => {}, debug: () => {} };
     h.context.document.createElement = () => picker;
     h.state.audioContext.decodeAudioData = async () => { throw new Error('invalid audio'); };
     await h.context.SamplerManager.loadFile(sampler.id);
