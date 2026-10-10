@@ -322,7 +322,8 @@ registerProcessor('dropout-detector-processor', DropoutDetectorProcessor);
     }
 
     static _tagPort(port, label) {
-        if (!port) return;
+        if (!port || port.__debugTagged) return;
+        port.__debugTagged = true;
         DebugManager._ports.set(port, label);
         port.addEventListener('message', e => {
             if (!DebugManager.enabled) return;
@@ -374,7 +375,8 @@ registerProcessor('dropout-detector-processor', DropoutDetectorProcessor);
         } else {
             L.push('AudioContext : not created (app not started)');
         }
-        L.push(`Sync         : bpm=${st.bpm} bars=${st.bars} sig=${st.timeSig.num}/${st.timeSig.den} loopLen=${(st.loopLength || 0).toFixed(2)}s`);
+        const sig = st.timeSig ? `${st.timeSig.num}/${st.timeSig.den}` : '?/?';
+        L.push(`Sync         : bpm=${st.bpm} bars=${st.bars} sig=${sig} loopLen=${(st.loopLength || 0).toFixed(2)}s`);
         const fxNames = (obj) => {
             if (!obj) return [];
             return Object.keys(obj).filter(k => obj[k]);
@@ -413,11 +415,11 @@ registerProcessor('dropout-detector-processor', DropoutDetectorProcessor);
             }
         } catch (e) {}
         try {
-            if (ctx && ctx.audioWorklet && DebugManager._ports.size >= 0) {
-                L.push(`Worklet ports: ${DebugManager._ports.size} tagged (AudioWorklet load indicator)`);
+            if (ctx && ctx.audioWorklet) {
+                L.push(`Worklet ports: tagged (AudioWorklet message tracing active)`);
             }
         } catch (e) {}
-        L.push(`Undo/Redo    : ${st.undoStack.length}/${st.redoStack.length}`);
+        L.push(`Undo/Redo    : ${(st.undoStack || []).length}/${(st.redoStack || []).length}`);
         L.push(`Inputs       : ${(st.inputs || []).length} | Samplers: ${(st.samplers || []).length}`);
         L.push('=== END SNAPSHOT ===');
         L.forEach(line => DebugManager._push('sys', line));
