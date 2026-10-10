@@ -1403,8 +1403,8 @@ class HarmonyProcessor extends AudioWorkletProcessor {
 
         for (let v = 0; v < 4; v++) {
             const idx = this.scaleDeg + this.degrees[v];
-            const io = Math.floor(idx / L);
-            const pc = idx - io * L;
+            const pc = ((idx % L) + L) % L;
+            const io = (idx - pc) / L;
             let delta = (scale[pc] - scale[this.scaleDeg]) + 12 * (io - this.scaleOct);
             // Wider intervals lose the close-stack character and needlessly
             // exaggerate source-vowel differences.
@@ -2809,15 +2809,23 @@ class EffectManager {
         const existingCodes = "QCTFODBVKAZGH" + otherEffects.map(e => e.code).join('');
         let code = fxData.code.toUpperCase().charAt(0);
 
-        if (!skipPrompt && existingCodes.includes(code)) {
-            let newCode = prompt(`Effect code '${code}' is already in use. Please enter a new single letter for ${fxData.name}:`);
-            if (!newCode) return; // Cancelled
-            newCode = newCode.toUpperCase().charAt(0);
-            if (existingCodes.includes(newCode)) {
-                alert("Code still in use. Aborting.");
-                return;
+        if (existingCodes.includes(code)) {
+            if (!skipPrompt) {
+                let newCode = prompt(`Effect code '${code}' is already in use. Please enter a new single letter for ${fxData.name}:`);
+                if (!newCode) return; // Cancelled
+                newCode = newCode.toUpperCase().charAt(0);
+                if (existingCodes.includes(newCode)) {
+                    alert("Code still in use. Aborting.");
+                    return;
+                }
+                code = newCode;
+            } else {
+                // Auto-assign first available letter to avoid duplicate codes from bundles
+                const allCodes = existingCodes;
+                const free = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split('').find(c => !allCodes.includes(c));
+                if (!free) throw new Error("No free effect codes available");
+                code = free;
             }
-            code = newCode;
         }
         fxData.code = code;
 
@@ -3025,7 +3033,7 @@ class EffectManager {
         }
         
         if (effectType === 'eq' && !this.isBatchUpdating) this.drawEQVisualizer();
-        if (effectType === 'compressor') this.drawCompressorCurve();
+        if (effectType === 'compressor' && !this.isBatchUpdating) this.drawCompressorCurve();
         const valEl = document.getElementById(`${effectType}${param.charAt(0).toUpperCase() + param.slice(1)}Val`);
         if (valEl) valEl.textContent = (typeof value === 'number') ? value.toFixed(2) : value;
         // Sync slider position (crucial for Presets)
@@ -3140,6 +3148,11 @@ class EffectManager {
                         if(p.sync) t = (p.time ?? effects.delay.time) * (60.0 / state.bpm);
                         this.smoothSetParam(nodes[0].delayTime, t, now); 
                     }
+                    // If sync is on, always recalculate delay time to track BPM changes
+                    if (p.sync && param !== 'time' && param !== 'sync') {
+                        const t = (p.time ?? effects.delay.time) * (60.0 / state.bpm);
+                        this.smoothSetParam(nodes[0].delayTime, t, now);
+                    }
                     else if (param === 'repetitions') { this.smoothSetParam(nodes[1].gain, value / 11.1, now); }
                     else if (param === 'damp') { this.smoothSetParam(nodes[2].frequency, value, now); }
                     else if (param === 'mix') { this.smoothSetParam(nodes[3].gain, 1 - value, now); this.smoothSetParam(nodes[4].gain, value, now); }
@@ -3227,20 +3240,17 @@ class EffectManager {
                    } else if (param === 'depth') {
                        this.smoothSetParam(nodes[2].gain, value, now);
                    } else if (param === 'phase') {
-                       // An OscillatorNode cannot change phase in place, so replace it with one
-                       // started `phase * period` seconds in the past. Starting in the past keeps
-                       // the same waveform position at `now` without touching the audio path
-                       // (the panner at nodes[0] stays the chain exit).
+                       // An OscillatorNode cannot change phase in place, so replace it with a
+                       // fresh one. The phase offset is inaudible for an LFO (depth waveform
+                       // position), so we simply restart at `now` rather than trying to start
+                       // in the past (which would throw DOMException).
                        const lfoGain = nodes[2];
                        const freq = nodes[1].frequency.value;
-                       const period = freq > 0 ? 1 / freq : 1;
-                       let start = now - (value || 0) * period;
-                       if (start < 0) start += Math.ceil(-start / period) * period;
                        const newLfo = state.audioContext.createOscillator();
                        newLfo.type = 'triangle';
                        newLfo.frequency.value = freq;
                        newLfo.connect(lfoGain);
-                       newLfo.start(Math.max(0, start));
+                       newLfo.start(now);
                        const oldLfo = nodes[1];
                        try { oldLfo.disconnect(); oldLfo.stop(); } catch (e) {}
                        nodes[1] = newLfo;
@@ -3323,7 +3333,7 @@ class EffectManager {
                     let html = "";
                     fx.parameters.forEach(paramDef => {
                         const paramId = `${name}${paramDef.name.charAt(0).toUpperCase() + paramDef.name.slice(1)}`;
-                        html += createSlider(paramDef.label, paramId, 
+                        html += createSlider(paramDef.label || paramDef.name, paramId, 
                             paramDef.min, paramDef.max, paramDef.step, 
                             p[paramDef.name], 
                             `EffectManager.update('${name}', '${paramDef.name}', parseFloat(this.value))`);
@@ -3651,7 +3661,7 @@ class EffectManager {
     static calcBiquadResponse(type, f, f0, q, gainDB) {
         const sr = (state.audioContext) ? state.audioContext.sampleRate : 44100;
         const w0 = 2*Math.PI*f0/sr; const w = 2*Math.PI*f/sr;
-        const alpha = Math.sin(w0)/(2*q); const A = Math.pow(10, gainDB/40);
+        const alpha = Math.sin(w0)/(2*Math.max(q, 0.001)); const A = Math.pow(10, gainDB/40);
         const cw0 = Math.cos(w0); let b0,b1,b2,a0,a1,a2;
 
         if(type==='hp'){ b0=(1+cw0)/2; b1=-(1+cw0); b2=(1+cw0)/2; a0=1+alpha; a1=-2*cw0; a2=1-alpha; }
@@ -4013,6 +4023,9 @@ class EffectManager {
             Object.assign(InputManager.masterEffectsState, newActive);
 
             InputManager.rebuildMasterChain();
+            // JSON.parse destroys AudioBuffer objects in preset params; regenerate the IR
+            // so the reverb isn't silent after applying a global preset.
+            this.regenerateReverb('input-bus');
             InputManager.renderUI();
         } else if (typeof targetId === 'string' && targetId.startsWith('drone-')) {
             // Apply to Drone
@@ -4024,6 +4037,7 @@ class EffectManager {
                 Object.keys(synth.fxState).forEach(k => synth.fxState[k] = false);
                 Object.assign(synth.fxState, newActive);
                 DroneSynth.rebuildFxChain(id);
+                this.regenerateReverb('drone-' + id);
                 DroneSynth.renderFxToggles(id);
 
                 // Sync drone UI inputs
@@ -4048,6 +4062,7 @@ class EffectManager {
 
             if (loop.state === 'playing' && loop.graph) {
                 loop.graph.rebuild();
+                this.regenerateReverb(targetId);
             }
             UIManager.updateLoop(targetId);
         }

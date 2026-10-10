@@ -118,7 +118,7 @@ describe('Bug #89: zigZ phase retunes a playing track', () => {
         return graph;
     }
 
-    test('the LFO is replaced by one started phase*period seconds in the past', () => {
+    test('the LFO is replaced by one started at now (phase accuracy is inaudible for LFO)', () => {
         const { context } = createHarness();
         const EffectManager = context.EffectManager;
         const graph = zigzChain(context, 4);
@@ -135,12 +135,12 @@ describe('Bug #89: zigZ phase retunes a playing track', () => {
         assert.equal(replacement.type, 'triangle');
         assert.equal(replacement.frequency.value, freq, 'the rate must survive the swap');
         assert.deepEqual(replacement.out, [lfoGain], 'and it feeds the depth gain it replaced into');
-        assert.equal(replacement.startedAt, 9, 'a half-period offset from now = 10');
+        assert.equal(replacement.startedAt, 10, 'started at now (starting in the past throws DOMException)');
         assert.equal(original.stopped, true);
         assert.deepEqual(original.out, [], 'the old LFO is disconnected from the graph');
     });
 
-    test('a phase offset before the context starts wraps into positive time', () => {
+    test('a phase offset before the context starts simply begins at now', () => {
         const { context } = createHarness();
         const graph = zigzChain(context, 4);
 
@@ -148,7 +148,7 @@ describe('Bug #89: zigZ phase retunes a playing track', () => {
 
         const replacement = graph.nodes.effects.zigZ[1];
         assert.ok(replacement.startedAt >= 0, 'start(time) throws for a negative time');
-        assert.equal(replacement.startedAt, 1.5, 'shifted by whole periods until positive');
+        assert.equal(replacement.startedAt, 0.5, 'started at now regardless of phase offset');
     });
 });
 

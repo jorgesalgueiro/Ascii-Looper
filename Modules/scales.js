@@ -108,6 +108,8 @@ class SyncManager {
      * Update sync settings from UI controls and recalculate loop length.
      */
     static updateSettings() {
+        // Sync mode: read from radio group (new) or checkbox (legacy fallback)
+        const syncRadios = document.querySelectorAll('input[name="syncMode"]');
         const syncCheckbox = document.getElementById('syncLoops');
         const bpmInput = document.getElementById('bpmInput');
         const timeSigNum = document.getElementById('timeSigNum');
@@ -124,7 +126,26 @@ class SyncManager {
         const oldBpm = state.bpm; // Save previous BPM for phase-alignment
         const wasSynced = state.syncEnabled;
 
-        if (syncCheckbox) state.syncEnabled = syncCheckbox.checked;
+        // Read sync mode from radio group (new UI) or derive from legacy checkbox
+        if (syncRadios.length > 0) {
+            const checked = document.querySelector('input[name="syncMode"]:checked');
+            if (checked) state.syncMode = checked.value;
+        } else if (syncCheckbox) {
+            // Legacy fallback: derive syncMode from old checkbox
+            state.syncMode = syncCheckbox.checked ? 'static' : 'off';
+        }
+        state.syncEnabled = state.syncMode !== 'off';
+
+        // Read dynamic sync options
+        const snapSlider = document.getElementById('dynamicSnapWindow');
+        if (snapSlider) state.dynamicSnapWindow = parseFloat(snapSlider.value) || 0.1;
+        const startQCb = document.getElementById('dynamicStartQuantize');
+        if (startQCb) state.dynamicStartQuantize = startQCb.checked;
+
+        // Show/hide dynamic options panel
+        const dynPanel = document.getElementById('dynamicOptionsPanel');
+        if (dynPanel) dynPanel.style.display = (state.syncMode === 'dynamic') ? '' : 'none';
+
         if (bpmInput) state.bpm = Math.max(10, Math.min(999, parseFloat(bpmInput.value) || 120));
         if (timeSigNum) state.timeSig.num = parseInt(timeSigNum.value) || 4;
         if (timeSigDen) state.timeSig.den = parseInt(timeSigDen.value) || 4;
@@ -160,7 +181,7 @@ class SyncManager {
                 // Calculate implied BPM from loop length and bar count
                 const totalBeats = state.bars * state.timeSig.num;
                 const validDur = (loop && loop.duration > 0.01) ? loop.duration : 0.01;
-                state.bpm = Math.max(10, Math.min(999, (totalBeats * 60) / (validDur || 1)));
+                state.bpm = Math.max(10, Math.min(999, (totalBeats * 60) / validDur));
             
                 // Additional safety: Validate BPM is finite and sane
                 if (!isFinite(state.bpm) || state.bpm < 10 || state.bpm > 999) {
@@ -214,7 +235,7 @@ class SyncManager {
         const updateTimeBasedFX = (chainNodes, params) => {
             if (!chainNodes || !params) return;
             if (chainNodes.arpDelay) try { chainNodes.arpDelay[0].parameters.get('bpm').setValueAtTime(state.bpm, AudioEngine.currentTime); } catch(e){}
-            if (chainNodes.zigZ && chainNodes.zigZ[1] && params.zigZ) {
+            if (chainNodes.zigZ && chainNodes.zigZ[1] && params.zigZ && params.zigZ.rate > 0) {
                 const freq = 1 / (params.zigZ.rate * (60 / state.bpm));
                 chainNodes.zigZ[1].frequency.setTargetAtTime(freq, AudioEngine.currentTime, 0.05);
             }
@@ -265,11 +286,7 @@ class SyncManager {
         const totalBeats = beatsPerBar * state.bars;
 
         // Safety check to prevent infinite loops or UI freezing
-        if (!totalBeats || totalBeats <= 0) {
-            return;
-        }
-
-        if (totalBeats <= 0 || totalBeats > 256) { // Sanity check
+        if (!totalBeats || totalBeats <= 0 || totalBeats > 256) {
              Log.debug('Scales', 'Invalid beat count:', totalBeats);
              return;
         }
@@ -348,6 +365,66 @@ class SyncManager {
         return phase / state.loopLength;
     }
 
+    // =========================================
+    // Bar Boundary Helpers (for Dynamic Sync)
+    // =========================================
+
+    /**
+     * Returns the duration of a single bar in seconds based on current BPM and time signature.
+     */
+    static getBarDuration() {
+        const bpm = state.bpm || 120;
+        const num = (state.timeSig && state.timeSig.num) || 4;
+        return (60 / bpm) * num;
+    }
+
+    /**
+     * Returns the audio time of the most recent bar boundary at or before `now`.
+     * Bar boundaries are relative to state.masterStartTime.
+     */
+    static getPreviousBarTime(now) {
+        const barDur = this.getBarDuration();
+        if (barDur <= 0) return now;
+        const origin = (Number.isFinite(state.masterStartTime) && state.masterStartTime !== 0)
+            ? state.masterStartTime
+            : (now || AudioEngine.currentTime);
+        const t = now !== undefined ? now : AudioEngine.currentTime;
+        const elapsed = t - origin;
+        const barIndex = Math.floor(elapsed / barDur);
+        return origin + (barIndex * barDur);
+    }
+
+    /**
+     * Returns the audio time of the next bar boundary strictly after `now`.
+     */
+    static getNextBarTime(now) {
+        const barDur = this.getBarDuration();
+        if (barDur <= 0) return now;
+        const origin = (Number.isFinite(state.masterStartTime) && state.masterStartTime !== 0)
+            ? state.masterStartTime
+            : (now || AudioEngine.currentTime);
+        const t = now !== undefined ? now : AudioEngine.currentTime;
+        const elapsed = t - origin;
+        const barIndex = Math.floor(elapsed / barDur);
+        return origin + ((barIndex + 1) * barDur);
+    }
+
+    /**
+     * Seconds from `now` until the next bar boundary.
+     */
+    static getTimeToNextBar(now) {
+        const t = now !== undefined ? now : AudioEngine.currentTime;
+        return Math.max(0, this.getNextBarTime(t) - t);
+    }
+
+    /**
+     * Seconds elapsed since the most recent bar boundary at or before `now`.
+     */
+    static getTimeSinceLastBar(now) {
+        const t = now !== undefined ? now : AudioEngine.currentTime;
+        return Math.max(0, t - this.getPreviousBarTime(t));
+    }
+
     static async runPingTest() {
         const btn = document.getElementById('pingTestBtn');
         const label = (key, fallback) => typeof I18n !== 'undefined' ? I18n.t(key) : fallback;
@@ -365,50 +442,81 @@ class SyncManager {
             InputManager.inputBus.connect(recorder); // Record whatever is on input bus
             recorder.connect(ctx.destination); // Keep alive
 
-            // Blip Generator
+            // Blip Generator — full-scale sine burst for maximum mic capture
             const osc = ctx.createOscillator();
             const gain = ctx.createGain();
-            osc.type = 'square';
-            osc.frequency.value = 880;
+            osc.type = 'sine';
+            osc.frequency.value = 1000;
             osc.connect(gain);
             gain.connect(state.masterLimiter || ctx.destination); // Send to speakers
 
-            // Schedule
+            // Schedule two blips for better detection reliability
             const now = ctx.currentTime;
-            const preDelay = 0.2; // 200ms wait
-            const blipTime = now + preDelay;
-            
-            osc.start(blipTime);
-            osc.stop(blipTime + 0.05); // 50ms blip
-            gain.gain.setValueAtTime(0.8, blipTime);
-            gain.gain.exponentialRampToValueAtTime(0.01, blipTime + 0.05);
+            const preDelay = 0.2; // 200ms wait before first blip
+            const blipDur = 0.1; // 100ms each blip
+            const blipGap = 0.3; // gap between blips
+            const blipTime1 = now + preDelay;
+            const blipTime2 = blipTime1 + blipDur + blipGap;
+
+            osc.start(blipTime1);
+            osc.stop(blipTime2 + blipDur + 0.01);
+            gain.gain.setValueAtTime(0.001, blipTime1);
+            gain.gain.linearRampToValueAtTime(1.0, blipTime1 + 0.005);
+            gain.gain.setValueAtTime(1.0, blipTime1 + blipDur - 0.01);
+            gain.gain.linearRampToValueAtTime(0.001, blipTime1 + blipDur);
+            gain.gain.setValueAtTime(0.001, blipTime2);
+            gain.gain.linearRampToValueAtTime(1.0, blipTime2 + 0.005);
+            gain.gain.setValueAtTime(1.0, blipTime2 + blipDur - 0.01);
+            gain.gain.linearRampToValueAtTime(0.001, blipTime2 + blipDur);
 
             // Capture
+            let messageReceived = false;
             recorder.port.onmessage = (e) => {
                 if (e.data.event === 'recorded') {
-                    recorder.disconnect();
-                    const buffer = LoopManager.createBufferFromChunks(e.data.chunks, ctx.sampleRate);
-                    const data = buffer.getChannelData(0);
-                    let maxVal = 0, maxIdx = 0;
-                    for(let i=0; i<data.length; i++) { if(Math.abs(data[i])>maxVal){ maxVal=Math.abs(data[i]); maxIdx=i; }}
-                    
-                    if(maxVal < 0.05) { alert("Signal too low. Ensure mic hears speakers."); }
-                    else {
-                        const measuredTime = maxIdx / ctx.sampleRate;
-                        const latencySec = measuredTime - preDelay; // Raw RT delay
-                        const sysLat = (ctx.baseLatency || 0) + (ctx.outputLatency || 0);
-                        const correction = Math.round((latencySec - sysLat) * 1000);
-                        if(confirm(`Roundtrip: ${(latencySec*1000).toFixed(1)}ms\nSystem Reported: ${(sysLat*1000).toFixed(1)}ms\n\nApply offset: ${correction}ms?`)) {
-                            document.getElementById('latencyCorrection').value = correction;
-                            SyncManager.updateSettings();
+                    messageReceived = true;
+                    try {
+                        recorder.disconnect();
+                        InputManager.inputBus.disconnect(recorder);
+                        const buffer = LoopManager.createBufferFromChunks(e.data.chunks, ctx.sampleRate);
+                        const data = buffer.getChannelData(0);
+                        let maxVal = 0, maxIdx = 0;
+                        // Search only within the first blip's expected response window to avoid
+                        // locking onto a louder late reflection or background noise.
+                        const searchStart = Math.max(0, Math.floor((preDelay - 0.05) * ctx.sampleRate));
+                        const searchEnd = Math.min(data.length, Math.ceil((preDelay + 2.0) * ctx.sampleRate));
+                        for(let i=searchStart; i<searchEnd; i++) { if(Math.abs(data[i])>maxVal){ maxVal=Math.abs(data[i]); maxIdx=i; }}
+
+                        if(maxVal < 0.01) { alert("Signal too low. Ensure mic hears speakers."); }
+                        else {
+                            const measuredTime = maxIdx / ctx.sampleRate;
+                            const latencySec = measuredTime - preDelay; // Raw RT delay
+                            const sysLat = (ctx.baseLatency || 0) + (ctx.outputLatency || 0);
+                            const correction = Math.round((latencySec - sysLat) * 1000);
+                            if(confirm(`Roundtrip: ${(latencySec*1000).toFixed(1)}ms\nSystem Reported: ${(sysLat*1000).toFixed(1)}ms\n\nApply offset: ${correction}ms?`)) {
+                                document.getElementById('latencyCorrection').value = correction;
+                                SyncManager.updateSettings();
+                            }
                         }
+                    } catch (err) {
+                        alert("Ping test processing error: " + err.message);
+                    } finally {
+                        if(btn) { btn.textContent = label('PING_TEST', 'PING TEST (AUTO-CALIBRATE)'); btn.disabled = false; }
                     }
-                    if(btn) { btn.textContent = label('PING_TEST', 'PING TEST (AUTO-CALIBRATE)'); btn.disabled = false; }
                 }
             };
+
+            // Timeout fallback: disconnect recorder if no message arrives
+            setTimeout(() => {
+                if (!messageReceived) {
+                    try { recorder.disconnect(); } catch(e) {}
+                    try { InputManager.inputBus.disconnect(recorder); } catch(e) {}
+                    if(btn) { btn.textContent = label('PING_TEST', 'PING TEST (AUTO-CALIBRATE)'); btn.disabled = false; }
+                    alert("Ping test timed out. No signal received.");
+                }
+            }, 8000); // 8 second timeout
             
             recorder.port.postMessage({ command: 'start' });
-            setTimeout(() => recorder.port.postMessage({ command: 'stop' }), 1000);
+            setTimeout(() => recorder.port.postMessage({ command: 'stop' }), 2000);
             
         } catch(e) {
             alert("Ping Test Error: " + e.message);
@@ -463,7 +571,11 @@ class MetronomeScheduler {
     }
 
     static start() {
+        if (!state.audioContext) return;
         state.metronome.isPlaying = true;
+        // Clear any previous blink timers to prevent accumulation
+        if (this.blinkTimer) clearTimeout(this.blinkTimer);
+        if (this.blinkResetTimer) clearTimeout(this.blinkResetTimer);
         if (this.node) {
             this.node.parameters.get('playing').setValueAtTime(1, state.audioContext.currentTime);
             this.updateSettings();
@@ -473,7 +585,7 @@ class MetronomeScheduler {
 
     static stop() {
         state.metronome.isPlaying = false;
-        if (this.node) {
+        if (this.node && state.audioContext) {
             this.node.parameters.get('playing').setValueAtTime(0, state.audioContext.currentTime);
         }
         if (this.blinkTimer) clearTimeout(this.blinkTimer);
@@ -487,7 +599,7 @@ class MetronomeScheduler {
     static scheduleVisualBlink() {
         if (!state.metronome.isPlaying || !state.audioContext) return;
         const now = state.audioContext.currentTime;
-        const spb = 60 / state.bpm;
+        const spb = 60 / Math.max(1, state.bpm);
         const elapsed = now - (state.masterStartTime || 0);
         const nextBeatTime = (state.masterStartTime || 0) + Math.ceil(elapsed / spb) * spb;
         const delay = Math.max(0, (nextBeatTime - now) * 1000);
@@ -519,7 +631,7 @@ class MetronomeScheduler {
 
     static updateVolume(val) {
         state.metronome.volume = parseFloat(val);
-        if (this.node) {
+        if (this.node && state.audioContext) {
             this.node.parameters.get('volume').setValueAtTime(state.metronome.volume, state.audioContext.currentTime);
         }
         // Update UI display explicitly as JS event binding overwrites inline HTML handler

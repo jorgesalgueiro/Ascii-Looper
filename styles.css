@@ -289,6 +289,104 @@ body::after {
     }
     .sync-enable-toggle { color: var(--module-color); }
     .sync-enable-toggle input, .sync-toggle-row input { margin: 0; }
+    .sync-mode-selector {
+        display: inline-flex;
+        gap: 0;
+        border: 1px solid var(--module-color);
+        border-radius: 3px;
+        overflow: hidden;
+        margin: 0;
+        padding: 0;
+    }
+    .sync-mode-selector label {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        padding: 2px 6px;
+        font-size: 8px;
+        font-weight: bold;
+        letter-spacing: 0.5px;
+        color: #888;
+        cursor: pointer;
+        border-right: 1px solid color-mix(in srgb, var(--module-color) 30%, #333);
+        transition: background 0.15s, color 0.15s;
+    }
+    .sync-mode-selector label:last-child { border-right: none; }
+    .sync-mode-selector input[type="radio"] {
+        display: none;
+    }
+    .sync-mode-selector input[type="radio"]:checked + span {
+        color: #fff;
+    }
+    .sync-mode-selector label:has(input:checked) {
+        background: color-mix(in srgb, var(--module-color) 35%, #111);
+        color: #fff;
+    }
+    .sync-dynamic-options {
+        margin-top: 4px;
+        padding: 3px 6px;
+        border: 1px dashed color-mix(in srgb, var(--module-color) 30%, #333);
+        border-radius: 3px;
+        background: rgba(0,0,0,0.2);
+    }
+    .sync-inline-controls {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 9px;
+        color: #aaa;
+    }
+    .sync-ctrl-label {
+        font-weight: bold;
+        letter-spacing: 0.5px;
+        white-space: nowrap;
+        flex-shrink: 0;
+    }
+    .sync-inline-controls input[type="range"] {
+        flex: 1;
+        min-width: 50px;
+        height: 14px;
+        margin: 0;
+    }
+    .sync-inline-controls output {
+        min-width: 36px;
+        color: #eee;
+        font-size: 9px;
+        font-variant-numeric: tabular-nums;
+        text-align: right;
+        flex-shrink: 0;
+    }
+    .sync-ctrl-sep {
+        width: 1px;
+        height: 14px;
+        background: color-mix(in srgb, var(--module-color) 25%, #333);
+        flex-shrink: 0;
+    }
+    .sync-ctrl-check {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        cursor: pointer;
+        white-space: nowrap;
+        flex-shrink: 0;
+    }
+    .sync-ctrl-check input { margin: 0; }
+    .sync-ctrl-check span {
+        font-size: 8px;
+        font-weight: bold;
+        letter-spacing: 0.4px;
+        color: #aaa;
+    }
+    .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0,0,0,0);
+        border: 0;
+    }
     .sync-readouts {
         display: grid;
         grid-template-columns: 1fr 1fr;

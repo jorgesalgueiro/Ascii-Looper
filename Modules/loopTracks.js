@@ -16,6 +16,13 @@ class RecorderProcessor extends AudioWorkletProcessor {
         this._recording = false;
         this._chunks = [];
         this._startFrame = -1;
+        // Pre-buffer (ring buffer) for dynamic sync
+        this._preBuffering = false;
+        this._ringBuf = null;       // Array of Float32Array (per channel)
+        this._ringWritePos = 0;
+        this._ringCapacity = 0;     // in samples
+        this._ringChannels = 0;
+        this._ringWritten = 0;      // total samples written (capped at capacity)
         this.port.onmessage = this.handleMessage.bind(this);
     }
     process(inputs, outputs) {
@@ -23,13 +30,26 @@ class RecorderProcessor extends AudioWorkletProcessor {
         const output = outputs[0];
         // Pass-through removed to prevent double monitoring.
         // The recorder node connects to destination only to keep the Worklet active.
-        
+
+        // Pre-buffer: continuously write to ring buffer (circular overwrite)
+        if (this._preBuffering && this._ringBuf && input && input[0] && input[0].length > 0) {
+            const blockSize = input[0].length;
+            const numCh = Math.min(input.length, this._ringChannels);
+            for (let i = 0; i < blockSize; i++) {
+                for (let c = 0; c < numCh; c++) {
+                    this._ringBuf[c][this._ringWritePos] = input[c][i];
+                }
+                this._ringWritePos = (this._ringWritePos + 1) % this._ringCapacity;
+                if (this._ringWritten < this._ringCapacity) this._ringWritten++;
+            }
+        }
+
         if (this._recording && input && input[0] && input[0].length > 0) {
             if (this._startFrame < 0) this._startFrame = currentFrame;
             const channels = [];
             let hasSignal = false;
             for (let c = 0; c < input.length; c++) {
-                // Optimization: Only push if channel exists. 
+                // Optimization: Only push if channel exists.
                 // Note: We slice to copy the Float32Array to avoid buffer detachment issues.
                 if(input[c] && input[c].length > 0) {
                     channels.push(input[c].slice());
@@ -42,14 +62,60 @@ class RecorderProcessor extends AudioWorkletProcessor {
         return true;
     }
     handleMessage(event) {
-        if (event.data.command === 'start') {
+        const cmd = event.data.command;
+        if (cmd === 'start') {
             this._recording = true;
             this._chunks = [];
             this._startFrame = -1;
-        } else if (event.data.command === 'stop') {
+        } else if (cmd === 'stop') {
             this._recording = false;
             this.port.postMessage({ event: 'recorded', chunks: this._chunks, startFrame: this._startFrame });
             this._chunks = [];
+        } else if (cmd === 'startPreBuffer') {
+            // Allocate ring buffer for pre-buffering (bounded memory)
+            const seconds = event.data.seconds || 2.0;
+            const sr = sampleRate;
+            this._ringCapacity = Math.ceil(seconds * sr);
+            this._ringChannels = event.data.channels || 2;
+            this._ringBuf = [];
+            for (let c = 0; c < this._ringChannels; c++) {
+                this._ringBuf.push(new Float32Array(this._ringCapacity));
+            }
+            this._ringWritePos = 0;
+            this._ringWritten = 0;
+            this._preBuffering = true;
+        } else if (cmd === 'promoteToRecording') {
+            // Extract pre-buffer tail and prepend to recording chunks.
+            // snapSamples: how many samples from the ring buffer tail to extract
+            //   (0 = no pre-buffer data, just start recording from now)
+            const snapSamples = event.data.snapSamples || 0;
+            this._chunks = [];
+            this._startFrame = -1;
+
+            if (this._preBuffering && this._ringBuf && snapSamples > 0) {
+                const take = Math.min(snapSamples, this._ringWritten, this._ringCapacity);
+                if (take > 0) {
+                    // Read the last 'take' samples from the ring buffer in order
+                    const startRead = ((this._ringWritePos - take) + this._ringCapacity) % this._ringCapacity;
+                    const chunkChannels = [];
+                    for (let c = 0; c < this._ringChannels; c++) {
+                        const slice = new Float32Array(take);
+                        for (let i = 0; i < take; i++) {
+                            const srcIdx = (startRead + i) % this._ringCapacity;
+                            slice[i] = this._ringBuf[c][srcIdx];
+                        }
+                        chunkChannels.push(slice);
+                    }
+                    this._chunks.push(chunkChannels);
+                }
+            }
+            // Now start normal recording
+            this._recording = true;
+        } else if (cmd === 'stopPreBuffer') {
+            this._preBuffering = false;
+            this._ringBuf = null;
+            this._ringWritePos = 0;
+            this._ringWritten = 0;
         }
     }
 }
@@ -92,6 +158,9 @@ class SamplerTrack {
         const now = state.audioContext.currentTime;
         const t = time > 0 ? time : now;
         if (this.source) { try { this.source.stop(t); } catch(e) {} }
+        // Clear any pending timeouts from the old source to prevent state corruption
+        if (this.startTimeout) { clearTimeout(this.startTimeout); this.startTimeout = null; }
+        if (this.stopTimeout) { clearTimeout(this.stopTimeout); this.stopTimeout = null; }
 
         const source = state.audioContext.createBufferSource();
         const gain = state.audioContext.createGain();
@@ -265,7 +334,8 @@ class SamplerManager {
     static setSpeed(id, val) {
         const sampler = state.samplers[id];
         if (!sampler) return;
-        sampler.speed = parseFloat(val);
+        const parsed = parseFloat(val);
+        sampler.speed = Number.isFinite(parsed) ? parsed : 1.0;
         const disp = document.getElementById(`samp_spd_${id}`);
         if (disp) disp.textContent = sampler.speed.toFixed(2);
         if (state.audioContext) {
@@ -277,7 +347,8 @@ class SamplerManager {
     static setVolume(id, val) {
         const sampler = state.samplers[id];
         if (!sampler) return;
-        sampler.volume = parseFloat(val);
+        const parsed = parseFloat(val);
+        sampler.volume = Number.isFinite(parsed) ? parsed : 1.0;
         this.updateVolumeGraph(id);
         const disp = document.getElementById(`samp_vol_${id}`);
         if (disp) disp.textContent = sampler.volume.toFixed(2);
@@ -416,27 +487,59 @@ class SamplerManager {
         const ctx = cvs.getContext('2d');
         const w = cvs.width, h = cvs.height;
         ctx.clearRect(0, 0, w, h);
-        
+
         let waveColor = '#08f';
         if (s.state === 'playing' || s.state === 'stopping') waveColor = '#0f0';
         else if (s.state === 'armed') waveColor = '#ff0';
-        ctx.fillStyle = waveColor;
-        
+
         const peaks = s.wavePeaks;
-        for(let i=0; i<w; i++){
-            if (i >= peaks.length) break;
-            const mag = peaks[i];
-            const hBar = Math.max(1, mag * h);
-            const y = (h - hBar) / 2;
-            ctx.fillRect(i, y, 1, hBar);
-        }
-        
+
+        // Calculate playhead position
+        let playheadX = -1;
         if (now >= s.startTime && now > 0 && (s.state === 'playing' || s.state === 'stopping') && s.buffer && s.speed > 0) {
             const elapsed = (now - s.startTime) * s.speed;
             const dur = s.buffer.duration;
             if (dur > 0) {
                 const progress = (elapsed % dur) / dur;
-                const playheadX = Math.floor(progress * w);
+                playheadX = Math.floor(progress * w);
+            }
+        }
+
+        if (peaks.length > 0) {
+            // Draw dim waveform (full width)
+            ctx.globalAlpha = 0.35;
+            ctx.fillStyle = waveColor;
+            for (let i = 0; i < w; i++) {
+                const peakIdx = Math.floor(i / w * peaks.length);
+                if (peakIdx >= peaks.length) break;
+                const mag = peaks[peakIdx];
+                const hBar = Math.max(1, mag * h);
+                const y = (h - hBar) / 2;
+                ctx.fillRect(i, y, 1, hBar);
+            }
+
+            // Draw bright waveform up to playhead
+            if (playheadX > 0) {
+                ctx.globalAlpha = 1.0;
+                for (let i = 0; i < playheadX && i < w; i++) {
+                    const peakIdx = Math.floor(i / w * peaks.length);
+                    if (peakIdx >= peaks.length) break;
+                    const mag = peaks[peakIdx];
+                    const hBar = Math.max(1, mag * h);
+                    const y = (h - hBar) / 2;
+                    ctx.fillRect(i, y, 1, hBar);
+                }
+            }
+            ctx.globalAlpha = 1.0;
+
+            // Draw playhead line
+            if (playheadX >= 0) {
+                ctx.fillStyle = '#fff';
+                ctx.fillRect(playheadX, 0, 1, h);
+            }
+        } else {
+            // No peaks — fall back to overlay + playhead
+            if (playheadX >= 0) {
                 ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
                 ctx.fillRect(0, 0, playheadX, h);
                 ctx.fillStyle = '#fff';
@@ -557,7 +660,13 @@ class AudioGraph {
             try { this.source.stop(actualT); } catch(e) {}
             const oldSource = this.source;
             const delayMs = Math.max(50, (actualT - now) * 1000 + 50);
-            setTimeout(() => { try { oldSource.disconnect(); } catch(e){} }, delayMs);
+            // Track the cleanup timer so cleanup() can cancel it if the graph
+            // is torn down before it fires.
+            if (this._retriggerTimer) clearTimeout(this._retriggerTimer);
+            this._retriggerTimer = setTimeout(() => {
+                this._retriggerTimer = null;
+                try { oldSource.disconnect(); } catch(e){}
+            }, delayMs);
         }
         
         let buffer = loopRef.audioBuffer;
@@ -624,6 +733,7 @@ class AudioGraph {
         this.source.loopEnd = this.loop.duration;
         
         const activeRate = this.loop.effectivePlaybackRate;
+        const safeRate = (Number.isFinite(activeRate) && activeRate > 0) ? activeRate : 1.0;
         if (Number.isFinite(activeRate) && activeRate > 0) {
             this.source.playbackRate.setValueAtTime(Math.max(0.001, activeRate), AudioEngine.currentTime);
         }
@@ -678,7 +788,7 @@ class AudioGraph {
         if (state.syncEnabled && (this.scheduledTime > 0 || (!this.loop.isMutedBySolo && !this.immediate))) {
             const dur = this.loop.duration > 0 ? this.loop.duration : 1;
             const shift = this.loop.startDelay * dur;
-            const offset = ((this.startTime - state.masterStartTime) * activeRate - shift) % dur;
+            const offset = ((this.startTime - state.masterStartTime) * safeRate - shift) % dur;
             this.startOffset = (offset + dur) % dur;
         } else {
             this.startOffset = this.loop.startDelay * this.loop.duration;
@@ -1227,6 +1337,8 @@ class AudioGraph {
             nodes.push(panNode, lfo, lfoGain);
         } catch(e) {
             Log.error('ArpDelay', 'Failed to create auto-pan stage:', e);
+            // Disconnect the worklet node if it was created but we're returning early
+            if (node) { try { node.disconnect(); } catch(e2) {} }
             return { output: inputNode, nodes: [] };
         }
         return { output: panNode, nodes: nodes };
@@ -1252,7 +1364,7 @@ class AudioGraph {
                 }
             });
         } catch(e) {
-            console.error("Dusk worklet failed:", e);
+            Log.error('Dusk', 'Worklet creation failed:', e);
             return { output: inputNode, nodes: [] };
         }
 
@@ -1262,18 +1374,25 @@ class AudioGraph {
         // Built unconditionally: rebuild() reuses these cached nodes rather than calling
         // the factory again, so a stage gated on panSpeed > 0 could never be switched on
         // mid-pass. A 0 Hz LFO emits silence, so depth can be armed ahead of the rate.
-        const panNode = state.audioContext.createStereoPanner();
-        const lfo = state.audioContext.createOscillator();
-        const lfoGain = state.audioContext.createGain();
-        lfo.frequency.value = p.panSpeed ?? 0;
-        lfoGain.gain.value = p.panDepth ?? 0.8;
-        lfo.connect(lfoGain);
-        lfoGain.connect(panNode.pan);
-        lfo.start();
+        try {
+            const panNode = state.audioContext.createStereoPanner();
+            const lfo = state.audioContext.createOscillator();
+            const lfoGain = state.audioContext.createGain();
+            lfo.frequency.value = p.panSpeed ?? 0;
+            lfoGain.gain.value = p.panDepth ?? 0.8;
+            lfo.connect(lfoGain);
+            lfoGain.connect(panNode.pan);
+            lfo.start();
 
-        duskNode.connect(panNode);
-        nodes.push(panNode, lfo, lfoGain);
-        return { output: panNode, nodes: nodes };
+            duskNode.connect(panNode);
+            nodes.push(panNode, lfo, lfoGain);
+            return { output: panNode, nodes: nodes };
+        } catch(e) {
+            Log.error('Dusk', 'Failed to create auto-pan stage:', e);
+            // Disconnect the worklet node if we're returning early
+            if (duskNode) { try { duskNode.disconnect(); } catch(e2) {} }
+            return { output: inputNode, nodes: [] };
+        }
     }
 
     /**
@@ -1516,6 +1635,10 @@ class AudioGraph {
             clearTimeout(this.rebuildTimer);
             this.rebuildTimer = null;
         }
+        if (this._retriggerTimer) {
+            clearTimeout(this._retriggerTimer);
+            this._retriggerTimer = null;
+        }
         this.isDestroyed = true;
         // Disconnect and stop all nodes
         const disconnect = (node) => {
@@ -1645,6 +1768,7 @@ class Loop {
         this.wavePeaks = null;
         this.duration = 0;
         this.originalBpm = null;
+        this.dynamicRecorded = false; // true when recorded in dynamic sync — buffer is already bar-aligned
         
         this.stopTimeout = null; // Store stop timeout to prevent race conditions
         this.playRequest = 0;
@@ -1692,7 +1816,8 @@ class Loop {
 
     get effectivePlaybackRate() {
         let activeRate = this.playbackRate;
-        if (state.syncEnabled && this.originalBpm && this.originalBpm > 0) {
+        // Dynamic-recorded loops are already bar-aligned — no grid-ratio varispeed.
+        if (!this.dynamicRecorded && state.syncEnabled && this.originalBpm && this.originalBpm > 0) {
             const tempoStretch = state.bpm / this.originalBpm;
             const expectedDur = this.duration / tempoStretch;
             if (state.loopLength > 0) {
@@ -1970,17 +2095,25 @@ class Loop {
         // CRITICAL: Resume AudioContext on user action
         if (startTime === 0 && !await AudioEngine.resume()) {
             console.warn('Could not resume audio context for playback');
+            // If we were restarting or queued and the play was invalidated, restore a safe state
+            if (this.state === 'restarting' || this.state === 'queued') this.state = this.audioBuffer ? 'stopped' : 'empty';
             return;
         }
         if (request !== this.playRequest || generation !== LoopManager.transportGeneration || !this.audioBuffer) {
-            // If we were restarting and the play was invalidated, restore a safe state
-            if (this.state === 'restarting') this.state = this.audioBuffer ? 'stopped' : 'empty';
+            // If we were restarting or queued and the play was invalidated, restore a safe state
+            if (this.state === 'restarting' || this.state === 'queued') this.state = this.audioBuffer ? 'stopped' : 'empty';
             return;
         }
 
         this.state = 'playing';
         this.graph = new AudioGraph(this, startTime);
-        if (!this.graph.build()) { this.state = 'stopped'; return; }
+        if (!this.graph.build()) {
+            // Clean up the failed graph to prevent audio node leaks
+            try { this.graph.cleanup(); } catch(e) {}
+            this.graph = null;
+            this.state = 'stopped';
+            return;
+        }
         state.playingSources[this.id] = this.graph;
         UIManager.updateLoop(this.id);
         UIManager.updateStatus();
@@ -1990,34 +2123,33 @@ class Loop {
      * Restarts the loop to apply timing/phase changes.
      * Modified to accept a scheduled time.
      */
-    restart(scheduledTime = 0) {
+    async restart(scheduledTime = 0) {
         if (this.state !== 'playing') return;
-        
+
         const t = scheduledTime || AudioEngine.currentTime;
-        
+
         // Use optimized retrigger if graph exists and is healthy
         if (this.graph && this.graph.nodes && this.graph.nodes.baseGain && !this.graph.isDestroyed) {
              this.graph.retrigger(t, this);
              return;
         }
-        
+
         // Keep reference to old graph for cleanup
         const oldGraph = this.graph;
-        
+
         // Stop current source at 't'
         if (oldGraph && oldGraph.nodes.source) {
             try { oldGraph.nodes.source.stop(t); } catch(e){}
         }
-        
+
         // Flag state to bypass play guard
         this.state = 'restarting';
 
-        // Start new graph at 't'
-        const prevRequest = this.playRequest;
-        this.play(t);
+        // Start new graph at 't' — await to ensure state transitions correctly
+        await this.play(t);
 
-        // If play() failed synchronously (e.g. no audioBuffer), restore state
-        if (this.state === 'restarting' && this.playRequest === prevRequest) {
+        // If play() failed (state is still 'restarting'), restore safe state
+        if (this.state === 'restarting') {
             this.state = this.audioBuffer ? 'stopped' : 'empty';
             return;
         }
@@ -2034,7 +2166,10 @@ class Loop {
      * Stops playback of the loop. Can be scheduled.
      */
     stop(scheduledTime = 0) {
+        // Always increment playRequest to invalidate any pending play() that is
+        // awaiting audio resume — even if the current state is not "active".
         this.playRequest++;
+
         // Allow stop to proceed if state is 'stopping' (scheduled stop)
         if (this.state !== 'playing' && this.state !== 'overdubbing' && this.state !== 'substituting' && this.state !== 'stopping' && this.state !== 'multiplying' && this.state !== 'queued') return;
 
@@ -2090,10 +2225,13 @@ class Loop {
         // Don't destroy analyser - just disconnect it and let meter decay naturally
         if (this.analyser) {
             try { this.analyser.disconnect(); } catch(e) {}
+            this.analyser = null;
         }
 
-        UIManager.updateLoop(this.id);
-        UIManager.updateStatus();
+        if (window.UIManager) {
+            UIManager.updateLoop(this.id);
+            UIManager.updateStatus();
+        }
     }
 
     /**
@@ -2117,7 +2255,7 @@ class Loop {
         const dur = this.duration > 0 ? this.duration : 1;
         const phase = ((position % dur) + dur) % dur;
 
-        const beatLen = 60 / state.bpm;
+        const beatLen = 60 / (state.bpm || 120);
         const fragmentBeats = 0.25;
         let fragLen = beatLen * fragmentBeats;
         fragLen = Math.min(fragLen, dur * 0.5);
@@ -2125,6 +2263,8 @@ class Loop {
 
         let fragEnd = phase + fragLen;
         if (fragEnd > dur) fragEnd = dur;
+        // Ensure loopEnd > loopStart to prevent zero-length loop region
+        if (fragEnd <= phase) fragEnd = Math.min(phase + 0.01, dur);
 
         this.graph.source.loopStart = phase;
         this.graph.source.loopEnd = fragEnd;
@@ -2138,7 +2278,7 @@ class Loop {
         if (!this.isStuttering) return;
         this.isStuttering = false;
 
-        if (this.graph && this.graph.source) {
+        if (this.graph && this.graph.source && this.duration > 0) {
             this.graph.source.loopStart = 0;
             this.graph.source.loopEnd = this.duration;
         }
@@ -2204,8 +2344,8 @@ class Loop {
             // Clear Schedulers
             if (state.recordingStartTimeout) clearTimeout(state.recordingStartTimeout);
             if (state.recordingTimeout) clearTimeout(state.recordingTimeout);
-            
-            UIManager.updateStatus();
+
+            if (window.UIManager) UIManager.updateStatus();
         }
         this.volume = 1.0;
         this.pan = 5;
@@ -2219,6 +2359,7 @@ class Loop {
         this.activePresets = {}; // Clear active presets logic
 		this.playbackRate = 1.0;
 		this.feedback = 0.80;
+		this.dynamicRecorded = false;
 		this.name = '';
         this.audioBuffer = null; // Ensure buffer is cleared for state check
         this.state = 'empty'; // Explicitly set state to empty
@@ -2236,11 +2377,11 @@ class Loop {
 
         // Reset all effects
         Object.keys(this.effects).forEach(k => this.effects[k] = false);
-        UIManager.updateLoop(this.id);
-        
+        if (window.UIManager) UIManager.updateLoop(this.id);
+
         // Force refresh effects panel if currently viewing this loop
-        if (EffectManager.activeTab === this.id) EffectManager.renderEffectsPanel();
-        UIManager.updateStatus();
+        if (window.EffectManager && EffectManager.activeTab === this.id) EffectManager.renderEffectsPanel();
+        if (window.UIManager) UIManager.updateStatus();
     }
 }
 
@@ -2477,6 +2618,8 @@ class LoopManager {
                     clearTimeout(loop.queueTimeout);
                     loop.queueTimeout = null;
                 }
+                // Invalidate any pending async play() so it can't override this cancel
+                loop.playRequest++;
                 loop.state = 'stopped';
                 if (window.TrackerManager) TrackerManager.logLiveEvent(loopId, 'OFF');
                 UIManager.updateLoop(loopId);
@@ -2596,9 +2739,17 @@ class LoopManager {
 
         try {
             state.loopRecorder = new AudioWorkletNode(state.audioContext, 'recorder-processor');
+            inputNode.connect(state.loopRecorder);
+            state.loopRecorder.connect(state.audioContext.destination); // Keep graph alive
         } catch (e) {
-            Log.error('LoopManager', 'AudioWorklet creation failed:', e);
+            Log.error('LoopManager', 'Recorder setup failed:', e);
             state.isRecording = false;
+            state.recordingLoopId = -1;
+            state.loopRecordedChunks = [];
+            if (state.loopRecorder) {
+                try { state.loopRecorder.disconnect(); } catch(e2){}
+                state.loopRecorder = null;
+            }
             return;
         }
 
@@ -2610,15 +2761,48 @@ class LoopManager {
             }
         };
 
-        inputNode.connect(state.loopRecorder);
-        state.loopRecorder.connect(state.audioContext.destination); // Keep graph alive
-        
         // --- 3. Handle Sync & Start ---
-        if (state.syncEnabled) {
+        if (state.syncMode === 'dynamic') {
+            // === DYNAMIC SYNC MODE ===
+            // Start pre-buffering immediately to capture audio before the record tap.
+            // NOTE: True bar-aligned snapping (capturing audio from before the tap)
+            // requires continuous pre-buffering while dynamic mode is active.
+            // Currently, the pre-buffer only starts at tap time, so we cannot recover
+            // audio from before the tap. The loop starts from the tap time.
+            // Future enhancement: keep the recorder alive in dynamic mode to enable
+            // true pre-buffer snapping.
+            const numCh = inputNode.channelCount || 2;
+            recorder.port.postMessage({ command: 'startPreBuffer', seconds: 2.0, channels: numCh });
+
+            const now = AudioEngine.currentTime;
+
+            // Set loop start time to the tap moment
+            loop.graph = { startTime: now };
+            loop.state = 'recording';
+            state.recordingActualStartTime = now;
+
+            // Create a live analyser for real-time waveform display during recording
+            if (state.audioContext && inputNode) {
+                try {
+                    state.liveRecordAnalyser = state.audioContext.createAnalyser();
+                    state.liveRecordAnalyser.fftSize = 512;
+                    state.liveRecordAnalyserData = new Float32Array(state.liveRecordAnalyser.fftSize);
+                    inputNode.connect(state.liveRecordAnalyser);
+                } catch(e) {
+                    state.liveRecordAnalyser = null;
+                }
+            }
+
+            // Promote pre-buffer to recording (no snap — pre-buffer has no pre-tap audio)
+            recorder.port.postMessage({ command: 'promoteToRecording', snapSamples: 0 });
+
+            // No auto-stop timeout in dynamic mode — user controls stop
+
+        } else if (state.syncEnabled) {
             let offset = SyncManager.getQuantizeOffset();
             
             if (state.countIn.visual || state.countIn.audio) {
-                const spb = 60 / state.bpm;
+                const spb = 60 / (state.bpm || 120);
                 const beatsPerBar = state.timeSig.num;
                 const barDur = spb * beatsPerBar;
                 
@@ -2674,7 +2858,7 @@ class LoopManager {
         const ctx = state.audioContext;
         const now = ctx.currentTime;
         const targetTime = now + delaySeconds;
-        const spb = 60 / state.bpm;
+        const spb = 60 / (state.bpm || 120);
         const beatsToSchedule = Math.ceil(delaySeconds / spb);
         
         for (let i = 1; i <= beatsToSchedule; i++) {
@@ -2778,6 +2962,47 @@ class LoopManager {
              return;
         }
 
+        // === DYNAMIC MODE: Bar-aligned stop ===
+        // If user taps stop mid-bar, delay the actual stop to the next bar boundary
+        // so the loop length is always a bar-length multiple.
+        // If a bar-aligned stop is already pending, cancel it and stop immediately
+        // (second tap = "stop now, don't wait for the bar").
+        if (state.syncMode === 'dynamic' && loop.state === 'recording') {
+            if (state.recordingTimeout) {
+                // Already waiting for a bar boundary — cancel and stop immediately
+                clearTimeout(state.recordingTimeout);
+                state.recordingTimeout = null;
+                // Fall through to immediate stop below
+            } else {
+                const now = AudioEngine.currentTime;
+                const barDur = SyncManager.getBarDuration();
+                const timeToNextBar = SyncManager.getTimeToNextBar(now);
+                const snapThreshold = 0.05; // 50ms — if within 50ms of bar end, stop immediately
+
+                if (timeToNextBar > snapThreshold && barDur > 0) {
+                    // Schedule stop at the next bar boundary
+                    const delayMs = Math.max(0, timeToNextBar * 1000);
+                    const expectedLoopId = state.recordingLoopId;
+                    state.recordingTimeout = setTimeout(() => {
+                        state.recordingTimeout = null;
+                        // Re-check state — user may have switched loops or cancelled
+                        if (!state.isRecording || state.recordingLoopId !== expectedLoopId) return;
+                        if (state.loopRecorder) {
+                            try {
+                                state.isFinishingRecording = true;
+                                state.loopRecorder.port.postMessage({ command: 'stop' });
+                            } catch (e) {
+                                console.warn("Recorder port disconnected during dynamic stop.", e);
+                                this.forceCleanupRecording(loop);
+                            }
+                        }
+                    }, delayMs);
+                    return; // Don't stop yet — wait for bar boundary
+                }
+                // Close enough to bar end — stop immediately (fall through)
+            }
+        }
+
         if (state.loopRecorder) {
             try {
                 // Send stop command to processor (triggers 'recorded' message)
@@ -2788,14 +3013,7 @@ class LoopManager {
                 this.forceCleanupRecording(loop);
             }
         } else if (state.isRecording) {
-            // Was armed but not yet recording, just reset
-            const inputNode = InputManager.getRecordingNode();
-            if (state.loopRecorder) {
-                try { inputNode.disconnect(state.loopRecorder); } catch(e) {
-                    // Silent fail on disconnect
-                }
-            }
-            if (state.loopRecorder) state.loopRecorder.disconnect();
+            // Was armed but recorder is gone — just reset state
             state.isRecording = false;
             state.recordingLoopId = -1;
             state.isFinishingRecording = false;
@@ -2863,8 +3081,38 @@ class LoopManager {
             const manualLat = (state.inputLatencyMs || 0) / 1000.0;
             const lat = Math.max(0, sysLat + manualLat);
 
+            // === DYNAMIC MODE: Multi-bar extraction ===
+            // Trim recording to nearest bar-length multiple
+            if (state.syncMode === 'dynamic') {
+                const barDur = SyncManager.getBarDuration();
+                if (barDur > 0) {
+                    const totalDur = rawBuffer.duration;
+                    const targetBars = Math.max(1, Math.round(totalDur / barDur));
+                    const exactSamples = Math.round(targetBars * barDur * ctx.sampleRate);
+
+                    if (exactSamples < rawBuffer.length) {
+                        // Trim to bar boundary
+                        const extractedBuf = ctx.createBuffer(rawBuffer.numberOfChannels, exactSamples, ctx.sampleRate);
+                        for (let c = 0; c < rawBuffer.numberOfChannels; c++) {
+                            const src = rawBuffer.getChannelData(c);
+                            const dst = extractedBuf.getChannelData(c);
+                            dst.set(src.subarray(0, exactSamples));
+                        }
+                        // Apply latency compensation if needed
+                        finalBuffer = (lat > 0) ? this.compensateLatency(extractedBuf) : extractedBuf;
+                    } else {
+                        // Recording is shorter than one bar — keep as-is
+                        finalBuffer = (lat > 0) ? this.compensateLatency(rawBuffer) : rawBuffer;
+                    }
+                    AudioEngine.seamlessLoopCrossfade(finalBuffer, 0.015);
+                } else {
+                    // Fallback if bar duration is invalid
+                    finalBuffer = (lat > 0) ? this.compensateLatency(rawBuffer) : rawBuffer;
+                    AudioEngine.seamlessLoopCrossfade(finalBuffer, 0.015);
+                }
+            }
             // PRECISION EXTRACTION (Sync Mode)
-            if (state.syncEnabled && state.recordingActualStartTime && loop.graph && loop.graph.startTime) {
+            else if (state.syncEnabled && state.recordingActualStartTime && loop.graph && loop.graph.startTime) {
                 const exactSamples = Math.round(SyncManager.getLoopLength() * ctx.sampleRate);
                 const trueStartTime = loop.graph.startTime + lat;
                 // Prefer the worklet's exact first-captured frame over the main-thread arm time
@@ -2908,7 +3156,7 @@ class LoopManager {
                         for (let i = 0; i < fadeLen; i++) dst[dstOffset + copyLen - 1 - i] *= Math.sin((i / fadeLen) * (Math.PI / 2));
                     }
                 }
-                if (!foldedTail) AudioEngine.seamlessLoopCrossfade(extractedBuf, 0.002);
+                if (!foldedTail) AudioEngine.seamlessLoopCrossfade(extractedBuf, 0.010);
                 finalBuffer = extractedBuf;
             } else {
                 // UNSYNCED OR FALLBACK
@@ -2932,10 +3180,10 @@ class LoopManager {
                         }
                         finalBuffer = newBuf;
                     } else {
-                        AudioEngine.seamlessLoopCrossfade(finalBuffer, 0.005);
+                        AudioEngine.seamlessLoopCrossfade(finalBuffer, 0.015);
                     }
                 } else {
-                    AudioEngine.seamlessLoopCrossfade(finalBuffer, 0.005);
+                    AudioEngine.seamlessLoopCrossfade(finalBuffer, 0.015);
                 }
             }
         
@@ -2953,6 +3201,7 @@ class LoopManager {
             loop.audioBuffer = finalBuffer;
         loop.duration = finalBuffer.duration;
         loop.originalBpm = state.bpm;
+        loop.dynamicRecorded = (state.syncMode === 'dynamic');
         loop.playbackRate = 1.0; // Reset rate to prevent varispeed artifacts on fresh record
             loop.wavePeaks = UIManager.generateWaveformPeaks(loop.audioBuffer);
 
@@ -2978,7 +3227,18 @@ class LoopManager {
                 // Ignore if already disconnected
             }
         }
-        if (state.loopRecorder) state.loopRecorder.disconnect();
+        if (state.loopRecorder) {
+            // Free pre-buffer ring buffer memory if dynamic sync was active
+            try { state.loopRecorder.port.postMessage({ command: 'stopPreBuffer' }); } catch(e) {}
+            state.loopRecorder.disconnect();
+        }
+
+        // Clean up live recording analyser
+        if (state.liveRecordAnalyser) {
+            try { state.liveRecordAnalyser.disconnect(); } catch(e) {}
+            state.liveRecordAnalyser = null;
+            state.liveRecordAnalyserData = null;
+        }
 
         state.isRecording = false;
         state.recordingLoopId = -1;
@@ -3132,6 +3392,8 @@ class LoopManager {
     static forceCleanupRecording(loop) {
         const recorder = state.loopRecorder;
         if (recorder) {
+            // Free pre-buffer ring buffer memory if dynamic sync was active
+            try { recorder.port.postMessage({ command: 'stopPreBuffer' }); } catch(e) {}
             recorder.port.onmessage = null;
             const inputNode = InputManager.getRecordingNode();
             if (inputNode) { try { inputNode.disconnect(recorder); } catch(e) {} }
@@ -3142,6 +3404,12 @@ class LoopManager {
         state.recordingStartTimeout = null;
         state.recordingTimeout = null;
         state.loopRecorder = null;
+        // Clean up live recording analyser
+        if (state.liveRecordAnalyser) {
+            try { state.liveRecordAnalyser.disconnect(); } catch(e) {}
+            state.liveRecordAnalyser = null;
+            state.liveRecordAnalyserData = null;
+        }
         if (loop) {
             if (['armed', 'recording', 'overdubbing', 'substituting', 'multiplying'].includes(loop.state)) {
                 if (loop.audioBuffer && loop.graph && loop.graph.nodes) loop.state = 'playing';
@@ -3186,7 +3454,7 @@ class LoopManager {
             const overdubAudioBuffer = this.compensateLatency(rawOverdubBuffer);
 
             // Fade edges of the overdub clip to prevent clicks at punch-in/out points
-            AudioEngine.seamlessLoopCrossfade(overdubAudioBuffer, 0.002);
+            AudioEngine.seamlessLoopCrossfade(overdubAudioBuffer, 0.008);
 
             const overdubOffset = state.recordingStartOffset || 0;
             state.recordingStartOffset = 0; // Clear offset
@@ -3204,6 +3472,13 @@ class LoopManager {
                 loop.state = 'playing';
             }
             
+            // Retrigger the source so the overdubbed/substituted audio is immediately audible.
+            // AudioBufferSourceNode was created with the old buffer content; a new source
+            // is needed to pick up the in-place mixed result.
+            if (loop.state === 'playing' && loop.graph && !loop.graph.isDestroyed) {
+                loop.restart();
+            }
+
             // Force UI refresh of the waveform immediately
             UIManager.updateLoopDisplays();
 
@@ -3322,6 +3597,20 @@ class LoopManager {
     static async processMultiplyData(chunks, loopId) {
         const loop = state.loops[loopId];
         if (!loop) return;
+        if (!loop.audioBuffer) {
+            // Loop was cleared during multiply — discard captured audio
+            const inputNode = InputManager.getRecordingNode();
+            if (inputNode && state.loopRecorder) {
+                try { inputNode.disconnect(state.loopRecorder); } catch(e) {}
+            }
+            if (state.loopRecorder) {
+                try { state.loopRecorder.disconnect(); } catch(e) {}
+            }
+            state.isRecording = false;
+            state.recordingLoopId = -1;
+            state.loopRecorder = null;
+            return;
+        }
 
         try {
             let capturedBuffer = this.createBufferFromChunks(chunks, state.audioContext.sampleRate);
@@ -3340,7 +3629,7 @@ class LoopManager {
                 }
 
                 // Fade edges to prevent clicks at the splice point
-                AudioEngine.seamlessLoopCrossfade(capturedBuffer, 0.002);
+                AudioEngine.seamlessLoopCrossfade(capturedBuffer, 0.008);
 
                 loop.saveStateForUndo();
 
@@ -3440,6 +3729,7 @@ class LoopManager {
             dest.audioBuffer = AudioEngine.sliceBuffer(src.audioBuffer, 0, 1);
             dest.duration = src.duration;
             dest.originalBpm = src.originalBpm;
+            dest.dynamicRecorded = src.dynamicRecorded;
             dest.state = 'stopped';
         } else {
             LoopManager.pushUndoState(destId);
@@ -3481,9 +3771,10 @@ class LoopManager {
             // A file's first and last samples are unrelated to each other, so the loop
             // point would click on every bar until this pass ran somewhere. It belongs
             // here rather than at project load, where a stored take would get it twice.
-            AudioEngine.seamlessLoopCrossfade(loop.audioBuffer, 0.005);
+            AudioEngine.seamlessLoopCrossfade(loop.audioBuffer, 0.015);
             loop.duration = audioBuffer.duration;
             loop.originalBpm = state.bpm;
+            loop.dynamicRecorded = false;
             loop.wavePeaks = UIManager.generateWaveformPeaks(loop.audioBuffer);
             loop.startDelay = 0.0;
             loop.state = 'stopped';
@@ -3517,20 +3808,29 @@ class UIManager {
     /**
      * Generates waveform peaks for visualization cache.
      */
-    static generateWaveformPeaks(buffer) {
+    static generateWaveformPeaks(buffer, targetWidth = 720) {
         if (!buffer) return null;
-        // Generate 180 peaks (matching standard canvas width)
-        const width = 180;
-        const data = buffer.getChannelData(0);
-        const step = Math.ceil(data.length / width);
+        // Generate peaks at higher resolution for better HiDPI support
+        // Default 720 allows crisp rendering up to 720 CSS pixels (2880px @ 4x DPR)
+        const width = targetWidth;
+        const numChannels = buffer.numberOfChannels || 1;
+        const channelData = [];
+        for (let c = 0; c < numChannels; c++) {
+            channelData.push(buffer.getChannelData(c));
+        }
+        const len = channelData[0].length;
+        const step = Math.ceil(len / width);
         const peaks = new Float32Array(width);
         for (let i = 0; i < width; i++) {
             let max = 0;
             for (let j = 0; j < step; j++) {
                 const idx = (i * step) + j;
-                if (idx < data.length) {
-                    const val = Math.abs(data[idx]);
-                    if (val > max) max = val;
+                if (idx < len) {
+                    // Use max across all channels for stereo visualization
+                    for (let c = 0; c < numChannels; c++) {
+                        const val = Math.abs(channelData[c][idx]);
+                        if (val > max) max = val;
+                    }
                 }
             }
             peaks[i] = max;
@@ -3965,8 +4265,9 @@ class UIManager {
     static setLoopFeedback(loopId, value) {
         const loop = state.loops[loopId];
         if (!loop) return;
-        
-        loop.feedback = parseFloat(value);
+
+        const parsed = parseFloat(value);
+        loop.feedback = Number.isFinite(parsed) ? parsed : 0.80;
         const display = document.getElementById(`loop-fbk-display-${loopId}`);
         if (display) {
             display.textContent = `${Math.round(loop.feedback * 100)}%`;
@@ -4143,16 +4444,18 @@ class UIManager {
         });
 
         // Drone Tabs (At the end)
-        DroneSynth.instances.forEach((synth, i) => {
-             const btn = document.createElement('button');
-             const tabId = `drone-${synth.id}`;
-             btn.className = `fx-tab-btn ${EffectManager.activeTab === tabId ? 'active' : ''}`;
-             // Update label to use Hotkey if available safely
-             const hotkey = (i < 10) ? state.keyMapping.kbd[20 + i] : null;
-             btn.textContent = `DRONE ${hotkey ? hotkey.toUpperCase() : (i+1)}`;
-             btn.onclick = () => EffectManager.setActiveTab(tabId);
-             tabContainer.appendChild(btn);
-        });
+        if (window.DroneSynth) {
+            DroneSynth.instances.forEach((synth, i) => {
+                 const btn = document.createElement('button');
+                 const tabId = `drone-${synth.id}`;
+                 btn.className = `fx-tab-btn ${EffectManager.activeTab === tabId ? 'active' : ''}`;
+                 // Update label to use Hotkey if available safely
+                 const hotkey = (i < 10) ? state.keyMapping.kbd[20 + i] : null;
+                 btn.textContent = `DRONE ${hotkey ? hotkey.toUpperCase() : (i+1)}`;
+                 btn.onclick = () => EffectManager.setActiveTab(tabId);
+                 tabContainer.appendChild(btn);
+            });
+        }
     }
 
     /**
@@ -4257,11 +4560,11 @@ class UIManager {
         let mode = 'stopped';
         const recStates = ['recording', 'overdubbing', 'substituting', 'multiplying'];
         const anyRec = state.masterRecording || state.loops.some(l => l && recStates.includes(l.state))
-            || (typeof DroneSynth !== 'undefined' && DroneSynth.instances && DroneSynth.instances.some(d => d.isRecording));
+            || (window.DroneSynth && DroneSynth.instances && DroneSynth.instances.some(d => d.isRecording));
         const anyArmed = state.loops.some(l => l && (l.state === 'armed' || l.state === 'queued'))
             || state.samplers.some(s => s.state === 'armed');
         const anyPlaying = state.loops.some(l => l && l.state === 'playing')
-            || (typeof DroneSynth !== 'undefined' && DroneSynth.instances && DroneSynth.instances.some(d => d.state === 'playing'))
+            || (window.DroneSynth && DroneSynth.instances && DroneSynth.instances.some(d => d.state === 'playing'))
             || state.samplers.some(s => s.state === 'playing' || s.state === 'stopping');
         if (anyRec) mode = 'recording';
         else if (anyArmed) mode = 'armed';
@@ -4327,12 +4630,14 @@ class UIManager {
             const p = loop.state !== 'empty' ? loop.getProgress(now) : 0;
             const playheadX = Math.floor(p * cssWidth);
             
-            const isRedundant = cvs._lastPlayhead === playheadX && 
-                                cvs._lastState === loop.state && 
+            const isRedundant = cvs._lastPlayhead === playheadX &&
+                                cvs._lastState === loop.state &&
                                 cvs._lastPeaks === loop.wavePeaks &&
                                 cvs.width === pixelWidth && cvs.height === pixelHeight &&
                                 loop.state !== 'recording' &&
-                                loop.state !== 'overdubbing';
+                                loop.state !== 'overdubbing' &&
+                                loop.state !== 'substituting' &&
+                                loop.state !== 'multiplying';
                                 
             if (!isRedundant) {
                 cvs._lastPlayhead = playheadX;
@@ -4356,7 +4661,7 @@ class UIManager {
                 if (loop.wavePeaks) {
                     const peaks = loop.wavePeaks;
                     const amp = h;
-                    
+
                     let waveColor = '#666';
                     if (loop.state === 'recording') waveColor = '#f00';
                     else if (loop.state === 'overdubbing') waveColor = '#f0f';
@@ -4365,22 +4670,99 @@ class UIManager {
                     else if (loop.state === 'multiplying') waveColor = '#ffaa00';
                     else if (loop.state === 'queued') waveColor = '#0088aa';
                     else if (loop.state === 'playing') waveColor = '#0f0';
-                    
-                    ctx.fillStyle = waveColor;
+                    else if (loop.state === 'stopped') waveColor = '#888';
+                    else if (loop.state === 'stopping') waveColor = '#0a0';
 
-                    for(let i=0; i<w && peaks.length; i++){
-                        const mag = peaks[Math.floor(i / w * peaks.length)];
+                    // Draw dim waveform for full width (unplayed portion)
+                    ctx.globalAlpha = 0.35;
+                    ctx.fillStyle = waveColor;
+                    for (let i = 0; i < w && peaks.length; i++) {
+                        const peakIdx = Math.floor(i / w * peaks.length);
+                        const mag = peaks[peakIdx];
                         const hBar = Math.max(1, mag * amp);
                         const y = (h - hBar) / 2;
                         ctx.fillRect(i, y, 1, hBar);
                     }
-            }
-            // Draw Playhead
+
+                    // Draw bright waveform for played portion (up to playhead)
+                    ctx.globalAlpha = 1.0;
+                    for (let i = 0; i < playheadX && i < w && peaks.length; i++) {
+                        const peakIdx = Math.floor(i / w * peaks.length);
+                        const mag = peaks[peakIdx];
+                        const hBar = Math.max(1, mag * amp);
+                        const y = (h - hBar) / 2;
+                        ctx.fillRect(i, y, 1, hBar);
+                    }
+                    ctx.globalAlpha = 1.0;
+                } else if ((loop.state === 'recording' || loop.state === 'overdubbing' || loop.state === 'substituting' || loop.state === 'multiplying') && state.liveRecordAnalyser) {
+                    // Live input waveform — oscilloscope-style trace
+                    const analyser = state.liveRecordAnalyser;
+                    const data = state.liveRecordAnalyserData;
+                    analyser.getFloatTimeDomainData(data);
+                    const mid = h / 2;
+                    const step = data.length / w;
+
+                    // Draw filled waveform shape (symmetric around center)
+                    let waveColor = '#f00';
+                    if (loop.state === 'overdubbing') waveColor = '#f0f';
+                    else if (loop.state === 'substituting') waveColor = '#00cccc';
+                    else if (loop.state === 'multiplying') waveColor = '#ffaa00';
+                    ctx.fillStyle = waveColor;
+                    ctx.globalAlpha = 0.6;
+                    for (let i = 0; i < w; i++) {
+                        const idx = Math.floor(i * step);
+                        const v = data[idx] || 0;
+                        const barH = Math.max(1, Math.abs(v) * h);
+                        ctx.fillRect(i, mid - barH / 2, 1, barH);
+                    }
+                    // Draw center line trace on top
+                    ctx.globalAlpha = 1.0;
+                    ctx.strokeStyle = waveColor;
+                    ctx.lineWidth = 1;
+                    ctx.beginPath();
+                    for (let i = 0; i < w; i++) {
+                        const idx = Math.floor(i * step);
+                        const v = data[idx] || 0;
+                        const y = mid - v * (h * 0.5);
+                        if (i === 0) ctx.moveTo(i, y);
+                        else ctx.lineTo(i, y);
+                    }
+                    ctx.stroke();
+                    // Bar boundary markers — rolling window so user sees approaching bar lines
+                    if (state.syncMode === 'dynamic' && loop.graph && loop.graph.startTime) {
+                        const barDur = SyncManager.getBarDuration();
+                        if (barDur > 0) {
+                            const elapsed = now - loop.graph.startTime;
+                            const visibleBars = 4;
+                            const windowDur = visibleBars * barDur;
+                            // Align window start to bar boundary, keep playhead in right half
+                            const windowStart = Math.max(0, Math.floor(elapsed / windowDur) * windowDur);
+                            const windowEnd = windowStart + windowDur;
+                            ctx.strokeStyle = 'rgba(255, 255, 0, 0.45)';
+                            ctx.lineWidth = 1;
+                            for (let b = 1; b < visibleBars; b++) {
+                                const barTime = windowStart + b * barDur;
+                                const barX = ((barTime - windowStart) / windowDur) * w;
+                                ctx.beginPath();
+                                ctx.moveTo(barX, 0);
+                                ctx.lineTo(barX, h);
+                                ctx.stroke();
+                            }
+                            // Bar count labels at top
+                            ctx.fillStyle = 'rgba(255, 255, 0, 0.6)';
+                            ctx.font = '8px monospace';
+                            const startBar = Math.round(windowStart / barDur);
+                            for (let b = 0; b <= visibleBars; b++) {
+                                const barX = (b / visibleBars) * w;
+                                ctx.fillText(`${startBar + b}`, barX + 2, 8);
+                            }
+                        }
+                    }
+                }
+            // Draw Playhead — thin bright line (waveform dim/bright handles played portion)
             if (loop.state !== 'empty') {
-                ctx.fillStyle = 'rgba(255, 255, 255, 0.25)';
-                ctx.fillRect(0, 0, playheadX, h);
                 ctx.fillStyle = '#fff';
-                ctx.fillRect(playheadX, 0, 2, h);
+                ctx.fillRect(playheadX, 0, 1, h);
             }
             }
         }
@@ -4596,7 +4978,7 @@ class UIManager {
         }
         
         const dronesContainer = document.getElementById('live-drones-container');
-        if(dronesContainer) {
+        if(dronesContainer && window.DroneSynth) {
             dronesContainer.innerHTML = DroneSynth.instances.map(d => UIManager.generateLiveDroneHTML(d)).join('');
         }
         
@@ -4703,7 +5085,7 @@ class UIManager {
     }
 
     static updateLiveDrone(id) {
-        const synth = typeof DroneSynth !== 'undefined' ? DroneSynth.instances[id] : null;
+        const synth = window.DroneSynth ? DroneSynth.instances[id] : null;
         if(!synth) return;
         const el = document.getElementById(`live-drone-inst-${id}`);
         if(!el) return;

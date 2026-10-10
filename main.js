@@ -6,12 +6,12 @@
 // MODULE 1: CONSTANTS & GLOBALS
 // =============================================
 
-const VERSION = "v0.76.08"; // Version aligned with blueprint
+const VERSION = "v0.76.10"; // Version aligned with blueprint
 let MAX_LOOPS = 10;
 const SAMPLER_HOTKEYS = ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'ç']; // Specific to Sampler Tracks
 const AUDIO_FORMATS= {
-    LOOP: MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm',
-    MASTER: MediaRecorder.isTypeSupported('audio/wav') ? 'audio/wav' : 'audio/webm;codecs=pcm',
+    LOOP: (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) ? 'audio/webm;codecs=opus' : 'audio/webm',
+    MASTER: (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported('audio/wav')) ? 'audio/wav' : 'audio/webm;codecs=pcm',
 };
 
 // Global application state
@@ -71,6 +71,8 @@ const state = {
     recordingStartOffset: 0, // For overdub alignment	
     recordingActualStartTime: 0, // For precision trimming
     loopRecorder: null,
+    liveRecordAnalyser: null,
+    liveRecordAnalyserData: null,
     loopRecordedChunks: [],
     
     // Master Recording
@@ -88,6 +90,9 @@ const state = {
 
     // Sync & Timing
     syncEnabled: true,
+    syncMode: 'dynamic',          // 'off' | 'static' | 'dynamic'
+    dynamicSnapWindow: 0.1,      // seconds — how close to bar start to snap (default 100ms)
+    dynamicStartQuantize: true,  // when true, playback starts at recorded time (not quantized)
     bpm: 120,
     timeSig: { num: 4, den: 4 },
     bars: 2,
@@ -523,7 +528,8 @@ class App {
 		const driverInfo = document.getElementById('driverInfo');
 
         // Init I18n
-        const lang = document.getElementById('langSelect').value;
+        const langSelect = document.getElementById('langSelect');
+        const lang = langSelect ? langSelect.value : 'en';
         I18n.lang = lang;
         I18n.init();
 
@@ -681,24 +687,39 @@ class App {
 
         // Clean up any active loop recording
         if (state.isRecording && state.loopRecorder) {
-            try { state.loopRecorder.stop(); } catch(e) {}
+            try {
+                state.loopRecorder.port.postMessage({ command: 'stop' });
+                state.loopRecorder.disconnect();
+            } catch(e) {}
             state.loopRecorder = null;
         }
         if (state.recordingTimeout) { clearTimeout(state.recordingTimeout); state.recordingTimeout = null; }
         if (state.recordingStartTimeout) { clearTimeout(state.recordingStartTimeout); state.recordingStartTimeout = null; }
+        // Clear long-press timers so they don't fire after the reset and corrupt loop state
+        if (state.inputPressTimers) {
+            Object.values(state.inputPressTimers).forEach(p => { try { clearTimeout(p.timer); } catch(_) {} });
+            state.inputPressTimers = {};
+        }
         state.recordingLoopId = -1;
         state.isFinishingRecording = false;
         state.loopRecordedChunks = [];
 
         // Force state reset
         state.isRecording = false;
+        state.isOverdubbing = false;
         state.masterRecording = false;
+        (state.stemRecorders || []).forEach(r => { try { r.stop(); } catch(e) {} });
+        state.stemRecorders = [];
 
         // 3. Soft Reboot (Resume Hardware)
         setTimeout(async () => {
-            if (state.audioContext) await state.audioContext.resume();
-            UIManager.renderLoops();
-            UIManager.updateStatus();
+            try {
+                if (state.audioContext) await state.audioContext.resume();
+                UIManager.renderLoops();
+                UIManager.updateStatus();
+            } catch (e) {
+                Log.error('App', 'Panic recovery failed:', e);
+            }
         }, 100);
     }
 
@@ -758,7 +779,8 @@ class App {
      */
     static handleMIDIMessage(message) {
         // Prevent input before app start to avoid "Mic not available" errors
-        if (document.getElementById('startOverlay').style.display !== 'none') return;
+        const overlay = document.getElementById('startOverlay');
+        if (overlay && overlay.style.display !== 'none') return;
 
         const [cmd, data1, data2] = message.data;
 
@@ -874,6 +896,8 @@ class App {
      * Starts the gamepad polling loop.
      */
     static startGamepadPolling() {
+        if (this._gamepadPollingRunning) return;
+        this._gamepadPollingRunning = true;
         const gamepadStatus = document.getElementById('gamepadStatus');
 
         // Check for API support
@@ -904,7 +928,8 @@ class App {
 
                         if (i === state.gamepadIndex) {
                             // Prevent input before app start
-                            if (document.getElementById('startOverlay').style.display !== 'none') continue;
+                            const overlay = document.getElementById('startOverlay');
+                            if (overlay && overlay.style.display !== 'none') continue;
 
                             const name = gamepad.id.length > 30 ? gamepad.id.substring(0, 30) + '...' : gamepad.id;
                             if (gamepadStatus) {
@@ -999,13 +1024,15 @@ class App {
         bindClick('[onclick*="globalUndo"]', () => {
             if (state.undoStack.length > 0) {
                  const loopId = state.undoStack[state.undoStack.length - 1];
-                 state.loops[loopId].undo();
+                 if (state.loops[loopId]) state.loops[loopId].undo();
+                 else state.undoStack.pop();
             }
         });
         bindClick('[onclick*="globalRedo"]', () => {
             if (state.redoStack.length > 0) {
                  const loopId = state.redoStack[state.redoStack.length - 1];
-                 state.loops[loopId].redo();
+                 if (state.loops[loopId]) state.loops[loopId].redo();
+                 else state.redoStack.pop();
             }
         });
 
@@ -1157,7 +1184,8 @@ class App {
      */
 	static handleKeyboardPress(event) {
         // Prevent input before app start to avoid "Mic not available" errors
-        if (document.getElementById('startOverlay').style.display !== 'none') return;
+        const overlay = document.getElementById('startOverlay');
+        if (overlay && overlay.style.display !== 'none') return;
         if (state.listeningForInput.active && state.listeningForInput.type === 'kbd') {
              KeyMapManager.receiveInput('kbd', event.key.toLowerCase());
              event.preventDefault();
@@ -1328,7 +1356,18 @@ class App {
      * Central handler for when a loop input is pressed.
      */
     static handleInputPress(loopId, sourceKey) {
-        if (state.inputPressTimers[sourceKey]) return; // Already pressed
+        // Guard against stale entries left behind when a release event is missed
+        // (window blur, alt-tab, etc.). A 10-second ceiling is far beyond any real
+        // long-press but short enough to never mask a genuine stuck key.
+        if (state.inputPressTimers[sourceKey]) {
+            const existing = state.inputPressTimers[sourceKey];
+            if (existing._ts && (Date.now() - existing._ts > 10000)) {
+                clearTimeout(existing.timer);
+                delete state.inputPressTimers[sourceKey];
+            } else {
+                return; // Already pressed
+            }
+        }
 
         let susAction = null;
         let isDrone = false;
@@ -1390,7 +1429,8 @@ class App {
             timer: timer,
             loopId: loopId,
             longPressFired: false,
-            susAction: susAction
+            susAction: susAction,
+            _ts: Date.now()
         };
     }
 
@@ -1422,7 +1462,13 @@ class App {
     /**
      * Toggles master recording on or off.
      */
+    static _togglingMasterRec = false;
+
     static async toggleMasterRecording() {
+        if (this._togglingMasterRec) return;
+        this._togglingMasterRec = true;
+        let monitoredInputNode = null;
+        try {
         if (!state.masterRecording) {
             // --- START ---
             // Resume handled implicitly, but good check
@@ -1455,7 +1501,7 @@ class App {
 
             // Collect active inputs
             const recordingNode = InputManager && InputManager.getRecordingNode ? InputManager.getRecordingNode() : null;
-            let monitoredInputNode = recordingNode;
+            monitoredInputNode = recordingNode;
 
             // Connect monitored input to *both* rec destinations
             if (monitoredInputNode) {
@@ -1477,7 +1523,14 @@ class App {
                 Log.error('App', 'Recorder setup failed:', e);
                 (state.stemRecorders || []).forEach(r => { try { r.stop(); } catch(_) {} });
                 state.stemRecorders = [];
+                // Clean up input recorder if it was already created
+                if (state.inputRecorder) { try { state.inputRecorder.stop(); } catch(_) {} }
                 state.masterRecorder = null;
+                state.inputRecorder = null;
+                // Disconnect monitored input from recording destination to prevent double-connection on retry
+                if (monitoredInputNode && state.inputDestination) {
+                    try { monitoredInputNode.disconnect(state.inputDestination); } catch(_) {}
+                }
                 state.masterRecording = false;
                 UIManager.updateStatus();
                 return;
@@ -1519,7 +1572,7 @@ class App {
             ]);
             
             // Disconnect input from recording destinations to prevent leaks
-            const recordingNode = InputManager.getRecordingNode();
+            const recordingNode = InputManager && InputManager.getRecordingNode ? InputManager.getRecordingNode() : null;
             if (recordingNode) {
                 try { recordingNode.disconnect(state.inputDestination); } catch(e) {}
             }
@@ -1545,6 +1598,9 @@ class App {
             UIManager.updateExportButtons();
         }
         if(window.UIManager) UIManager.updateStatus();
+        } finally {
+            this._togglingMasterRec = false;
+        }
     }
     
     /**
@@ -1559,9 +1615,14 @@ class App {
         } catch (e) {
             console.warn("Failed to create master recorder, trying loop format.", e);
             options.mimeType = AUDIO_FORMATS.LOOP;
-            recorder = new MediaRecorder(stream, options);
+            try {
+                recorder = new MediaRecorder(stream, options);
+            } catch (e2) {
+                throw new Error('No supported MediaRecorder format available');
+            }
         }
         
+        if (!recorder) throw new Error('No supported MediaRecorder format available');
         recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksArray.push(e.data); };
         recorder.start(100);
         return { recorder, usedMimeType: recorder.mimeType };
@@ -2069,7 +2130,9 @@ class InputManager {
         
         const success = await this.initInputAudio(id, deviceId);
         if (!success) {
-            state.inputs.pop(); // Remove failed track to prevent ghost inputs
+            const idx = state.inputs.indexOf(input);
+            if (idx !== -1) state.inputs.splice(idx, 1);
+            state.inputs.forEach((remaining, index) => { remaining.id = index; });
             this.renderUI(); // Re-render so the error banner + retry buttons are visible
             return;
         }
@@ -2311,8 +2374,9 @@ class InputManager {
     static toggleMonitor(id = -1) {
         if (id >= 0) {
             const input = state.inputs[id];
+            if (!input) return;
             input.monitor = !input.monitor;
-            
+
             if (input.panNode && this.inputBus) {
                 if (input.monitor) {
                     try { input.panNode.connect(this.inputBus); } catch(e) {}

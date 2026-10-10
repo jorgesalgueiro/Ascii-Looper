@@ -8,7 +8,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#291a0a">
     <meta name="description" content="ASCII Looper - Browser-based 10-track loop station with effects and sequencing.">
-    <title>ASCII Looper v0.76.08</title>
+    <title>ASCII Looper v0.76.10</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="styles.css">
     <link rel="dns-prefetch" href="//www.google.com">
@@ -119,10 +119,24 @@
                     <section class="sync-section sync-grid-section" aria-labelledby="sync-grid-heading">
                         <div class="sync-section-heading">
                             <span id="sync-grid-heading" data-i18n="SYNC_GRID">SYNC GRID</span>
-                            <label class="sync-enable-toggle" for="syncLoops">
-                                <input type="checkbox" id="syncLoops" checked aria-label="Enable Sync">
-                                <span data-i18n="ENABLE_SYNC">ENABLE SYNC</span>
-                            </label>
+                            <fieldset class="sync-mode-selector">
+                                <legend class="sr-only">SYNC MODE</legend>
+                                <label><input type="radio" name="syncMode" value="off" onchange="SyncManager.updateSettings()"> <span data-i18n="SYNC_OFF">OFF</span></label>
+                                <label><input type="radio" name="syncMode" value="static" onchange="SyncManager.updateSettings()"> <span data-i18n="SYNC_STATIC">STATIC</span></label>
+                                <label><input type="radio" name="syncMode" value="dynamic" checked onchange="SyncManager.updateSettings()"> <span data-i18n="SYNC_DYNAMIC">DYNAMIC</span></label>
+                            </fieldset>
+                        </div>
+                        <div class="sync-dynamic-options" id="dynamicOptionsPanel" style="display:none;">
+                            <div class="sync-inline-controls">
+                                <span class="sync-ctrl-label">SNAP</span>
+                                <input type="range" id="dynamicSnapWindow" min="0.02" max="0.5" step="0.01" value="0.1" oninput="document.getElementById('dynamicSnapWindowVal').textContent = Math.round(parseFloat(this.value)*1000)+'ms'; SyncManager.updateSettings()" aria-label="Snap Window">
+                                <output id="dynamicSnapWindowVal" for="dynamicSnapWindow">100ms</output>
+                                <span class="sync-ctrl-sep"></span>
+                                <label class="sync-ctrl-check" title="Start loop at the moment recording began (not quantized to bar)">
+                                    <input type="checkbox" id="dynamicStartQuantize" checked onchange="SyncManager.updateSettings()">
+                                    <span>REC TIME</span>
+                                </label>
+                            </div>
                         </div>
                         <div class="sync-readouts" aria-label="Synchronization status">
                             <div class="sync-readout"><span data-i18n="LOOP_LENGTH">LOOP LENGTH</span><strong id="loopLength">0.0s</strong></div>

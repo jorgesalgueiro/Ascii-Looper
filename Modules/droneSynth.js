@@ -174,12 +174,18 @@ class DroneSynth {
                 if (synth.fxInput) try { synth.fxInput.disconnect(); } catch(e){}
                 if (synth.analyser) try { synth.analyser.disconnect(); } catch(e){}
                 if (synth.dryDestination) try { synth.dryDestination.disconnect(); } catch(e){}
+                if (synth.wetDestination) try { synth.wetDestination.disconnect(); } catch(e){}
                 
                 synth.output = null;
                 synth.fxInput = null;
                 synth.analyser = null;
                 synth.dryDestination = null;
                 synth.fxChain = { nodes: {}, end: null };
+                // Stop all running voice sources before discarding them
+                Object.values(synth.voices).forEach(v => {
+                    try { v.osc1.stop(); v.osc2.stop(); v.sub.stop(); v.uni.stop(); } catch(e){}
+                    try { v.vib.stop(); v.lfo.stop(); if (v.driftSrc) v.driftSrc.stop(); } catch(e){}
+                });
                 synth.voices = {}; // Clear active old context voices
                 if (state.audioContext) synth.wetDestination = state.audioContext.createMediaStreamDestination();
             });
@@ -554,6 +560,7 @@ class DroneSynth {
             if(data.type !== 'drone_preset' && !data.params) throw new Error("Invalid .ald file");
             
             const synth = this.instances[id];
+            if (!synth) return;
             if(data.name) synth.name = data.name;
             // setParam is the only path that reaches the live voices, the sliders and
             // the output gain; assigning the numbers left a playing drone unchanged.
@@ -974,8 +981,10 @@ class DroneSynth {
     }
 
     static renderFxToggles(id) {
+        const synth = this.instances[id];
+        if (!synth) return;
         const container = document.getElementById(`drone-fx-toggles_${id}`);
-        if(container) container.innerHTML = this.generateFxTogglesHtml(this.instances[id]);
+        if(container) container.innerHTML = this.generateFxTogglesHtml(synth);
     }
 
     static rebuildFxChain(id = -1, fadeInEffectName = null, mixTimeMs = 0) {
@@ -1237,7 +1246,7 @@ class DroneSynth {
         const ctx = state.audioContext;
         const v = this.getVoiceFromPool(ctx);
         const now = Math.max(time, ctx.currentTime + 0.005);
-        const rel = synth.params.release;
+        const rel = Math.max(0.005, synth.params.release || 0.5);
         
         // Config Oscs
         v.osc1.type = synth.params.osc1Type || 'sawtooth';
@@ -1322,9 +1331,9 @@ class DroneSynth {
 
         // Filter (cascaded 24dB/oct)
         v.filter.type = synth.params.filterType || 'lowpass';
-        v.filter.Q.value = synth.params.res;
+        v.filter.Q.value = synth.params.res * 1.15;
         v.filter2.type = v.filter.type;
-        v.filter2.Q.value = synth.params.res * 0.4; // scaled to avoid stacked resonance blowup
+        v.filter2.Q.value = synth.params.res * 0.4 * 1.15; // scaled to avoid stacked resonance blowup
         const baseCutoff = synth.params.cutoff;
         const peakCutoff = Math.min(22000, Math.max(20, baseCutoff + synth.params.envMod));
         const atkDur = synth.params.attack || 0.05;
@@ -1386,8 +1395,11 @@ class DroneSynth {
         v.panner.pan.cancelScheduledValues(now);
         v.panner.pan.setValueAtTime(Math.max(-1, Math.min(1, (synth.params.pan || 0) + panSpread)), now + startOffset);
         v.panSpread = panSpread;
+        v.drift1 = drift1;
+        v.drift2 = drift2;
         v.drift3 = drift3;
         v.uniSpread = uniSpread;
+        v.releasing = false;
 
         // Connect & Noise
         if (!synth.fxInput) { synth.fxInput = ctx.createGain(); this.rebuildFxChain(synth.id); }
@@ -1531,7 +1543,11 @@ class DroneSynth {
             v.filter2.frequency.cancelScheduledValues(t);
             v.uniGain.gain.cancelScheduledValues(t);
             v.uniGain.gain.setValueAtTime(0, t);
-            
+            if (v.noiseGain) {
+                v.noiseGain.gain.cancelScheduledValues(t);
+                v.noiseGain.gain.setValueAtTime(0, t);
+            }
+
             v.vca.gain.cancelScheduledValues(t);
             try { v.vca.gain.setValueAtTime(v.vca.gain.value || 0, t); } catch(e){}
             v.vca.gain.linearRampToValueAtTime(0, t + 0.005);
@@ -1542,7 +1558,7 @@ class DroneSynth {
             // Disconnect panner and noise source so reused voices don't accumulate
             // duplicate parallel connections (each connect() adds a new signal path).
             try { v.panner.disconnect(); } catch(e) {}
-            try { if (v.nodes && v.nodes[7]) v.nodes[7].disconnect(); } catch(e) {}
+            try { if (v.nodes && v.nodes[7]) { v.nodes[7].stop(); v.nodes[7].disconnect(); } } catch(e) {}
 
             v.isPooled = false;
             return v;
@@ -1672,6 +1688,11 @@ class DroneSynth {
             const t = state.audioContext.currentTime;
             AudioEngine.scheduledFade(v.vca, 0, t, 10);
             setTimeout(() => {
+                try {
+                    v.osc1.stop(); v.osc2.stop(); v.sub.stop();
+                    v.uni.stop(); v.vib.stop(); v.lfo.stop();
+                    if (v.driftSrc) v.driftSrc.stop();
+                } catch(e){}
                 v.nodes.forEach(n => { try{ n.disconnect(); }catch(e){} });
                 try { if (v.driftSrc) v.driftSrc.disconnect(); } catch(e){}
             }, 50);
@@ -1716,7 +1737,7 @@ class DroneSynth {
         const drift3 = (Math.random() - 0.5) * 15.0;
         const uniSpread = 8 + (synth.params.unison || 0) * 14; // cents, wider with more unison
 
-        const activeMidiVoices = Object.keys(synth.voices).filter(k => k !== 'drone' && !synth.voices[k].releasing).length;
+        const activeMidiVoices = Object.keys(synth.voices).filter(k => k !== 'drone' && !k.startsWith('seq_') && !synth.voices[k].releasing).length;
         const startOffset = 0.004; // Increased slightly to ensure VCA opens after phase reset
 
         // Glide Logic (Legato Portamento for MIDI)
@@ -1875,8 +1896,16 @@ class DroneSynth {
         }
 
         const baseFreq = Math.max(20, synth.params.cutoff);
+        // Cancel prior scheduled filter events so the release sweep starts from
+        // the actual current value, not a stale automation target.
+        v.filter.frequency.cancelScheduledValues(releaseStart);
+        try { v.filter.frequency.setValueAtTime(v.filter.frequency.value || baseFreq, releaseStart); } catch(e){}
         v.filter.frequency.setTargetAtTime(baseFreq, releaseStart, relTime / 4);
-        if (v.filter2) v.filter2.frequency.setTargetAtTime(baseFreq, releaseStart, relTime / 4);
+        if (v.filter2) {
+            v.filter2.frequency.cancelScheduledValues(releaseStart);
+            try { v.filter2.frequency.setValueAtTime(v.filter2.frequency.value || baseFreq, releaseStart); } catch(e){}
+            v.filter2.frequency.setTargetAtTime(baseFreq, releaseStart, relTime / 4);
+        }
 
         const stopTime = releaseStart + (immediate ? 0.1 : (relTime + 0.2));
         if (v.nodes[7]) {
@@ -2009,8 +2038,8 @@ class DroneSynth {
              if(key === 'subMix') DroneSynth.smoothParamUpdate(v.nodes[4].gain, synth.params.subMix, now, 0.1);
              if(key === 'noiseMix') DroneSynth.smoothParamUpdate(v.nodes[8].gain, synth.params.noiseMix, now, 0.1);
              if(key === 'res') {
-                 if (v.filter) DroneSynth.smoothParamUpdate(v.filter.Q, synth.params.res, now, 0.05);
-                 if (v.filter2) DroneSynth.smoothParamUpdate(v.filter2.Q, synth.params.res * 0.4, now, 0.05);
+                 if (v.filter) DroneSynth.smoothParamUpdate(v.filter.Q, synth.params.res * 1.15, now, 0.05);
+                 if (v.filter2) DroneSynth.smoothParamUpdate(v.filter2.Q, synth.params.res * 1.15 * 0.4, now, 0.05);
              }
              if(key === 'cutoff') {
                  if (v.filter) DroneSynth.smoothParamUpdate(v.filter.frequency, Math.max(15, synth.params.cutoff), now, 0.05);
@@ -2234,13 +2263,17 @@ class DroneSynth {
         
         // Clean existing audio graphs to prevent memory/audio leaks
         this.stopAll();
+        this.voicePool = []; // Clear stale voices from old context/instances
         this.instances.forEach(i => {
             if (i.output) { try{ i.output.disconnect(); } catch(e){} }
             if (i.fxInput) { try{ i.fxInput.disconnect(); } catch(e){} }
             if (i.dryDestination) { try{ i.dryDestination.disconnect(); } catch(e){} }
+            if (i.wetDestination) { try{ i.wetDestination.disconnect(); } catch(e){} }
             if (i.fxChain && i.fxChain.nodes) {
                 if (this.helperGraph) this.helperGraph.destroyEffects(i.fxChain.nodes);
             }
+            // Reset fxChain metadata so stale node references don't survive
+            i.fxChain = { nodes: {}, end: null };
         });
 
         // Clear existing
@@ -2270,7 +2303,7 @@ class DroneSynth {
             if (instData.signalChain) synth.signalChain = instData.signalChain || "QCATFODBVKZG";
             if (instData.activePresets) synth.activePresets = instData.activePresets;
             if (instData.fxState) Object.assign(synth.fxState, instData.fxState);
-            if (instData.state === 'playing' || instData.state === 'stopping') synth.state = 'playing';
+            if (instData.state === 'playing' || instData.state === 'stopping' || instData.state === 'armed') synth.state = 'stopped'; // Restore as stopped; scheduler state isn't serializable
             if (instData.name) synth.name = instData.name;
             if (instData.lastNote) synth.lastNote = instData.lastNote;
             if (instData.synthPreset) synth.synthPreset = instData.synthPreset;

@@ -105,18 +105,20 @@ class TrackerManager {
         if (!state.audioContext || state.audioContext.state === 'closed') return;
 
         const request = ++this.playRequest;
-        state.tracker.isPlaying = true;
-        this.updateControlUI();
         const resumed = state.audioContext.state === 'running' || await AudioEngine.resume();
         if (request !== this.playRequest) return;
         if (!resumed) {
-            this.pause();
             return;
         }
 
+        // Only set isPlaying after the async gate so a second concurrent call
+        // can't sneak past the early-return check above.
+        state.tracker.isPlaying = true;
+        this.updateControlUI();
+
         if (state.tracker.isPlaying) {
             // Calculate next row time. If Sync is enabled, quantize start to next Bar.
-            if (state.syncEnabled) {
+            if (state.syncEnabled && window.SyncManager) {
                 const secondsPerBar = (60 / state.bpm) * state.timeSig.num;
                 state.tracker.nextRowTime = SyncManager.getNextGridTime(secondsPerBar);
             } else {
@@ -181,7 +183,17 @@ class TrackerManager {
             MAX_LOOPS = savedLoopColumns;
         }
         const shift = MAX_LOOPS - savedLoopColumns;
-        if (shift <= 0) return patterns;
+        if (shift === 0) return patterns;
+        if (shift < 0) {
+            // Song was saved with more loops than current session - clip columns beyond MAX_LOOPS
+            return patterns.map(pattern => ({
+                ...pattern,
+                data: Object.fromEntries(Object.entries(pattern.data).filter(([key, command]) => {
+                    const [, column] = key.split('_');
+                    return Number(column) < MAX_LOOPS;
+                }))
+            }));
+        }
         return patterns.map(pattern => ({
             ...pattern,
             data: Object.fromEntries(Object.entries(pattern.data).map(([key, command]) => {
@@ -277,23 +289,27 @@ class TrackerManager {
         // Tightened threshold for better responsiveness on active tabs
         if (state.tracker.nextRowTime < currentTime - 0.15) {
             // Re-align to the master start time grid instead of arbitrary time
-            const elapsed = currentTime - state.masterStartTime;
+            const masterStart = state.masterStartTime || currentTime;
+            const elapsed = currentTime - masterStart;
             const rowsElapsed = Math.ceil(elapsed / secondsPerBar);
             
-            state.tracker.nextRowTime = state.masterStartTime + (rowsElapsed * secondsPerBar);
+            state.tracker.nextRowTime = masterStart + (rowsElapsed * secondsPerBar);
             
             // Ensure we don't schedule in the past
             state.tracker.nextRowTime = Math.max(state.tracker.nextRowTime, currentTime);
         }
         
         let safeguard = 0;
+        // Normalize the playlist once before the scheduling loop, not per iteration
+        if (state.tracker.mode === 'song') {
+            state.tracker.playlist = this.normalizePlaylist(state.tracker.playlist);
+        }
         while (state.tracker.nextRowTime < currentTime + lookahead && safeguard++ < 64) {
             // Execute row and check if a Loop Command (LOP) was triggered
             
             // Determine which pattern to play
             let patIdx = 0;
             if (state.tracker.mode === 'song') {
-                state.tracker.playlist = this.normalizePlaylist(state.tracker.playlist);
                 if (state.tracker.playlistIndex >= state.tracker.playlist.length) state.tracker.playlistIndex = 0;
                 patIdx = this.getPatternIndex(state.tracker.playlist[state.tracker.playlistIndex]);
 
@@ -310,7 +326,7 @@ class TrackerManager {
             }
 
             const currentPat = state.tracker.patterns[patIdx];
-            if (!currentPat) return;
+            if (!currentPat) break;
             if (state.tracker.currentRow >= currentPat.rows) state.tracker.currentRow = 0;
 
             const looped = this.executeRow(patIdx, state.tracker.currentRow, state.tracker.nextRowTime);
@@ -353,8 +369,8 @@ class TrackerManager {
             state.tracker.nextRowTime = state.masterStartTime + (nextGridIndex * secondsPerBar);
             
             const playPatIdx = state.tracker.mode === 'song'
-                ? (state.tracker.playlist[state.tracker.playlistIndex] || 0)
-                : state.tracker.currentPatternIdx;
+                ? this.getPatternIndex(state.tracker.playlist[state.tracker.playlistIndex] || 0)
+                : this.getPatternIndex(state.tracker.currentPatternIdx);
             const patternLen = (state.tracker.patterns[playPatIdx] ? state.tracker.patterns[playPatIdx].rows : 16) || 16;
             let targetRow = Math.floor(elapsed / secondsPerBar) % patternLen;
             if (targetRow < 0) targetRow += patternLen;
@@ -603,6 +619,12 @@ class TrackerManager {
 
     static cellClick(r, c) {
         const pat = state.tracker.patterns[state.tracker.currentPatternIdx];
+        if (!pat) return;
+        if (c < 0) return; // Click before first column
+        const droneCount = (window.DroneSynth && DroneSynth.instances) ? DroneSynth.instances.length : 0;
+        const samplerCount = (state.samplers) ? state.samplers.length : 0;
+        const totalColumns = MAX_LOOPS + droneCount + samplerCount;
+        if (c >= totalColumns) return; // Click beyond last column
         const key = `${r}_${c}`;
         const curr = pat.data[key] || '---';
         
@@ -1186,6 +1208,7 @@ class SampleLab {
         } else {
             const loopId = parseInt(targetVal);
             const loop = state.loops[loopId];
+            if (!loop) return alert("Invalid loop target.");
         if (loop.audioBuffer) {
             if (!confirm(`Overwrite Loop ${loopId+1}?`)) return;
             LoopManager.pushUndoState(loopId);

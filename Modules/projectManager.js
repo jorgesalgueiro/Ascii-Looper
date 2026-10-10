@@ -39,9 +39,10 @@ class ProjectManager {
                 let wavBase64 = null;
                 if (loop.audioBuffer) {
                     const wavBuffer = AudioEngine.bufferToWAV(loop.audioBuffer);
-                    wavBase64 = await new Promise((resolve) => {
+                    wavBase64 = await new Promise((resolve, reject) => {
                         const reader = new FileReader();
                         reader.onload = () => resolve(reader.result.split(',')[1]);
+                        reader.onerror = () => reject(reader.error);
                         reader.readAsDataURL(new Blob([wavBuffer]));
                     });
                 }
@@ -71,9 +72,10 @@ class ProjectManager {
                 let wavBase64 = null;
                 if (sampler.buffer) {
                     const wavBuffer = AudioEngine.bufferToWAV(sampler.buffer);
-                    wavBase64 = await new Promise((resolve) => {
+                    wavBase64 = await new Promise((resolve, reject) => {
                         const reader = new FileReader();
                         reader.onload = () => resolve(reader.result.split(',')[1]);
+                        reader.onerror = () => reject(reader.error);
                         reader.readAsDataURL(new Blob([wavBuffer]));
                     });
                 }
@@ -99,6 +101,9 @@ class ProjectManager {
                 timeSig: state.timeSig,
                 bars: state.bars,
                 syncEnabled: state.syncEnabled,
+                syncMode: state.syncMode,
+                dynamicSnapWindow: state.dynamicSnapWindow,
+                dynamicStartQuantize: state.dynamicStartQuantize,
                 inputLatencyMs: state.inputLatencyMs, // Save manual latency correction
                 autoPlayAfterRecord: state.autoPlayAfterRecord,
                 autoRecordNext: state.autoRecordNext,
@@ -206,9 +211,17 @@ class ProjectManager {
     /**
      * Loads a project from a JSON file event.
      */
+    static _loading = false;
+
     static async load(event) {
         const file = event.target.files[0];
         if (!file) return;
+        if (this._loading) {
+            Log.warn('ProjectManager', 'Load already in progress, ignoring.');
+            if (event.target) event.target.value = '';
+            return;
+        }
+        this._loading = true;
 
         document.body.style.cursor = 'wait';
 
@@ -234,6 +247,9 @@ class ProjectManager {
             // Stop all current playback and recording
             if (window.DroneSynth) DroneSynth.stopAll();
             LoopManager.stopAll();
+            if (window.TrackerManager && state.tracker.isPlaying) {
+                TrackerManager.togglePlay(); // Stop tracker scheduler before tearing down state
+            }
             if (state.masterRecording) {
                 await App.toggleMasterRecording(); // Stop master recording safely
             }
@@ -266,21 +282,46 @@ class ProjectManager {
             state.bpm = data.bpm || 120;
             state.timeSig = data.timeSig || { num: 4, den: 4 };
             state.bars = data.bars || 2;
-            state.syncEnabled = data.syncEnabled !== undefined ? !!data.syncEnabled : true;
+            // Sync mode migration: new projects save syncMode; old ones only have syncEnabled
+            if (data.syncMode) {
+                state.syncMode = data.syncMode;
+            } else {
+                state.syncMode = (data.syncEnabled !== undefined && !data.syncEnabled) ? 'off' : 'static';
+            }
+            state.syncEnabled = state.syncMode !== 'off';
+            state.dynamicSnapWindow = (data.dynamicSnapWindow !== undefined) ? data.dynamicSnapWindow : 0.1;
+            state.dynamicStartQuantize = (data.dynamicStartQuantize !== undefined) ? data.dynamicStartQuantize : true;
             state.autoPlayAfterRecord = data.autoPlayAfterRecord !== false;
-            // Reflect into the checkboxes: SyncManager.updateSettings() reads them
+            // Reflect into the UI controls: SyncManager.updateSettings() reads them
             // back into state at the end of load and would otherwise restore
             // the stale on-screen values instead of the saved ones.
-            const syncCb = document.getElementById('syncLoops');
-            if (syncCb) syncCb.checked = state.syncEnabled;
+            const syncRadios = document.querySelectorAll('input[name="syncMode"]');
+            if (syncRadios.length > 0) {
+                syncRadios.forEach(r => r.checked = (r.value === state.syncMode));
+            } else {
+                // Legacy fallback: old checkbox
+                const syncCb = document.getElementById('syncLoops');
+                if (syncCb) syncCb.checked = state.syncEnabled;
+            }
+            // Dynamic options UI
+            const snapSlider = document.getElementById('dynamicSnapWindow');
+            if (snapSlider) snapSlider.value = state.dynamicSnapWindow;
+            const snapVal = document.getElementById('dynamicSnapWindowVal');
+            if (snapVal) snapVal.textContent = Math.round(state.dynamicSnapWindow * 1000) + 'ms';
+            const startQCb = document.getElementById('dynamicStartQuantize');
+            if (startQCb) startQCb.checked = state.dynamicStartQuantize;
+            const dynPanel = document.getElementById('dynamicOptionsPanel');
+            if (dynPanel) dynPanel.style.display = (state.syncMode === 'dynamic') ? '' : 'none';
             const autoPlayCb = document.getElementById('autoPlayAfterRecord');
             if (autoPlayCb) autoPlayCb.checked = state.autoPlayAfterRecord;
             state.autoRecordNext = data.autoRecordNext || false;
             if (document.getElementById('autoRecordNext')) document.getElementById('autoRecordNext').checked = state.autoRecordNext;
             if (data.metronomeVolume !== undefined) MetronomeScheduler.updateVolume(data.metronomeVolume);
             
-            if (data.countIn) state.countIn = data.countIn;
-            // Update UI checkboxes
+            if (data.countIn && typeof data.countIn === 'object') {
+                state.countIn = data.countIn;
+            }
+            // Update UI checkboxes (always, even if countIn came from existing state)
             if(document.getElementById('countInVisual')) document.getElementById('countInVisual').checked = state.countIn.visual;
             if(document.getElementById('countInAudio')) document.getElementById('countInAudio').checked = state.countIn.audio;
             
@@ -540,6 +581,7 @@ class ProjectManager {
         } catch (error) {
             Log.error('ProjectManager', 'Error loading project:', error);
         } finally {
+            this._loading = false;
             if (event.target) event.target.value = ''; // Clear file input
             document.body.style.cursor = 'default';
         }
@@ -564,7 +606,9 @@ class ProjectManager {
                     loop.wavePeaks = UIManager.generateWaveformPeaks(loop.audioBuffer);
                     loop.duration = loopData.duration || loop.audioBuffer.duration;
                 } catch (error) {
-                    console.error(`Error restoring loop ${loopData.id} WAV audio:`, error);
+                    Log.error('ProjectManager', `Failed to restore loop ${loopData.id} WAV audio:`, error);
+                    // Leave loop.audioBuffer null so the UI shows it as empty rather than
+                    // silently presenting a loaded project with phantom audio.
         }
         }
             
@@ -642,10 +686,15 @@ class ProjectManager {
         this.downloadWAV(wavData, `${loopName}_${Date.now()}.wav`);
     }
 
+    static _exporting = false;
+
     /**
      * Exports both Dry and Wet signals for Loops and Drones via real-time hidden bouncing.
      */
     static async exportDryWet(type, id) {
+        if (this._exporting) return alert('An export is already in progress.');
+        this._exporting = true;
+        try {
         const ts = Date.now();
         const safeName = this.getSafeProjectName();
         
@@ -687,18 +736,30 @@ class ProjectManager {
             if(btn) btn.textContent = "BOUNCING";
 
             setTimeout(async () => {
-                rec.stop();
-                graph.cleanup();
-                if (wasPlaying) loop.play(); 
-                if(btn) btn.textContent = "SAVE";
+                try {
+                    rec.stop();
+                    graph.cleanup();
+                    if (wasPlaying) loop.play(); 
+                    if(btn) btn.textContent = "SAVE";
 
-                setTimeout(async () => {
-                    const blob = new Blob(chunks, { type: rec.mimeType });
-                    const ab = await blob.arrayBuffer();
-                    const buf = await state.audioContext.decodeAudioData(ab);
-                    const wetWav = AudioEngine.bufferToWAV(buf);
-                    this.downloadWAV(wetWav, `${safeName}_Loop_${id+1}_Wet_${ts}.wav`);
-                }, 500);
+                    setTimeout(async () => {
+                        try {
+                            const blob = new Blob(chunks, { type: rec.mimeType });
+                            const ab = await blob.arrayBuffer();
+                            const buf = await state.audioContext.decodeAudioData(ab);
+                            const wetWav = AudioEngine.bufferToWAV(buf);
+                            this.downloadWAV(wetWav, `${safeName}_Loop_${id+1}_Wet_${ts}.wav`);
+                        } catch (e) {
+                            Log.error('ProjectManager', `Wet export decode failed for loop ${id+1}:`, e);
+                            if(btn) btn.textContent = "SAVE";
+                        } finally { this._exporting = false; }
+                    }, 500);
+                } catch (e) {
+                    Log.error('ProjectManager', `Wet export stop failed for loop ${id+1}:`, e);
+                    try { graph.cleanup(); } catch(_) {}
+                    if(btn) btn.textContent = "SAVE";
+                    this._exporting = false;
+                }
             }, dur * 1000);
             
         } else if (type === 'drone') {
@@ -724,20 +785,32 @@ class ProjectManager {
             if(btn) btn.textContent = "REC";
             
             setTimeout(async () => {
-                dryRec.stop(); wetRec.stop();
-                if (!wasPlaying) DroneSynth._stopSynth(id);
-                if(btn) btn.textContent = "WAV";
+                try {
+                    dryRec.stop(); wetRec.stop();
+                    if (!wasPlaying) DroneSynth._stopSynth(id);
+                    if(btn) btn.textContent = "WAV";
 
-                setTimeout(async () => {
-                    const dryBlob = new Blob(dryChunks, { type: dryRec.mimeType });
-                    const wetBlob = new Blob(wetChunks, { type: wetRec.mimeType });
-                    const dBuf = await state.audioContext.decodeAudioData(await dryBlob.arrayBuffer());
-                    const wBuf = await state.audioContext.decodeAudioData(await wetBlob.arrayBuffer());
-                    this.downloadWAV(AudioEngine.bufferToWAV(dBuf), `${safeName}_Drone_${id+1}_Dry_${ts}.wav`);
-                    this.downloadWAV(AudioEngine.bufferToWAV(wBuf), `${safeName}_Drone_${id+1}_Wet_${ts}.wav`);
-                }, 500);
+                    setTimeout(async () => {
+                        try {
+                            const dryBlob = new Blob(dryChunks, { type: dryRec.mimeType });
+                            const wetBlob = new Blob(wetChunks, { type: wetRec.mimeType });
+                            const dBuf = await state.audioContext.decodeAudioData(await dryBlob.arrayBuffer());
+                            const wBuf = await state.audioContext.decodeAudioData(await wetBlob.arrayBuffer());
+                            this.downloadWAV(AudioEngine.bufferToWAV(dBuf), `${safeName}_Drone_${id+1}_Dry_${ts}.wav`);
+                            this.downloadWAV(AudioEngine.bufferToWAV(wBuf), `${safeName}_Drone_${id+1}_Wet_${ts}.wav`);
+                        } catch (e) {
+                            Log.error('ProjectManager', `Drone wet export decode failed for drone ${id+1}:`, e);
+                            if(btn) btn.textContent = "WAV";
+                        } finally { this._exporting = false; }
+                    }, 500);
+                } catch (e) {
+                    Log.error('ProjectManager', `Drone wet export stop failed for drone ${id+1}:`, e);
+                    if(btn) btn.textContent = "WAV";
+                    this._exporting = false;
+                }
             }, dur * 1000);
         }
+        } catch (e) { this._exporting = false; throw e; }
     }
 
     /**
@@ -836,9 +909,6 @@ class ProjectManager {
                 }
             }
         }
-
-        document.getElementById('exportAllBtn').textContent = '[E] EXP ALL';
-        UIManager.updateExportButtons();
 
         let msg = `${exported} track(s) exported!`;
         if (errors.length > 0) msg += `\n\nErrors:\n${errors.join('\n')}`;

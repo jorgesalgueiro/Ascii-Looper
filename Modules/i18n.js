@@ -42,7 +42,7 @@ const I18n = {
             TIP_DRONE_RES: "Filter Resonance", TIP_DRONE_ENV: "Envelope Depth", TIP_DRONE_DRIVE: "Overdrive Amount",
             TIP_DRONE_LFO_R: "LFO Rate", TIP_DRONE_LFO_D: "LFO Depth", TIP_DRONE_REL: "Release Time",
             TIP_IN_VOL: "Input Volume", TIP_IN_PAN: "Input Panning", TIP_IN_MON: "Monitor Toggle",
-            TIP_MIDI_LEARN: "Toggle MIDI Input", TIP_REC_DRONE: "Record Drone Output", TIP_SOLO: "Solo Track"
+            TIP_MIDI_LEARN: "Toggle MIDI Input", TIP_REC_DRONE: "Record Drone Output"
         },
         es: {
             PROJ_MENU: "MENÚ PROYECTO", SYSTEM: "SISTEMA",
@@ -115,7 +115,10 @@ const I18n = {
         });
         // Update placeholders/inputs if needed
         const projName = document.getElementById('projectName');
-        if(projName && this.lang === 'es') projName.placeholder = "Mi Proyecto";
-        if(projName && this.lang === 'pt') projName.placeholder = "Meu Projeto";
+        if(projName) {
+            if(this.lang === 'es') projName.placeholder = "Mi Proyecto";
+            else if(this.lang === 'pt') projName.placeholder = "Meu Projeto";
+            else projName.placeholder = "";
+        }
     }
 };

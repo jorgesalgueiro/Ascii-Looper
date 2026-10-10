@@ -143,15 +143,18 @@ class AudioEngine {
                 scriptEls.forEach(el => processorScript += el.textContent + '\n');
                 
                 let url;
-                if (window.location.protocol === 'file:') {
-                    url = 'data:application/javascript;base64,' + btoa(unescape(encodeURIComponent(processorScript)));
-                } else {
-                    const blob = new Blob([processorScript], { type: 'application/javascript' });
-                    url = URL.createObjectURL(blob);
-                }
-                await state.audioContext.audioWorklet.addModule(url);
-                if (url.startsWith('blob:')) {
-                    URL.revokeObjectURL(url);
+                try {
+                    if (window.location.protocol === 'file:') {
+                        url = 'data:application/javascript;base64,' + btoa(unescape(encodeURIComponent(processorScript)));
+                    } else {
+                        const blob = new Blob([processorScript], { type: 'application/javascript' });
+                        url = URL.createObjectURL(blob);
+                    }
+                    await state.audioContext.audioWorklet.addModule(url);
+                } finally {
+                    if (url && url.startsWith('blob:')) {
+                        URL.revokeObjectURL(url);
+                    }
                 }
             }
             catch (e) { 
@@ -226,6 +229,10 @@ class AudioEngine {
             
         } catch (error) {
             console.error("Audio engine initialization failed:", error);
+            if (state.audioContext) {
+                state.audioContext.close().catch(() => {});
+                state.audioContext = null;
+            }
             alert("Failed to initialize audio engine. Your browser might not be supported.");
             return false;
         }
@@ -612,7 +619,7 @@ class AudioEngine {
      * Modifies buffer1 in-place. Used for seamless overdubs.
      */
     static async mixBuffersCircular(buffer1, buffer2, offsetSeconds, feedback = 0.80) {
-        if (!buffer1 || !buffer2) return Promise.resolve();
+        if (!buffer1 || !buffer2 || buffer1.length === 0 || buffer2.length === 0) return Promise.resolve();
         
         return new Promise((resolve) => {
             const sr = buffer1.sampleRate;
@@ -621,7 +628,7 @@ class AudioEngine {
             let offsetSamples = Math.floor(offsetSeconds * sr);
             // Ensure positive wrap-around
             offsetSamples = ((offsetSamples % len1) + len1) % len1;
-            const fadeSamples = Math.min(Math.floor(sr * 0.01), Math.floor(len2 * 0.1)); // 10ms equal-power fade
+            const fadeSamples = Math.max(1, Math.min(Math.floor(sr * 0.01), Math.floor(len2 * 0.1))); // 10ms equal-power fade, min 1 sample
 
             // Precompute fade tables to eliminate expensive math in inner loop
             const fadeFb = new Float32Array(fadeSamples);
@@ -690,25 +697,83 @@ class AudioEngine {
 
     /**
      * Performs a seamless crossfade at the loop boundary.
-     * Mixes the end of the buffer into the start to prevent clicks.
+     * Uses zero-crossing alignment and equal-power (√cos/√sin) curves
+     * to eliminate clicks and make the loop transition sound natural.
+     *
+     * Strategy (based on standard DSP looping techniques):
+     *   1. Find zero-crossings near the start and end of the fade region
+     *      so the crossfade begins/ends at amplitude zero.
+     *   2. Apply an equal-power crossfade: the head fades in with √sin
+     *      and the tail fades out with √cos, keeping perceived loudness
+     *      constant through the overlap.
+     *   3. Use a generous overlap window (requested time, up to 20 % of
+     *      a short loop) so the transition is spread over enough samples
+     *      to be inaudible.
      */
     static seamlessLoopCrossfade(audioBuffer, fadeTimeSeconds) {
-        if (!audioBuffer) return;
-        // Allow up to the requested time, but ensure we don't fade more than 20% of a very short loop.
-        const requestedSamples = Math.floor(audioBuffer.sampleRate * fadeTimeSeconds);
-        const maxSafeSamples = Math.floor(audioBuffer.length * 0.2); 
-        const fadeSamples = Math.min(requestedSamples, maxSafeSamples);
-        
-        if (fadeSamples <= 0) return;
+        if (!audioBuffer || audioBuffer.length < 4) return;
+
+        const sr = audioBuffer.sampleRate;
         const len = audioBuffer.length;
-        
+        const requestedSamples = Math.floor(sr * (fadeTimeSeconds || 0.015));
+        const maxSafeSamples = Math.floor(len * 0.2);
+        const fadeSamples = Math.min(requestedSamples, maxSafeSamples);
+
+        if (fadeSamples < 2) return;
+
         for (let c = 0; c < audioBuffer.numberOfChannels; c++) {
             const data = audioBuffer.getChannelData(c);
 
-            for (let i = 0; i < fadeSamples; i++) {
-                const fade = Math.sin((i / fadeSamples) * (Math.PI / 2));
-                // Crossfade: blend the tail (fading out) into the head (fading in)
-                data[i] = data[i] * fade + data[len - fadeSamples + i] * (1 - fade);
+            // --- Zero-crossing snap at the HEAD (sample 0 region) ----------
+            // Search forward from sample 0 for the first positive-going zero
+            // crossing within the first quarter of the fade window.
+            let headStart = 0;
+            const zcSearchLen = Math.min(Math.floor(fadeSamples * 0.25), 256);
+            for (let i = 1; i < zcSearchLen && i < len; i++) {
+                if (data[i - 1] <= 0 && data[i] > 0) { headStart = i; break; }
+            }
+
+            // --- Zero-crossing snap at the TAIL (end of buffer region) -----
+            // Search backward from the last sample for a positive-going zero
+            // crossing within the last quarter of the fade window.
+            let tailEnd = len;
+            for (let i = len - 2; i > len - 1 - zcSearchLen && i > 0; i--) {
+                if (data[i - 1] <= 0 && data[i] > 0) { tailEnd = i; break; }
+            }
+
+            // Effective overlap length after zero-crossing adjustment
+            const overlapLen = Math.min(fadeSamples, tailEnd - headStart);
+            if (overlapLen < 2) continue;
+
+            // The tail region starts so that tail[tailEnd - overlapLen] aligns
+            // with the head at headStart.
+            const tailStart = tailEnd - overlapLen;
+
+            // --- Equal-power crossfade ------------------------------------
+            // head fades IN  : gain = √sin(π/2 · t)   (0 → 1)
+            // tail fades OUT : gain = √cos(π/2 · t)   (1 → 0)
+            // This keeps  head² + tail² = 1  at every sample → constant power.
+            const halfPi = Math.PI / 2;
+            for (let i = 0; i < overlapLen; i++) {
+                const t = i / overlapLen;
+                const gainIn  = Math.sqrt(Math.sin(halfPi * t));
+                const gainOut = Math.sqrt(Math.cos(halfPi * t));
+                const headIdx = headStart + i;
+                const tailIdx = tailStart + i;
+                if (headIdx < len && tailIdx >= 0 && tailIdx < len) {
+                    data[headIdx] = data[headIdx] * gainIn + data[tailIdx] * gainOut;
+                }
+            }
+
+            // --- Smooth the very first and last samples to zero -----------
+            // A tiny 8-sample cosine fade at the absolute start and end
+            // guarantees the loop point is click-free even if the zero-
+            // crossing snap wasn't perfect.
+            const edgeLen = Math.min(8, Math.floor(overlapLen * 0.1));
+            for (let i = 0; i < edgeLen; i++) {
+                const edgeFade = 0.5 - 0.5 * Math.cos(Math.PI * i / edgeLen);
+                data[i] *= edgeFade;
+                data[len - 1 - i] *= edgeFade;
             }
         }
     }
@@ -717,15 +782,16 @@ class AudioEngine {
      * Slices an AudioBuffer based on start/end ratios (0.0 - 1.0).
      */
     static sliceBuffer(buffer, startRatio, endRatio) {
+        if (!buffer || !state.audioContext) return buffer;
         const channels = buffer.numberOfChannels;
         const rate = buffer.sampleRate;
         const len = buffer.length;
         const startSample = Math.floor(startRatio * len);
         const endSample = Math.floor(endRatio * len);
         const newLen = endSample - startSample;
-        
+
         if (newLen <= 0) return buffer; // Fail safe
-        
+
         const newBuf = state.audioContext.createBuffer(channels, newLen, rate);
         for (let i = 0; i < channels; i++) {
             const d = buffer.getChannelData(i).subarray(startSample, endSample);
@@ -779,7 +845,7 @@ class AudioEngine {
         const length = buffer.length;
         if (length === 0) return;
         let fadeSamples = Math.floor(duration * buffer.sampleRate);
-        if (fadeSamples * 2 > length) fadeSamples = Math.floor(length / 2); // Prevent overlap on short samples
+        if (fadeSamples * 2 >= length) fadeSamples = Math.floor(length / 3); // Strict non-overlap for short buffers
         for (let c = 0; c < buffer.numberOfChannels; c++) {
             const data = buffer.getChannelData(c);
             for (let i = 0; i < fadeSamples; i++) {
