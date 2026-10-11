@@ -520,6 +520,7 @@ class DroneSynth {
             name: name,
             params: newPreset,
             fxParams: synth.fxParams, // Include FX settings
+            fxState: synth.fxState,    // Include FX on/off toggles
             signalChain: synth.signalChain
         };
 
@@ -576,10 +577,11 @@ class DroneSynth {
                     else synth.fxParams[fxKey] = data.fxParams[fxKey];
                 });
             }
-            if(data.signalChain) synth.signalChain = data.signalChain;
+            if(typeof data.signalChain === 'string') synth.signalChain = data.signalChain;
+            if(data.fxState) Object.assign(synth.fxState, data.fxState);
             // Effects read their settings when they are built, so a new chain or knob
             // values only take effect once the graph is rebuilt.
-            if(data.fxParams || data.signalChain) this.rebuildFxChain(id);
+            if(data.fxParams || data.signalChain || data.fxState) this.rebuildFxChain(id);
             
             // Add to session presets
             const pName = data.name || file.name.replace('.ald','');
@@ -1033,6 +1035,7 @@ class DroneSynth {
         } catch (e) {
             Log.debug('DroneSynth', 'Drone FX chain connect warning:', e);
         }
+        synth.fxChain.end = lastNode;
         // Reconnect output to Drone Bus and Analyser (Post-Volume/Wet)
         synth.output.disconnect();
         try { synth.output.connect(synth.analyser); } catch(e) {}
@@ -1045,9 +1048,13 @@ class DroneSynth {
     static toggleFx(id, effectName) {
         const synth = this.instances[id];
         if(synth) {
-            synth.fxState[effectName] = !synth.fxState[effectName];
-            this.rebuildFxChain(id);
-            this.renderFxToggles(id);
+            if (typeof EffectManager !== 'undefined' && EffectManager.handleEffectToggleFade) {
+                EffectManager.handleEffectToggleFade(synth, 'drone', effectName);
+            } else {
+                synth.fxState[effectName] = !synth.fxState[effectName];
+                this.rebuildFxChain(id);
+                this.renderFxToggles(id);
+            }
             if(window.UIManager && UIManager.updateLiveDrone) UIManager.updateLiveDrone(id);
         }
     }
@@ -1555,6 +1562,19 @@ class DroneSynth {
             v.panner.pan.cancelScheduledValues(t);
             try { v.panner.pan.setValueAtTime(v.panner.pan.value || 0, t); } catch(e){}
 
+            // Reset auxiliary modulation params that may carry stale automation
+            // from the voice's previous use (sub level, FM depth, vibrato, LFO).
+            v.subMix.gain.cancelScheduledValues(t);
+            v.subMix.gain.setValueAtTime(0, t);
+            v.fmGain.gain.cancelScheduledValues(t);
+            v.fmGain.gain.setValueAtTime(0, t);
+            v.vib.frequency.cancelScheduledValues(t);
+            v.vibGain.gain.cancelScheduledValues(t);
+            v.vibGain.gain.setValueAtTime(0, t);
+            v.lfo.frequency.cancelScheduledValues(t);
+            v.lfoGain.gain.cancelScheduledValues(t);
+            v.lfoGain.gain.setValueAtTime(0, t);
+
             // Disconnect panner and noise source so reused voices don't accumulate
             // duplicate parallel connections (each connect() adds a new signal path).
             try { v.panner.disconnect(); } catch(e) {}
@@ -1670,7 +1690,8 @@ class DroneSynth {
         return {
             nodes: [osc1, osc2, sub, oscMix, subMix, filter, vca, null, noiseGain, lfo, lfoGain, panner, shaper, fmGain, drive, vib, vibGain, uni, uniGain, filter2, driftGain],
             osc1, osc2, sub, uni, oscMix, subMix, uniGain, filter, filter2, vca, noiseGain, lfo, lfoGain, panner, fmGain, drive, vib, vibGain, driftGain, driftSrc,
-            isPooled: false
+            isPooled: false,
+            _ctx: ctx
         };
     }
 
@@ -1678,6 +1699,8 @@ class DroneSynth {
         // A scheduled stop notes every voice off, then _finishStopSynth notes the
         // still-listed ones off again; without this the same voice enters the pool twice.
         if (v.isPooled) return;
+        // Discard voices from a previous AudioContext (e.g. after project load)
+        if (v._ctx && v._ctx !== state.audioContext) return;
         v.isPooled = true;
         if (this.voicePool.length < this.MAX_POOL_SIZE) {
             const t = state.audioContext.currentTime;
@@ -2300,7 +2323,7 @@ class DroneSynth {
                 });
             }
 
-            if (instData.signalChain) synth.signalChain = instData.signalChain || "QCATFODBVKZG";
+            if (instData.signalChain) synth.signalChain = instData.signalChain;
             if (instData.activePresets) synth.activePresets = instData.activePresets;
             if (instData.fxState) Object.assign(synth.fxState, instData.fxState);
             if (instData.state === 'playing' || instData.state === 'stopping' || instData.state === 'armed') synth.state = 'stopped'; // Restore as stopped; scheduler state isn't serializable

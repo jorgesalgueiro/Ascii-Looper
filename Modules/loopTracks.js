@@ -655,6 +655,12 @@ class AudioGraph {
         const t = scheduledTime || now;
         const actualT = Math.max(t, now + 0.005);
         
+        // Validate buffer BEFORE stopping old source — if the buffer is invalid
+        // (e.g. reverse cache miss), bail out and let the old source keep playing.
+        let buffer = loopRef.audioBuffer;
+        if (loopRef.effects.reverse) buffer = AudioEngine.getReversedBuffer(buffer);
+        if (!buffer) return;
+
         // 1. Stop and disconnect old source safely
         if (this.source) {
             try { this.source.stop(actualT); } catch(e) {}
@@ -668,10 +674,6 @@ class AudioGraph {
                 try { oldSource.disconnect(); } catch(e){}
             }, delayMs);
         }
-        
-        let buffer = loopRef.audioBuffer;
-        if (loopRef.effects.reverse) buffer = AudioEngine.getReversedBuffer(buffer);
-        if (!buffer) return;
 
         this.source = state.audioContext.createBufferSource();
         this.source.buffer = buffer;
@@ -2171,7 +2173,7 @@ class Loop {
         this.playRequest++;
 
         // Allow stop to proceed if state is 'stopping' (scheduled stop)
-        if (this.state !== 'playing' && this.state !== 'overdubbing' && this.state !== 'substituting' && this.state !== 'stopping' && this.state !== 'multiplying' && this.state !== 'queued') return;
+        if (this.state !== 'playing' && this.state !== 'overdubbing' && this.state !== 'substituting' && this.state !== 'stopping' && this.state !== 'multiplying' && this.state !== 'queued' && this.state !== 'restarting') return;
 
         if (this.stopTimeout) clearTimeout(this.stopTimeout);
         this.stopTimeout = null;
@@ -2332,6 +2334,12 @@ class Loop {
                 try { state.loopRecorder.port.postMessage({ command: 'stop' }); } catch(e){} 
                 try { state.loopRecorder.disconnect(); } catch(e){}
                 state.loopRecorder = null;
+            }
+            // Clean up live recording analyser to prevent CPU leak
+            if (state.liveRecordAnalyser) {
+                try { state.liveRecordAnalyser.disconnect(); } catch(e) {}
+                state.liveRecordAnalyser = null;
+                state.liveRecordAnalyserData = null;
             }
             
             // Reset Global Recording State
@@ -2512,7 +2520,7 @@ class LoopManager {
             if (sampler.state !== 'empty') SamplerManager.stop(sampler.id, now);
         });
         state.loops.forEach(loop => {
-            if (loop.state === 'playing' || loop.state === 'overdubbing' || loop.state === 'substituting' || loop.state === 'multiplying' || loop.state === 'stopping') {
+            if (loop.state === 'playing' || loop.state === 'overdubbing' || loop.state === 'substituting' || loop.state === 'multiplying' || loop.state === 'stopping' || loop.state === 'restarting') {
                 loop.stop(now + 0.015); // Minimal latency stop (15ms fade)
             }
             if (loop.state === 'queued') {
@@ -2529,6 +2537,11 @@ class LoopManager {
         if (state.recordingTimeout) clearTimeout(state.recordingTimeout);
         state.recordingStartTimeout = null;
         state.recordingTimeout = null;
+
+        if (state.inputPressTimers) {
+            Object.values(state.inputPressTimers).forEach(p => { try { clearTimeout(p.timer); } catch(_) {} });
+            state.inputPressTimers = {};
+        }
     }
 
     /**
@@ -2933,6 +2946,11 @@ class LoopManager {
                 try { state.loopRecorder.disconnect(); } catch(e){}
                 state.loopRecorder = null;
             }
+            if (state.liveRecordAnalyser) {
+                try { state.liveRecordAnalyser.disconnect(); } catch(e) {}
+                state.liveRecordAnalyser = null;
+                state.liveRecordAnalyserData = null;
+            }
             UIManager.updateStatus(); // Ensure UI resets if loop was null
             return;
         }
@@ -2955,6 +2973,11 @@ class LoopManager {
              state.recordingLoopId = -1;
              state.isFinishingRecording = false;
              state.loopRecorder = null;
+             if (state.liveRecordAnalyser) {
+                 try { state.liveRecordAnalyser.disconnect(); } catch(e) {}
+                 state.liveRecordAnalyser = null;
+                 state.liveRecordAnalyserData = null;
+             }
              loop.state = 'empty';
              loop.graph = null;
              UIManager.updateLoop(loop.id);

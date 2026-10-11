@@ -181,11 +181,11 @@ test('a bounced loop reaches the recorder through its pan stage', () => {
     assert.ok(bounce(loop).toRecorder, 'the wet bounce must carry signal into the media stream destination');
 });
 
-test('a bounced loop is not audible through the master mix', () => {
+test('a bounced loop remains audible through the master mix (tap, not reroute)', () => {
     const { addLoop, bounce } = createHarness();
     const loop = addLoop();
 
-    assert.equal(bounce(loop).toMix, false, 'the take must not double into the live mix');
+    assert.equal(bounce(loop).toMix, true, 'the bounce taps the signal — the live mix must stay intact');
 });
 
 test('a zigZ loop still reaches the recorder', () => {

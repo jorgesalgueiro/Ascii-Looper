@@ -493,7 +493,8 @@ class SyncManager {
                             const sysLat = (ctx.baseLatency || 0) + (ctx.outputLatency || 0);
                             const correction = Math.round((latencySec - sysLat) * 1000);
                             if(confirm(`Roundtrip: ${(latencySec*1000).toFixed(1)}ms\nSystem Reported: ${(sysLat*1000).toFixed(1)}ms\n\nApply offset: ${correction}ms?`)) {
-                                document.getElementById('latencyCorrection').value = correction;
+                                const latEl = document.getElementById('latencyCorrection');
+                                if (latEl) latEl.value = correction;
                                 SyncManager.updateSettings();
                             }
                         }

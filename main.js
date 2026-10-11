@@ -849,6 +849,7 @@ class App {
             const ccValue = data2; // MIDI value 0-127
             
             if (state.midiLearn && state.midiLearn.active) {
+                if (state.midiLearn.cancelTimeout) clearTimeout(state.midiLearn.cancelTimeout);
                 state.midiCCMap[ccNumber] = {
                     type: state.midiLearn.type,
                     e: state.midiLearn.e,
@@ -1143,6 +1144,7 @@ class App {
 
                 // Cancel existing learn if any
                 if (state.midiLearn && state.midiLearn.active) {
+                    if (state.midiLearn.cancelTimeout) clearTimeout(state.midiLearn.cancelTimeout);
                     if (state.midiLearn.element) state.midiLearn.element.style.outline = '';
                     if (state.midiLearn.restoreLabel) state.midiLearn.restoreLabel();
                     state.midiLearn.active = false;
@@ -1167,6 +1169,19 @@ class App {
                     state.midiLearn = { active: true, ...mappingInfo };
                     target.style.outline = '2px solid #f0f';
                     KeyMapManager.setStatus('Waiting for MIDI CC...');
+
+                    // Auto-cancel after 10 seconds to prevent the UI getting stuck
+                    // in learn mode if the user right-clicked accidentally.
+                    if (state.midiLearn.cancelTimeout) clearTimeout(state.midiLearn.cancelTimeout);
+                    state.midiLearn.cancelTimeout = setTimeout(() => {
+                        if (state.midiLearn && state.midiLearn.active) {
+                            if (state.midiLearn.element) state.midiLearn.element.style.outline = '';
+                            if (state.midiLearn.restoreLabel) state.midiLearn.restoreLabel();
+                            state.midiLearn.active = false;
+                            KeyMapManager.setStatus('MIDI Learn timed out');
+                            setTimeout(() => KeyMapManager.setStatus(''), 2000);
+                        }
+                    }, 10000);
                     
                     const label = target.previousElementSibling;
                     if (label && label.tagName === 'LABEL') {
@@ -1525,6 +1540,7 @@ class App {
                 state.stemRecorders = [];
                 // Clean up input recorder if it was already created
                 if (state.inputRecorder) { try { state.inputRecorder.stop(); } catch(_) {} }
+                if (state.masterRecorder) { try { state.masterRecorder.stop(); } catch(_) {} }
                 state.masterRecorder = null;
                 state.inputRecorder = null;
                 // Disconnect monitored input from recording destination to prevent double-connection on retry

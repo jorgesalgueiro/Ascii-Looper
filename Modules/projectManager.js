@@ -485,9 +485,8 @@ class ProjectManager {
 
             // Restore Master Input Bus
             if (data.inputParams) {
-                InputManager.masterParams = JSON.parse(JSON.stringify(data.inputParams));
                 for (const key in data.inputParams) {
-                    if (InputManager.masterParams[key]) {
+                    if (InputManager.masterParams[key] && typeof InputManager.masterParams[key] === 'object') {
                         Object.assign(InputManager.masterParams[key], data.inputParams[key]);
                     } else {
                         InputManager.masterParams[key] = data.inputParams[key];
@@ -700,14 +699,19 @@ class ProjectManager {
         
         if (type === 'loop') {
             const loop = state.loops[id];
-            if (!loop || !loop.audioBuffer) return alert('Loop is empty.');
+            if (!loop || !loop.audioBuffer) { this._exporting = false; return alert('Loop is empty.'); }
 
             // Dry
             const dryWav = AudioEngine.bufferToWAV(loop.audioBuffer);
             this.downloadWAV(dryWav, `${safeName}_Loop_${id+1}_Dry_${ts}.wav`);
 
             // Wet
+            if (!state.audioContext || state.audioContext.state !== 'running') {
+                this._exporting = false;
+                return alert('Audio context is not running. Cannot export wet signal.');
+            }
             const wasPlaying = loop.state === 'playing';
+            const capturedBuffer = loop.audioBuffer;
             // The bounce is real time, and the graph plays at the same rate the source
             // does, so a slowed take needs duration / rate rather than duration seconds.
             const rate = Math.max(0.001, loop.effectivePlaybackRate || 1);
@@ -726,7 +730,6 @@ class ProjectManager {
             // zigZ owns the panning — and point it at the recorder. Disconnecting the
             // volume node instead would starve the merger and bounce a silent take.
             const tap = (graph.nodes.pan && graph.nodes.pan.merger) || graph.nodes.volume;
-            tap.disconnect();
             tap.connect(dest);
             
             rec.start();
@@ -739,7 +742,7 @@ class ProjectManager {
                 try {
                     rec.stop();
                     graph.cleanup();
-                    if (wasPlaying) loop.play(); 
+                    if (wasPlaying && state.loops[id] && state.loops[id].audioBuffer === capturedBuffer) loop.play(); 
                     if(btn) btn.textContent = "SAVE";
 
                     setTimeout(async () => {
@@ -764,11 +767,11 @@ class ProjectManager {
             
         } else if (type === 'drone') {
             const synth = DroneSynth.instances[id];
-            if (!synth) return;
+            if (!synth) { this._exporting = false; return; }
             if (!synth.dryDestination) synth.dryDestination = state.audioContext.createMediaStreamDestination();
-            if (!synth.wetDestination) return alert("Drone not fully initialized.");
+            if (!synth.wetDestination) { this._exporting = false; return alert("Drone not fully initialized."); }
             
-            const bars = 2;
+            const bars = state.bars || 2;
             const dur = ((60 / state.bpm) * state.timeSig.num * bars) + 3.0;
             
             const dryChunks = []; const wetChunks = [];
@@ -850,7 +853,7 @@ class ProjectManager {
         // 2. Export Master Mix
         if (hasMix) {
             try {
-                const blob = new Blob(state.masterChunks, { type: state.masterMimeType });
+                const blob = new Blob(state.masterChunks, { type: state.masterMimeType || 'audio/webm' });
                 const ab = await blob.arrayBuffer();
                 const buffer = await state.audioContext.decodeAudioData(ab);
                 AudioEngine.applyFades(buffer, 0.01);

@@ -460,6 +460,7 @@ class AudioEngine {
      */
     static createSimpleReverbIR(duration, decay, sampleRate) {
         if (!state.audioContext) return null;
+        if (!duration || duration <= 0) { duration = 0.1; }
         const length = Math.max(1, Math.floor(sampleRate * duration));
         const audioBuffer = state.audioContext.createBuffer(2, length, sampleRate);
         // Exponential decay rate from the user 'decay' param. Tuned so the tail
@@ -562,7 +563,8 @@ class AudioEngine {
         view.setUint32(40, samples.length * 2, true);
         let offset = 44;
         for (let i = 0; i < samples.length; i++) {
-            const sample = Math.max(-1, Math.min(1, samples[i]));
+            const raw = samples[i];
+            const sample = Number.isFinite(raw) ? Math.max(-1, Math.min(1, raw)) : 0;
             view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
             offset += 2;
         }
