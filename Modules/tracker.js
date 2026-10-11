@@ -27,6 +27,7 @@ class TrackerManager {
 
         // Init Canvas
         this.canvas = document.getElementById('trackerCanvas');
+        if (!this.canvas) return;
         this.ctx = this.canvas.getContext('2d', { alpha: false }); // Optimize
         this.canvas.onclick = (e) => this.handleCanvasClick(e);
 
@@ -226,10 +227,13 @@ class TrackerManager {
             state.tracker.playlist = this.normalizePlaylist(data.playlist);
 
             if (importTempo) {
-                document.getElementById('bpmInput').value = data.bpm;
+                const bpmInput = document.getElementById('bpmInput');
+                if (bpmInput) bpmInput.value = data.bpm;
                 if (data.timeSig) {
-                    document.getElementById('timeSigNum').value = data.timeSig.num;
-                    document.getElementById('timeSigDen').value = data.timeSig.den;
+                    const timeSigNum = document.getElementById('timeSigNum');
+                    const timeSigDen = document.getElementById('timeSigDen');
+                    if (timeSigNum) timeSigNum.value = data.timeSig.num;
+                    if (timeSigDen) timeSigDen.value = data.timeSig.den;
                 }
                 SyncManager.updateSettings();
             }
@@ -910,16 +914,19 @@ class SampleLab {
             if (rec) {
                 try { rec.port.postMessage({ command: 'stop' }); } catch(e) {}
                 // Disconnect after a tick so the stop message flushes
-                setTimeout(() => { try { rec.disconnect(); } catch(e) {} }, 50);
+                if (this._recDisconnectTimer) clearTimeout(this._recDisconnectTimer);
+                this._recDisconnectTimer = setTimeout(() => { try { rec.disconnect(); } catch(e) {} this._recDisconnectTimer = null; }, 50);
             }
             if (btn) {
                 btn.innerHTML = I18n.t('REC_SAMPLER');
                 btn.classList.remove('blink-text');
             }
         } else {
-            if (!await AudioEngine.resume()) return;
+            // Set recording flag BEFORE await to prevent re-entry race condition
+            this.isRecording = true;
+            if (!await AudioEngine.resume()) { this.isRecording = false; return; }
             const inputNode = InputManager.getRecordingNode();
-            if (!inputNode) return alert("No input source available");
+            if (!inputNode) { this.isRecording = false; return alert("No input source available"); }
             this.recChunks = [];
             try {
                 this.recorder = new AudioWorkletNode(state.audioContext, 'recorder-processor');
@@ -933,10 +940,12 @@ class SampleLab {
                 inputNode.connect(this.recorder);
                 this.recorder.connect(state.audioContext.destination);
                 this.recorder.port.postMessage({ command: 'start' });
-                this.isRecording = true;
                 if (btn) { btn.innerHTML = "STOP REC"; btn.classList.add('blink-text'); }
                 document.getElementById('labStatus').textContent = "RECORDING...";
-            } catch (e) { Log.error('SampleLab', 'Recorder failed to start:', e); }
+            } catch (e) {
+                Log.error('SampleLab', 'Recorder failed to start:', e);
+                this.isRecording = false;
+            }
         }
     }
     

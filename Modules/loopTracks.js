@@ -693,6 +693,9 @@ class AudioGraph {
         if (this.nodes.baseGain) {
             const gainNode = this.nodes.baseGain;
             const fadeStart = Math.max(now, actualT - 0.005);
+            // Anchor the current value so scheduledFade's internal cancelScheduledValues
+            // doesn't wipe the fade-to-0 we're about to schedule.
+            gainNode.gain.setValueAtTime(gainNode.gain.value, fadeStart);
             AudioEngine.scheduledFade(gainNode, 0, fadeStart, (actualT - fadeStart) * 1000);
             gainNode.gain.linearRampToValueAtTime(1.0, actualT + 0.010);
             this.source.connect(gainNode);
@@ -2181,6 +2184,8 @@ class Loop {
         this.stopTimeout = null;
         if (this.queueTimeout) clearTimeout(this.queueTimeout);
         this.queueTimeout = null;
+        if (this._restartCleanup) clearTimeout(this._restartCleanup);
+        this._restartCleanup = null;
         const now = AudioEngine.currentTime;
 
         // Handle Scheduled Stop
@@ -2316,6 +2321,7 @@ class Loop {
         }
 
         // 1. Force-stop any playback graph
+        if (this._restartCleanup) { clearTimeout(this._restartCleanup); this._restartCleanup = null; }
         if (this.graph && typeof this.graph.cleanup === 'function') {
             this.graph.cleanup();
             this.graph = null;
@@ -2522,6 +2528,7 @@ class LoopManager {
             if (sampler.state !== 'empty') SamplerManager.stop(sampler.id, now);
         });
         state.loops.forEach(loop => {
+            if (loop._restartCleanup) { clearTimeout(loop._restartCleanup); loop._restartCleanup = null; }
             if (loop.state === 'playing' || loop.state === 'overdubbing' || loop.state === 'substituting' || loop.state === 'multiplying' || loop.state === 'stopping' || loop.state === 'restarting') {
                 loop.stop(now + 0.015); // Minimal latency stop (15ms fade)
             }

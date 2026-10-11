@@ -2417,17 +2417,19 @@ class EffectManager {
         try {
             if (targets.type === 'drywet') {
                 const targetMix = p.mix !== undefined ? p.mix : 0.5;
-                targets.dry.value = 1.0; targets.wet.value = 0.0;
+                targets.dry.cancelScheduledValues(now); targets.dry.value = 1.0;
+                targets.wet.cancelScheduledValues(now); targets.wet.value = 0.0;
                 AudioEngine.scheduledFade(targets.dry, 1.0 - targetMix, now, mixTimeMs);
                 AudioEngine.scheduledFade(targets.wet, targetMix, now, mixTimeMs);
             } else if (targets.type === 'param') {
                 let targetVal = 1.0;
                 if (effectName === 'arpDelay' || effectName === 'harmony') targetVal = p.mix !== undefined ? p.mix : 0.5;
                 else if (effectName === 'zigZ') targetVal = p.depth !== undefined ? p.depth : 0.7;
-                targets.param.value = 0.0;
+                targets.param.cancelScheduledValues(now); targets.param.value = 0.0;
                 AudioEngine.scheduledFade(targets.param, targetVal, now, mixTimeMs);
             } else if (targets.type === 'dusk') {
-                targets.verb.value = 0.0; targets.grain.value = 0.0;
+                targets.verb.cancelScheduledValues(now); targets.verb.value = 0.0;
+                targets.grain.cancelScheduledValues(now); targets.grain.value = 0.0;
                 AudioEngine.scheduledFade(targets.verb, p.verbMix !== undefined ? p.verbMix : 0.4, now, mixTimeMs);
                 AudioEngine.scheduledFade(targets.grain, p.grainMix !== undefined ? p.grainMix : 0.2, now, mixTimeMs);
             }
@@ -2852,14 +2854,17 @@ class EffectManager {
             throw new Error(`Failed to load worklet for ${fxData.name}: ${e.message}`);
         }
 
-        // 4. Register
-        // 5. Initialize Params in Global State and Loops
+        // 4. Initialize Params in Global State and Loops
         // Worklets with fixed coefficients legitimately ship without controls, but every
         // consumer iterates the list, so normalise it before the state mutation below.
+        // Validate parameters BEFORE registering so a bad definition can't leave a
+        // half-registered effect in state.
         if (fxData.parameters == null) fxData.parameters = [];
         const defaultParams = {};
         fxData.parameters.forEach(p => defaultParams[p.name] = p.defaultValue);
 
+        // 5. Register — immediately after worklet success so subsequent bundle
+        // iterations see the updated state and don't assign duplicate codes.
         state.customEffects[fxData.name] = fxData;
 
         // Add to global effects object definition

@@ -2020,6 +2020,11 @@ class DroneSynth {
             return;
         }
         synth.params[key] = (['osc1Type','osc2Type','subType','noiseType','filterType'].includes(key)) ? val : parseFloat(val);
+        // Guard against NaN/Infinity from bad UI input or corrupted state
+        if (typeof synth.params[key] === 'number' && !Number.isFinite(synth.params[key])) {
+            Log.warn('DroneSynth', `Rejected non-finite param ${key}=${val}`);
+            return;
+        }
         if (key === 'filterType') {
             Object.values(synth.voices).forEach(v => {
                 if(v && v.filter) v.filter.type = val;
@@ -2345,6 +2350,7 @@ class DroneSynth {
             if (instData.synthPreset) synth.synthPreset = instData.synthPreset;
             if (instData.midiEnabled !== undefined) synth.midiEnabled = instData.midiEnabled;
             synth.muted = instData.muted ?? false;
+            if (instData.isRecording) synth.isRecording = true;
             
             this.instances.push(synth);
         });

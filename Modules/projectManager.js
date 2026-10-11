@@ -597,6 +597,7 @@ class ProjectManager {
             // Restore audio data
             if (loopData.audioWavBase64) {
                 try {
+                    if (!state.audioContext) throw new Error('AudioContext not available');
                     const res = await fetch(`data:audio/wav;base64,${loopData.audioWavBase64}`);
                     const arrayBuffer = await res.arrayBuffer();
                     loop.audioBuffer = await state.audioContext.decodeAudioData(arrayBuffer);
@@ -658,6 +659,7 @@ class ProjectManager {
         let buffer = null;
         if (samplerData && samplerData.audioWavBase64) {
             try {
+                if (!state.audioContext) throw new Error('AudioContext not available');
                 const res = await fetch(`data:audio/wav;base64,${samplerData.audioWavBase64}`);
                 buffer = await state.audioContext.decodeAudioData(await res.arrayBuffer());
             } catch (error) {
@@ -737,7 +739,8 @@ class ProjectManager {
             rec.start();
             graph.nodes.source.loop = false;
             
-            const btn = document.getElementById(`loop-wrapper-${id}`).querySelector('button[title*="SAVE"]');
+            const loopWrapper = document.getElementById(`loop-wrapper-${id}`);
+            const btn = loopWrapper ? loopWrapper.querySelector('button[title*="SAVE"]') : null;
             if(btn) btn.textContent = "BOUNCING";
 
             setTimeout(async () => {
@@ -787,7 +790,8 @@ class ProjectManager {
             dryRec.start(); wetRec.start();
             if (!wasPlaying) DroneSynth._startSynth(id);
             
-            const btn = document.getElementById(`drone-inst-${id}`).querySelector('button[title*="WAV"]');
+            const droneWrapper = document.getElementById(`drone-inst-${id}`);
+            const btn = droneWrapper ? droneWrapper.querySelector('button[title*="WAV"]') : null;
             if(btn) btn.textContent = "REC";
             
             setTimeout(async () => {

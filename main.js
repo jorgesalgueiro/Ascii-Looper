@@ -6,7 +6,7 @@
 // MODULE 1: CONSTANTS & GLOBALS
 // =============================================
 
-const VERSION = "v0.76.11"; // Version aligned with blueprint
+const VERSION = "v0.76.12"; // Version aligned with blueprint
 let MAX_LOOPS = 10;
 const SAMPLER_HOTKEYS = ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'ç']; // Specific to Sampler Tracks
 const AUDIO_FORMATS= {
@@ -1214,6 +1214,7 @@ class App {
         // Cancel MIDI Learn safely -- must run before the text-field guard so Escape
         // always works even when a text input has focus.
         if (event.code === 'Escape' && state.midiLearn && state.midiLearn.active) {
+            if (state.midiLearn.cancelTimeout) clearTimeout(state.midiLearn.cancelTimeout);
             if (state.midiLearn.element) state.midiLearn.element.style.outline = '';
             if (state.midiLearn.restoreLabel) state.midiLearn.restoreLabel();
             state.midiLearn.active = false;
@@ -1568,10 +1569,10 @@ class App {
             // --- STOP ---
             const masterRecBtn = document.getElementById('masterRecBtn');
             if (masterRecBtn) { masterRecBtn.textContent = 'Processing...'; masterRecBtn.disabled = true; }
-            
+
             const recTimeEl = document.getElementById('masterRecTimeDisplay');
             if (recTimeEl) recTimeEl.style.display = 'none';
-            
+
             const stopRecorder = (recorder) => {
                 return new Promise((resolve) => {
                     if (recorder && recorder.state === 'recording') {
@@ -1584,37 +1585,40 @@ class App {
                 });
             };
 
-            const stopPromises = (state.stemRecorders || []).map(r => stopRecorder(r));
-            await Promise.all([
-                stopRecorder(state.masterRecorder),
-                stopRecorder(state.inputRecorder),
-                ...stopPromises
-            ]);
-            
+            try {
+                const stopPromises = (state.stemRecorders || []).map(r => stopRecorder(r));
+                await Promise.all([
+                    stopRecorder(state.masterRecorder),
+                    stopRecorder(state.inputRecorder),
+                    ...stopPromises
+                ]);
+            } finally {
+                // Always reset recording state even if stop promises reject
+                state.masterRecording = false;
+                state.masterRecorder = null;
+                state.inputRecorder = null;
+                state.stemRecorders = [];
+            }
+
             // Disconnect input from recording destinations to prevent leaks
             const recordingNode = InputManager && InputManager.getRecordingNode ? InputManager.getRecordingNode() : null;
             if (recordingNode) {
                 try { recordingNode.disconnect(state.inputDestination); } catch(e) {}
             }
-            
+
             const masterRecBtnStop = document.getElementById('masterRecBtn');
             if (masterRecBtnStop) masterRecBtnStop.disabled = false;
-            
+
             const statusText = state.masterChunks.length > 0 ? 'STOPPED' : 'OFF';
             const mBtn = document.getElementById('masterRecBtn');
             const mStatus = document.getElementById('masterRecStatus');
-            
+
             if (mBtn) {
                 mBtn.innerHTML = `[M]ASTER REC <span id="masterRecStatus" style="font-size:9px;">(${statusText})</span>`;
             } else if (mStatus) {
                 mStatus.textContent = statusText;
             }
 
-            // Clear state after UI update to prevent race conditions
-            state.masterRecording = false;
-            state.masterRecorder = null;
-            state.inputRecorder = null;
-            state.stemRecorders = [];
             UIManager.updateExportButtons();
         }
         if(window.UIManager) UIManager.updateStatus();
@@ -2264,7 +2268,7 @@ class InputManager {
         // Disconnect old connections
         try { input.source.disconnect(); } catch(e) {}
         try { if(input.analyser) input.analyser.disconnect(); } catch(e) {}
-        if (input.splitter) { try { input.splitter.disconnect(); } catch(e) {} }
+        if (input.splitter) { try { input.splitter.disconnect(); } catch(e) {} input.splitter = null; }
 
         if (!input.gain) input.gain = state.audioContext.createGain();
         // Ensure distinct disconnection

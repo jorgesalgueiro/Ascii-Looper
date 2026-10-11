@@ -647,6 +647,8 @@ class AudioEngine {
             const numChannels = buffer1.numberOfChannels;
 
             const processChunk = () => {
+                // Abort if the audio context has been closed during processing
+                if (!state.audioContext || state.audioContext.state === 'closed') { resolve(); return; }
                 const startIdx = currentChunk * CHUNK_SIZE;
                 const endIdx = Math.min(startIdx + CHUNK_SIZE, len2);
                 
