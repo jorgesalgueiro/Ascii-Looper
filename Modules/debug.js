@@ -598,6 +598,22 @@ class Log {
     static _fmt(args) {
         return args.map(a => Log._fmtArg(a)).join(' ');
     }
+
+    static error(...args) {
+        const msg = Log._fmt(args);
+        console.error(msg);
+    }
+
+    static warn(...args) {
+        const msg = Log._fmt(args);
+        console.warn(msg);
+    }
+
+    static debug(...args) {
+        if (!DebugManager.enabled) return;
+        const msg = Log._fmt(args);
+        console.log(msg);
+    }
 }
 
 Log._Logger = class {

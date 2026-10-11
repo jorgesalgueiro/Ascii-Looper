@@ -2458,7 +2458,11 @@ class EffectManager {
                     effectsState[effectName] = false;
                     this.updateUI(obj, type);
 
-                    setTimeout(() => {
+                    // Cancel any pending rebuild to avoid collision with rapid toggles
+                    const rebuildKey = '_rebuildTimeout_' + effectName;
+                    if (obj[rebuildKey]) clearTimeout(obj[rebuildKey]);
+                    obj[rebuildKey] = setTimeout(() => {
+                        obj[rebuildKey] = null;
                         this.triggerRebuild(obj, type);
                     }, mixTimeMs + 50);
                     return;

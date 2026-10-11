@@ -25,7 +25,8 @@ class ProjectManager {
             const userInput = prompt("Save Project As:", safeName);
             if (userInput === null) return; // User cancelled
             const projectName = userInput.trim() || safeName;
-            document.getElementById('projectName').value = projectName;
+            const nameInput = document.getElementById('projectName');
+            if (nameInput) nameInput.value = projectName;
             
             saveBtns = document.querySelectorAll('#btnSaveProj');
             saveBtns.forEach(btn => {
@@ -266,7 +267,8 @@ class ProjectManager {
             // --- Restore State ---
             
             // Project Name
-            document.getElementById('projectName').value = data.projectName || '';
+            const nameInput = document.getElementById('projectName');
+            if (nameInput) nameInput.value = data.projectName || '';
 			
 			// Update UI Inputs *before* calling updateSettings so we don't overwrite state with defaults
             if(document.getElementById('bpmInput')) document.getElementById('bpmInput').value = data.bpm || 120;
@@ -740,12 +742,11 @@ class ProjectManager {
 
             setTimeout(async () => {
                 try {
-                    rec.stop();
                     graph.cleanup();
                     if (wasPlaying && state.loops[id] && state.loops[id].audioBuffer === capturedBuffer) loop.play(); 
                     if(btn) btn.textContent = "SAVE";
 
-                    setTimeout(async () => {
+                    rec.onstop = async () => {
                         try {
                             const blob = new Blob(chunks, { type: rec.mimeType });
                             const ab = await blob.arrayBuffer();
@@ -756,7 +757,8 @@ class ProjectManager {
                             Log.error('ProjectManager', `Wet export decode failed for loop ${id+1}:`, e);
                             if(btn) btn.textContent = "SAVE";
                         } finally { this._exporting = false; }
-                    }, 500);
+                    };
+                    rec.stop();
                 } catch (e) {
                     Log.error('ProjectManager', `Wet export stop failed for loop ${id+1}:`, e);
                     try { graph.cleanup(); } catch(_) {}
@@ -768,6 +770,7 @@ class ProjectManager {
         } else if (type === 'drone') {
             const synth = DroneSynth.instances[id];
             if (!synth) { this._exporting = false; return; }
+            if (!state.audioContext || state.audioContext.state !== 'running') { this._exporting = false; return alert('Audio context is not running. Cannot export wet signal.'); }
             if (!synth.dryDestination) synth.dryDestination = state.audioContext.createMediaStreamDestination();
             if (!synth.wetDestination) { this._exporting = false; return alert("Drone not fully initialized."); }
             
@@ -789,11 +792,12 @@ class ProjectManager {
             
             setTimeout(async () => {
                 try {
-                    dryRec.stop(); wetRec.stop();
                     if (!wasPlaying) DroneSynth._stopSynth(id);
                     if(btn) btn.textContent = "WAV";
 
-                    setTimeout(async () => {
+                    let stopped = 0;
+                    const checkDone = async () => {
+                        if (++stopped < 2) return;
                         try {
                             const dryBlob = new Blob(dryChunks, { type: dryRec.mimeType });
                             const wetBlob = new Blob(wetChunks, { type: wetRec.mimeType });
@@ -805,7 +809,11 @@ class ProjectManager {
                             Log.error('ProjectManager', `Drone wet export decode failed for drone ${id+1}:`, e);
                             if(btn) btn.textContent = "WAV";
                         } finally { this._exporting = false; }
-                    }, 500);
+                    };
+                    dryRec.onstop = checkDone;
+                    wetRec.onstop = checkDone;
+                    dryRec.stop();
+                    wetRec.stop();
                 } catch (e) {
                     Log.error('ProjectManager', `Drone wet export stop failed for drone ${id+1}:`, e);
                     if(btn) btn.textContent = "WAV";

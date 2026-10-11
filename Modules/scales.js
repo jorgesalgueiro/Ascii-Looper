@@ -471,7 +471,9 @@ class SyncManager {
 
             // Capture
             let messageReceived = false;
+            let timedOut = false;
             recorder.port.onmessage = (e) => {
+                if (timedOut) return; // Timeout already fired — discard late messages
                 if (e.data.event === 'recorded') {
                     messageReceived = true;
                     try {
@@ -509,6 +511,7 @@ class SyncManager {
             // Timeout fallback: disconnect recorder if no message arrives
             setTimeout(() => {
                 if (!messageReceived) {
+                    timedOut = true;
                     try { recorder.disconnect(); } catch(e) {}
                     try { InputManager.inputBus.disconnect(recorder); } catch(e) {}
                     if(btn) { btn.textContent = label('PING_TEST', 'PING TEST (AUTO-CALIBRATE)'); btn.disabled = false; }
@@ -562,7 +565,19 @@ class MetronomeScheduler {
         if (state.metronome.enabled) {
             // Check if audio context is running
             if (state.audioContext && state.audioContext.state === 'suspended') {
-                AudioEngine.resume().then(() => this.start());
+                AudioEngine.resume().then((ok) => {
+                    if (ok) this.start();
+                    else {
+                        // Resume failed — revert UI
+                        state.metronome.enabled = false;
+                        if (btn) {
+                            const label = typeof I18n !== 'undefined' ? I18n.t('METRONOME') : 'Metro[N]ome';
+                            btn.style.color = 'inherit';
+                            btn.style.borderColor = 'currentColor';
+                            btn.textContent = label;
+                        }
+                    }
+                });
             } else {
                 this.start();
             }

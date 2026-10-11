@@ -8,7 +8,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#291a0a">
     <meta name="description" content="ASCII Looper - Browser-based 10-track loop station with effects and sequencing.">
-    <title>ASCII Looper v0.76.10</title>
+    <title>ASCII Looper v0.76.11</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="styles.css">
     <link rel="dns-prefetch" href="//www.google.com">
@@ -1367,7 +1367,7 @@
             </details>
         </div>
 
-        <select id="langSelect" onchange="I18n.lang = this.value;" aria-label="Language Selection">
+        <select id="langSelect" onchange="I18n.lang = this.value; I18n.init();" aria-label="Language Selection">
             <option value="en">English</option>
             <option value="es">Español</option>
             <option value="pt">Português</option>

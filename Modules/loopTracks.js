@@ -2013,7 +2013,7 @@ class Loop {
         if (this.state === 'empty') return 0;
         
         if (this.state === 'armed' || this.state === 'recording' || this.state === 'overdubbing' || this.state === 'substituting' || this.state === 'multiplying') {
-            if (!this.graph || !this.graph.startTime) return 0;
+            if (!this.graph || this.graph.startTime == null) return 0;
             const elapsed = now - this.graph.startTime;
             if (state.syncEnabled) {
                 const len = SyncManager.getLoopLength();
@@ -2157,11 +2157,13 @@ class Loop {
         }
 
         // Cleanup old graph after transition (100ms buffer) — only if a new graph was created
-        setTimeout(() => {
+        const cleanupDelay = (t > AudioEngine.currentTime ? (t - AudioEngine.currentTime)*1000 : 0) + 100;
+        this._restartCleanup = setTimeout(() => {
+            this._restartCleanup = null;
             if (this.graph !== oldGraph && oldGraph && typeof oldGraph.cleanup === 'function') {
                 oldGraph.cleanup();
             }
-        }, (t > AudioEngine.currentTime ? (t - AudioEngine.currentTime)*1000 : 0) + 100);
+        }, cleanupDelay);
     }
 
     /**
@@ -3220,7 +3222,7 @@ class LoopManager {
                 const mean = sum / data.length;
                 for (let i = 0; i < data.length; i++) data[i] -= mean;
             }
-            
+
             loop.audioBuffer = finalBuffer;
         loop.duration = finalBuffer.duration;
         loop.originalBpm = state.bpm;
@@ -3241,6 +3243,7 @@ class LoopManager {
             Log.error('LoopManager', 'Failed to process recorded audio:', e);
             loop.clear();
         }
+        // Cleanup always runs — even after exception, recording state must be released
         if (state.loopRecorder !== recorder || state.recordingLoopId !== loopId) return;
 
         // Disconnect input from recorder to prevent graph leaks

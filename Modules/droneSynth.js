@@ -496,6 +496,8 @@ class DroneSynth {
         for (const k in p) {
             this.setParam(id, k, p[k]);
         }
+        // Rebuild FX chain in case the preset changed chain-related params
+        if (state.audioContext) this.rebuildFxChain(id);
         this.renderAll(); // Refresh UI sliders to match preset
     }
 
@@ -1702,8 +1704,14 @@ class DroneSynth {
         // Discard voices from a previous AudioContext (e.g. after project load)
         if (v._ctx && v._ctx !== state.audioContext) return;
         v.isPooled = true;
+        // Cancel any pending automation so the fade-to-zero takes effect immediately
+        const t = state.audioContext.currentTime;
+        try {
+            v.vca.gain.cancelScheduledValues(t);
+            if (v.filter1) v.filter1.frequency.cancelScheduledValues(t);
+            if (v.filter2) v.filter2.frequency.cancelScheduledValues(t);
+        } catch(e) {}
         if (this.voicePool.length < this.MAX_POOL_SIZE) {
-            const t = state.audioContext.currentTime;
             AudioEngine.scheduledFade(v.vca, 0, t, 10);
             this.voicePool.push(v);
         } else {
@@ -2087,7 +2095,12 @@ class DroneSynth {
         this.schedule();
     }
 
+    static stopScheduler() {
+        this.schedulerRunning = false;
+    }
+
     static schedule() {
+        if (!this.schedulerRunning) return;
         this.instances.forEach(synth => {
             if (synth.state === 'armed' || synth.state === 'playing' || synth.state === 'stopping') {
                 this.scheduleSynth(synth);
@@ -2334,6 +2347,10 @@ class DroneSynth {
             synth.muted = instData.muted ?? false;
             
             this.instances.push(synth);
+        });
+        // Rebuild FX chains so audio can flow through the restored signal chain
+        this.instances.forEach(synth => {
+            if (state.audioContext) this.rebuildFxChain(synth.id);
         });
         this.renderAll();
     }

@@ -364,7 +364,7 @@ class TrackerManager {
             const safeBpm = Math.max(10, state.bpm || 120);
             const safeTimeSig = Math.max(1, state.timeSig?.num || 4);
             const secondsPerBar = Math.max(0.1, (60 / safeBpm) * safeTimeSig);
-            const elapsed = currentTime - state.masterStartTime;
+            const elapsed = currentTime - (state.masterStartTime || currentTime);
             const nextGridIndex = Math.floor(elapsed / secondsPerBar) + 1;
             state.tracker.nextRowTime = state.masterStartTime + (nextGridIndex * secondsPerBar);
             
@@ -1158,7 +1158,9 @@ class SampleLab {
     }
 
     static loadFromLoop() {
-        const targetVal = document.getElementById('labLoopTarget').value;
+        const sel = document.getElementById('labLoopTarget');
+        if (!sel) return;
+        const targetVal = sel.value;
         if (targetVal.startsWith('s')) {
             const sId = parseInt(targetVal.substring(1));
             const sampler = state.samplers[sId];
@@ -1189,7 +1191,9 @@ class SampleLab {
     }
 
     static sendToLoop() {
-        const targetVal = document.getElementById('labLoopTarget').value;
+        const sel = document.getElementById('labLoopTarget');
+        if (!sel) return;
+        const targetVal = sel.value;
         const bufferToSend = this.processedBuffer || this.rawBuffer;
         if (!bufferToSend) return alert("No sample data to send.");
 

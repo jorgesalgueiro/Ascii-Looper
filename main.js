@@ -6,7 +6,7 @@
 // MODULE 1: CONSTANTS & GLOBALS
 // =============================================
 
-const VERSION = "v0.76.10"; // Version aligned with blueprint
+const VERSION = "v0.76.11"; // Version aligned with blueprint
 let MAX_LOOPS = 10;
 const SAMPLER_HOTKEYS = ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'ç']; // Specific to Sampler Tracks
 const AUDIO_FORMATS= {
@@ -712,7 +712,9 @@ class App {
         state.stemRecorders = [];
 
         // 3. Soft Reboot (Resume Hardware)
-        setTimeout(async () => {
+        if (state.panicTimeout) clearTimeout(state.panicTimeout);
+        state.panicTimeout = setTimeout(async () => {
+            state.panicTimeout = null;
             try {
                 if (state.audioContext) await state.audioContext.resume();
                 UIManager.renderLoops();
@@ -1166,6 +1168,8 @@ class App {
                     mappingInfo.max = parseFloat(target.max) || 1;
                     mappingInfo.element = target;
                     
+                    // Cancel any previous learn timeout before overwriting
+                    if (state.midiLearn && state.midiLearn.cancelTimeout) clearTimeout(state.midiLearn.cancelTimeout);
                     state.midiLearn = { active: true, ...mappingInfo };
                     target.style.outline = '2px solid #f0f';
                     KeyMapManager.setStatus('Waiting for MIDI CC...');
@@ -1247,12 +1251,12 @@ class App {
              if (event.shiftKey) {
                  if (state.redoStack.length > 0) {
                      const redoId = state.redoStack[state.redoStack.length - 1];
-                     state.loops[redoId].redo();
+                     if (state.loops[redoId]) state.loops[redoId].redo();
                  }
              } else {
                  if (state.undoStack.length > 0) {
                      const undoId = state.undoStack[state.undoStack.length - 1];
-                     state.loops[undoId].undo();
+                     if (state.loops[undoId]) state.loops[undoId].undo();
                  }
              }
              return;
