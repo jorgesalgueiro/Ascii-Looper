@@ -2498,7 +2498,7 @@ class EffectManager {
         const targets = this.getEffectCrossfadeTargets(nodes, effectName);
         if (!targets) return;
         const now = AudioEngine.currentTime;
-        const p = paramsSrc[effectName] || {};
+        const p = (paramsSrc && paramsSrc[effectName]) || {};
         
         try {
             if (targets.type === 'drywet') {
@@ -2538,9 +2538,9 @@ class EffectManager {
                 if (targets) {
                     const now = AudioEngine.currentTime;
                     try {
-                        if (targets.type === 'drywet') { AudioEngine.scheduledFade(targets.dry, 1.0, now, mixTimeMs); AudioEngine.scheduledFade(targets.wet, 0.0, now, mixTimeMs); }
-                        else if (targets.type === 'dusk') { AudioEngine.scheduledFade(targets.verb, 0.0, now, mixTimeMs); AudioEngine.scheduledFade(targets.grain, 0.0, now, mixTimeMs); }
-                        else if (targets.type === 'param') { AudioEngine.scheduledFade(targets.param, 0.0, now, mixTimeMs); }
+                        if (targets.type === 'drywet') { targets.dry.cancelScheduledValues(now); targets.wet.cancelScheduledValues(now); AudioEngine.scheduledFade(targets.dry, 1.0, now, mixTimeMs); AudioEngine.scheduledFade(targets.wet, 0.0, now, mixTimeMs); }
+                        else if (targets.type === 'dusk') { targets.verb.cancelScheduledValues(now); targets.grain.cancelScheduledValues(now); AudioEngine.scheduledFade(targets.verb, 0.0, now, mixTimeMs); AudioEngine.scheduledFade(targets.grain, 0.0, now, mixTimeMs); }
+                        else if (targets.type === 'param') { targets.param.cancelScheduledValues(now); AudioEngine.scheduledFade(targets.param, 0.0, now, mixTimeMs); }
                     } catch(e) {}
                     
                     effectsState[effectName] = false;
@@ -2559,7 +2559,9 @@ class EffectManager {
             effectsState[effectName] = false;
             this.triggerRebuild(obj, type);
         } else {
-            // Turning ON
+            // Turning ON — cancel any pending OFF rebuild to avoid stale double-rebuild
+            const rebuildKey = '_rebuildTimeout_' + effectName;
+            if (obj[rebuildKey]) { clearTimeout(obj[rebuildKey]); obj[rebuildKey] = null; }
             effectsState[effectName] = true;
             this.triggerRebuild(obj, type, effectName, mixTimeMs);
         }
@@ -3100,6 +3102,7 @@ class EffectManager {
                  activePresets = DroneSynth.instances[id].activePresets;
              }
         } else if (typeof this.activeTab === 'number') {
+             if (!state.loops[this.activeTab]) return; // Guard against deleted loop
              targetParams = state.loops[this.activeTab].params;
              activePresets = state.loops[this.activeTab].activePresets;
         } else {
@@ -4294,7 +4297,7 @@ class EffectManager {
             const id = parseInt(this.activeTab.split('-')[1]);
             if (DroneSynth.instances[id]) DroneSynth.instances[id].activePresets['compressor'] = presetName;
         } else if (typeof this.activeTab === 'number') {
-            state.loops[this.activeTab].activePresets['compressor'] = presetName;
+            if (state.loops[this.activeTab]) state.loops[this.activeTab].activePresets['compressor'] = presetName;
         }
         
         this.drawCompressorCurve();
@@ -4322,11 +4325,13 @@ class EffectManager {
         const p = presets[presetName];
         
         this.isBatchUpdating = true;
-
-        for (const [key, val] of Object.entries(p)) {
-            this.update(effectName, key, val);
+        try {
+            for (const [key, val] of Object.entries(p)) {
+                this.update(effectName, key, val);
+            }
+        } finally {
+            this.isBatchUpdating = false;
         }
-        this.isBatchUpdating = false;
 
         // Reverb IR regeneration was deferred during the batch: do it once now
         if (effectName === 'reverb' && (p.room !== undefined || p.duration !== undefined || p.decay !== undefined)) {
@@ -4340,8 +4345,10 @@ class EffectManager {
             const id = parseInt(this.activeTab.split('-')[1]);
             if (DroneSynth.instances[id]) DroneSynth.instances[id].activePresets[effectName] = presetName;
         } else if (typeof this.activeTab === 'number') {
-             if(!state.loops[this.activeTab].activePresets) state.loops[this.activeTab].activePresets = {};
-             state.loops[this.activeTab].activePresets[effectName] = presetName;
+             if (state.loops[this.activeTab]) {
+                 if(!state.loops[this.activeTab].activePresets) state.loops[this.activeTab].activePresets = {};
+                 state.loops[this.activeTab].activePresets[effectName] = presetName;
+             }
         }
         
         this.renderEffectsPanel();
@@ -4482,6 +4489,7 @@ class EffectManager {
     // Handle EQ presets
     static updateEQPreset(name) {
         this.isBatchUpdating = true;
+        try {
         // 1. Reset to Baseline (Flat)
         const defaults = {
             lcFreq: 20,
@@ -4515,7 +4523,7 @@ class EffectManager {
             if (DroneSynth.instances[id]) DroneSynth.instances[id].activePresets['eq'] = name;
         } else if (typeof this.activeTab === 'number') {
             // Check if loop exists before assigning
-            if (!state.loops[this.activeTab]) { this.isBatchUpdating = false; return; }
+            if (!state.loops[this.activeTab]) return;
             if(!state.loops[this.activeTab].activePresets) state.loops[this.activeTab].activePresets = {};
             state.loops[this.activeTab].activePresets['eq'] = name;
         }
@@ -4524,7 +4532,9 @@ class EffectManager {
         const sel = document.getElementById('sel_eq');
         if (sel && sel.value !== name) sel.value = name;
         
-        this.isBatchUpdating = false;
         this.drawEQVisualizer();
+        } finally {
+            this.isBatchUpdating = false;
+        }
     }
 }

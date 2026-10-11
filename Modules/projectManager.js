@@ -356,7 +356,7 @@ class ProjectManager {
                 state.tracker.patterns = TrackerManager.remapLoopColumns(
                     data.tracker.patterns || [{rows:16, data:{}}], savedColumns);
                 if (data.tracker.currentPatternIdx !== undefined) state.tracker.currentPatternIdx = data.tracker.currentPatternIdx;
-                    if (data.tracker.mode) {
+                    if (data.tracker.mode && (data.tracker.mode === 'pattern' || data.tracker.mode === 'song')) {
                         state.tracker.mode = data.tracker.mode;
                         const radios = document.getElementsByName('trkMode');
                         radios.forEach(r => r.checked = (r.value === state.tracker.mode));
@@ -697,6 +697,7 @@ class ProjectManager {
     static async exportDryWet(type, id) {
         if (this._exporting) return alert('An export is already in progress.');
         this._exporting = true;
+        setTimeout(() => { this._exporting = false; }, 30000); // Safety timeout
         try {
         const ts = Date.now();
         const safeName = this.getSafeProjectName();
@@ -751,6 +752,7 @@ class ProjectManager {
 
                     rec.onstop = async () => {
                         try {
+                            if (!state.audioContext || state.audioContext.state === 'closed') return;
                             const blob = new Blob(chunks, { type: rec.mimeType });
                             const ab = await blob.arrayBuffer();
                             const buf = await state.audioContext.decodeAudioData(ab);
@@ -803,6 +805,7 @@ class ProjectManager {
                     const checkDone = async () => {
                         if (++stopped < 2) return;
                         try {
+                            if (!state.audioContext || state.audioContext.state === 'closed') return;
                             const dryBlob = new Blob(dryChunks, { type: dryRec.mimeType });
                             const wetBlob = new Blob(wetChunks, { type: wetRec.mimeType });
                             const dBuf = await state.audioContext.decodeAudioData(await dryBlob.arrayBuffer());
@@ -970,10 +973,11 @@ class ProjectManager {
      */
     static async exportMasterOnly() {
         if (state.masterChunks.length === 0) { alert("No master recording found."); return; }
+        if (!state.audioContext || state.audioContext.state === 'closed') { alert("Audio context unavailable."); return; }
         const safeName = this.getSafeProjectName();
         const ts = Date.now();
         try {
-            const blob = new Blob(state.masterChunks, { type: state.masterMimeType });
+            const blob = new Blob(state.masterChunks, { type: state.masterMimeType || 'audio/webm' });
             const ab = await blob.arrayBuffer();
             const buffer = await state.audioContext.decodeAudioData(ab);
             AudioEngine.applyFades(buffer, 0.01);
@@ -991,10 +995,11 @@ class ProjectManager {
      */
     static async exportInputOnly() {
         if (state.inputChunks.length === 0) { alert("No input recording found."); return; }
+        if (!state.audioContext || state.audioContext.state === 'closed') { alert("Audio context unavailable."); return; }
         const safeName = this.getSafeProjectName();
         const ts = Date.now();
         try {
-            const blob = new Blob(state.inputChunks, { type: state.inputMimeType });
+            const blob = new Blob(state.inputChunks, { type: state.inputMimeType || 'audio/webm' });
             const ab = await blob.arrayBuffer();
             const buffer = await state.audioContext.decodeAudioData(ab);
             AudioEngine.applyFades(buffer, 0.01);

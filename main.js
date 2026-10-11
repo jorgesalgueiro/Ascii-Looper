@@ -6,7 +6,7 @@
 // MODULE 1: CONSTANTS & GLOBALS
 // =============================================
 
-const VERSION = "v0.76.13"; // Version aligned with blueprint
+const VERSION = "v0.76.14"; // Version aligned with blueprint
 let MAX_LOOPS = 10;
 const SAMPLER_HOTKEYS = ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'ç']; // Specific to Sampler Tracks
 const AUDIO_FORMATS= {
@@ -994,9 +994,20 @@ class App {
             } catch(e) {
                 console.error("Gamepad poll error", e);
             }
-            requestAnimationFrame(pollGamepads);
+            if (this._gamepadPollingRunning) {
+                requestAnimationFrame(pollGamepads);
+            } else {
+                this._gamepadPollingRunning = false;
+            }
         };
         pollGamepads();
+    }
+
+    /**
+     * Stops the gamepad polling loop.
+     */
+    static stopGamepadPolling() {
+        this._gamepadPollingRunning = false;
     }
 
     /**
@@ -1576,9 +1587,13 @@ class App {
             const stopRecorder = (recorder) => {
                 return new Promise((resolve) => {
                     if (recorder && recorder.state === 'recording') {
-                        recorder.onstop = resolve;
-                        recorder.onerror = resolve; // Resolve anyway
+                        let resolved = false;
+                        const done = () => { if (!resolved) { resolved = true; resolve(); } };
+                        recorder.onstop = done;
+                        recorder.onerror = done;
                         recorder.stop();
+                        // Safety timeout: resolve if onstop never fires (e.g. broken MediaRecorder)
+                        setTimeout(done, 3000);
                     } else {
                         resolve();
                     }
@@ -2598,7 +2613,7 @@ class InputManager {
 
     static async populateDeviceSelect(id) {
         const sel = document.getElementById(`in-dev-${id}`);
-        if (!sel || state.inputs[id].type === 'system') return; // Skip for system tracks
+        if (!sel || !state.inputs[id] || state.inputs[id].type === 'system') return; // Skip for system tracks or missing input
         
         try {
              const devices = await navigator.mediaDevices.enumerateDevices();

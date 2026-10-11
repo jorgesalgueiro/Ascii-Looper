@@ -36,6 +36,7 @@ function loadScheduler({ bpm = 240, masterStartTime = 0 } = {}) {
         document,
         I18n: { t: key => key },
         AudioEngine: { resume: async () => {} },
+        Log: { warn() {}, debug() {}, error() {}, info() {} },
         setTimeout: (fn, ms) => {
             const timer = { id: nextId, fn, due: clock + (ms || 0), cancelled: false };
             timers.push(timer);

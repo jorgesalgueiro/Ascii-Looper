@@ -460,7 +460,7 @@ class AudioEngine {
      */
     static createSimpleReverbIR(duration, decay, sampleRate) {
         if (!state.audioContext) return null;
-        if (!duration || duration <= 0) { duration = 0.1; }
+        duration = Math.max(0.1, duration); // Minimum 100ms to avoid degenerate buffer
         const length = Math.max(1, Math.floor(sampleRate * duration));
         const audioBuffer = state.audioContext.createBuffer(2, length, sampleRate);
         // Exponential decay rate from the user 'decay' param. Tuned so the tail
@@ -523,6 +523,7 @@ class AudioEngine {
      * Converts an AudioBuffer to a WAV file (as an ArrayBuffer).
      */
     static bufferToWAV(audioBuffer) {
+        if (!audioBuffer) { Log.warn('AudioEngine', 'bufferToWAV called with null buffer'); return null; }
         const numChannels = audioBuffer.numberOfChannels;
         const sampleRate = audioBuffer.sampleRate;
         const length = audioBuffer.length;
@@ -541,6 +542,7 @@ class AudioEngine {
      * Helper function to write the WAV file header.
      */
     static encodeWAV(samples, sampleRate, numChannels) {
+        if (!Number.isFinite(sampleRate)) sampleRate = 44100;
         const buffer = new ArrayBuffer(44 + samples.length * 2);
         const view = new DataView(buffer);
         const writeString = (offset, string) => {

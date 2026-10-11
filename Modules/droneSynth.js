@@ -1253,6 +1253,7 @@ class DroneSynth {
 
     static triggerVoice(synth, freq, duration, time, accent = 1.0) {
         const ctx = state.audioContext;
+        if (!ctx || ctx.state !== 'running') return;
         const v = this.getVoiceFromPool(ctx);
         const now = Math.max(time, ctx.currentTime + 0.005);
         const rel = Math.max(0.005, synth.params.release || 0.5);
@@ -1708,7 +1709,7 @@ class DroneSynth {
         const t = state.audioContext.currentTime;
         try {
             v.vca.gain.cancelScheduledValues(t);
-            if (v.filter1) v.filter1.frequency.cancelScheduledValues(t);
+            if (v.filter) v.filter.frequency.cancelScheduledValues(t);
             if (v.filter2) v.filter2.frequency.cancelScheduledValues(t);
         } catch(e) {}
         if (this.voicePool.length < this.MAX_POOL_SIZE) {
@@ -1740,6 +1741,7 @@ class DroneSynth {
         if (!Number.isFinite(vel) || vel <= 0) vel = 100;
 
         const ctx = state.audioContext;
+        if (!ctx || ctx.state !== 'running') return;
         const now = ctx.currentTime + 0.005;
         const voiceId = isDrone ? 'drone' : note;
 
@@ -2019,12 +2021,13 @@ class DroneSynth {
             synth.params[key] = val.slice();
             return;
         }
-        synth.params[key] = (['osc1Type','osc2Type','subType','noiseType','filterType'].includes(key)) ? val : parseFloat(val);
+        const parsed = (['osc1Type','osc2Type','subType','noiseType','filterType'].includes(key)) ? val : parseFloat(val);
         // Guard against NaN/Infinity from bad UI input or corrupted state
-        if (typeof synth.params[key] === 'number' && !Number.isFinite(synth.params[key])) {
+        if (typeof parsed === 'number' && !Number.isFinite(parsed)) {
             Log.warn('DroneSynth', `Rejected non-finite param ${key}=${val}`);
             return;
         }
+        synth.params[key] = parsed;
         if (key === 'filterType') {
             Object.values(synth.voices).forEach(v => {
                 if(v && v.filter) v.filter.type = val;
@@ -2102,6 +2105,10 @@ class DroneSynth {
 
     static stopScheduler() {
         this.schedulerRunning = false;
+        if (this._schedulerTimeoutId) {
+            clearTimeout(this._schedulerTimeoutId);
+            this._schedulerTimeoutId = null;
+        }
     }
 
     static schedule() {
@@ -2111,7 +2118,7 @@ class DroneSynth {
                 this.scheduleSynth(synth);
             }
         });
-        setTimeout(() => this.schedule(), 25);
+        this._schedulerTimeoutId = setTimeout(() => this.schedule(), 25);
     }
 
     static scheduleSynth(synth) {
@@ -2328,7 +2335,12 @@ class DroneSynth {
             // Restore properties
             // Use Object.assign to merge with defaults, ensuring missing keys in old saves don't break new instances
             if (instData.params) {
-                Object.assign(synth.params, instData.params);
+                // Validate each param to prevent NaN/non-finite values from corrupted saves
+                for (const k in instData.params) {
+                    const v = instData.params[k];
+                    if (typeof v === 'number' && !Number.isFinite(v)) continue; // skip bad values
+                    synth.params[k] = v;
+                }
                 if (synth.params.decay === undefined) synth.params.decay = 0.2;
                 if (synth.params.sustain === undefined) synth.params.sustain = 0.8;
             }
@@ -2356,7 +2368,10 @@ class DroneSynth {
         });
         // Rebuild FX chains so audio can flow through the restored signal chain
         this.instances.forEach(synth => {
-            if (state.audioContext) this.rebuildFxChain(synth.id);
+            if (state.audioContext) {
+                if (!synth.fxInput) synth.fxInput = state.audioContext.createGain();
+                this.rebuildFxChain(synth.id);
+            }
         });
         this.renderAll();
     }

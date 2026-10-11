@@ -595,6 +595,8 @@ class MetronomeScheduler {
         if (this.node) {
             this.node.parameters.get('playing').setValueAtTime(1, state.audioContext.currentTime);
             this.updateSettings();
+        } else {
+            Log.warn('Metronome', 'Audio worklet not initialized — visual blink only');
         }
         this.scheduleVisualBlink();
     }

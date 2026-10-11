@@ -130,7 +130,9 @@ function createHarness() {
     function bounceWindow(loop) {
         timers.length = 0;
         context.ProjectManager.exportDryWet('loop', loop.id);
-        return Math.max(...timers.map(timer => timer.time)) - clock.currentTime;
+        // Exclude the _exporting safety timeout (30 s) — only the export stop timer matters
+        const exportTimers = timers.filter(t => t.time - clock.currentTime < 20);
+        return Math.max(...exportTimers.map(timer => timer.time)) - clock.currentTime;
     }
 
     return { context, addLoop, bounceWindow };

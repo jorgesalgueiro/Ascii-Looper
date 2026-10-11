@@ -248,7 +248,7 @@ class TrackerManager {
         } catch(e) {
             Log.error('Tracker', 'Error loading song:', e);
         }
-        event.target.value = '';
+        try { event.target.value = ''; } catch(_) {}
     }
 
     static setMode(mode) {
@@ -600,6 +600,7 @@ class TrackerManager {
     }
 
     static handleCanvasClick(e) {
+        if (!this.canvas) return;
         const rect = this.canvas.getBoundingClientRect();
         const clickX = e.clientX - rect.left;
         const clickY = e.clientY - rect.top;

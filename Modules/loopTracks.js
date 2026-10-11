@@ -3531,7 +3531,7 @@ class LoopManager {
             }
         }
         // Disconnect AFTER processing
-        if (state.loopRecorder) state.loopRecorder.disconnect();
+        if (state.loopRecorder) { try { state.loopRecorder.disconnect(); } catch(e) {} }
 
         state.isRecording = false;
         state.recordingLoopId = -1;
@@ -3704,7 +3704,7 @@ class LoopManager {
         if (inputNode && state.loopRecorder) {
             try { inputNode.disconnect(state.loopRecorder); } catch (e) {}
         }
-        if (state.loopRecorder) state.loopRecorder.disconnect();
+        if (state.loopRecorder) { try { state.loopRecorder.disconnect(); } catch(e) {} }
 
         state.isRecording = false;
         state.recordingLoopId = -1;
