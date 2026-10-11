@@ -309,7 +309,7 @@ class DroneSynth {
         const midiBtnClass = synth.midiEnabled ? 'btn-green' : '';
 
         const groups = {
-            'Ambient/Drone': ['Init', 'Goth Pad', 'Witch Lead', 'SumO drone', 'Cinematic', 'Deep Space', 'Anxiety'],
+            'Ambient/Drone': ['Init', 'Goth Pad', 'Witch Lead', 'Summit Drone', 'Cinematic', 'Deep Space', 'Anxiety'],
             'Rhythm/Perc': ['Dark Kick', 'Syn Tom', 'Indus Cymbal', 'Metal Crash', 'Noise Hat', 'Industrial Snare', 'Data Stream', 'Happy Kick', 'Happy Snare', 'Happy Hihat', 'Happy Tom'],
             'Bass/Lead': ['Cold Bass', 'Doppelganger', 'Acid Rain', 'Happy Pluck'],
             'FX/Other': ['Broken Circuit']

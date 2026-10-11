@@ -223,15 +223,15 @@ describe('Bug #99: every EQ preset value fits the band slider that shows it', ()
         assert.deepEqual(outOfRange({ factory: context.FACTORY_EFFECTS.eq }, html, () => 'FACTORY_EFFECTS.eq'), []);
     });
 
-    test('loading the Vocal preset leaves the P1 F thumb on 3000 Hz', () => {
+    test('loading the Vocal Presence preset leaves the P1 F thumb on 3000 Hz', () => {
         const { context, elements, renderPanel } = createHarness();
         const html = renderPanel('Q', { eq: { ...context.effects.eq } });
         wireElements(elements, html);
 
-        context.EffectManager.updateEQPreset('Vocal');
+        context.EffectManager.updateEQPreset('Vocal Presence');
 
         const freq = context.state.loops[0].params.eq.p1Freq;
-        assert.equal(freq, context.EQ_PRESETS['Vocal'].p1Freq, 'the preset must reach the params');
+        assert.equal(freq, context.EQ_PRESETS['Vocal Presence'].p1Freq, 'the preset must reach the params');
         const s = slider(html, 'eqP1Freq');
         assert.equal(clampedThumb(s, elements.get('eqP1Freq').value), freq,
             'the thumb clamps to the slider bound while the audio keeps 3000 Hz');

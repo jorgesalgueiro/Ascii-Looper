@@ -1661,22 +1661,41 @@ const effects = {
 const FACTORY_EFFECTS = JSON.parse(JSON.stringify(effects));
 
 const DEFAULT_FX_PRESETS = {
+    // --- Vocal Chains ---
     'Vocal Air': 'CQATFODBVKZG',
-    'Techno Kick': 'TQCAFODBVKZG',
-    'Shoegaze': 'FDBQCATVOKZG',
-    'Dub Echo': 'DQCATFBVKZG',
-    'Broken Radio': 'QTCAFODBVKZG',
-    'Ethereal': 'KBAQCTFODVZG',
-    'Slapback': 'DCQATFOBVKZG',
+    'Vocal Crunch': 'CQOTFADBVKZG',
+    'Vocal Space': 'KCQATFODBVGZ',
+    // --- Guitar Chains ---
+    'Guitar Clean': 'CQATFODBVKZG',
+    'Guitar Crunch': 'OCQATFDBVKZG',
+    'Guitar Lead': 'OCQDATFBVKZG',
+    'Shoegaze': 'FDBKQCATVOZG',
     'Metal Lead': 'OTDQCAFBVKZG',
-    'Lo-Fi Tape': 'ZCQDATFOBVKG',
-    'Lo-Fi': 'VQCATFODBKZG',
-    'Width': 'ZKQCATFODBVG',
+    // --- Bass Chains ---
+    'Bass Heavy': 'CQOATFDBVKZG',
+    'Bass Fuzz': 'FCQOATDBVKZG',
+    // --- Delay/Echo Chains ---
+    'Dub Echo': 'DQCATFBVKZG',
+    'Slapback': 'DCQATFOBVKZG',
+    'Arp Cascade': 'AKDQCTFOBVGZ',
+    // --- Ambient/Drone Chains ---
+    'Ethereal': 'KBAQCTFODVZG',
     'Drone Void': 'KVDQCATFOBZG',
     'Drone Grit': 'FTVQCAODBKZG',
-    'Exp Granular': 'AKZQCTFODBVG',
+    'Deep Space': 'KVDBQCATFOZG',
+    // --- Lo-Fi Chains ---
+    'Lo-Fi Tape': 'ZGCQDATFOVBK',
+    'Lo-Fi Vinyl': 'GZVQCATFODBK',
     'Tape Sludge': 'FOCQATDBVKZG',
-    'Crystal Pluck': 'ACQKFTODBVZG'
+    // --- Experimental Chains ---
+    'Exp Granular': 'AKZQCTFODBVG',
+    'Glitch Storm': 'ZAFQCTODBVGK',
+    'Broken Radio': 'QTCAFODBVKZG',
+    // --- Utility Chains ---
+    'Width': 'ZKQCATFODBVG',
+    'Crystal Pluck': 'ACQKFTODBVZG',
+    'Techno Kick': 'TQCAFODBVKZG',
+    'Master Glue': 'QCG'
 };
 
 // Effect colors for UI
@@ -1704,14 +1723,14 @@ const DEFAULT_GLOBAL_PRESETS = {
         active: { eq: false, compressor: false, reverb: false, dusk: false, delay: false, distortion: false, fuzz: false, overdrive: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
         params: JSON.parse(JSON.stringify(effects))
     },
-    "Voice (Lead)": { 
-        chain: "CQBATFODVKZG", 
+    "Voice (Lead)": {
+        chain: "CQBATFODVKZG",
         active: { eq: true, compressor: true, reverb: true, dusk: false, delay: false, distortion: false, fuzz: false, overdrive: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
-            eq: { ...effects.eq, lcFreq: 110, p1Freq: 1000, p1Gain: -4.0, p1Q: 2.0, hsFreq: 8000, hsGain: 2.0, hcFreq: 18000 },
-            compressor: { ...effects.compressor, threshold: -20, ratio: 3.0, attack: 0.01, release: 0.15, gain: 3.0 },
-            reverb: { ...effects.reverb, room: 'small', mix: 0.20, volume: 1.0 }
+            eq: { ...effects.eq, lcFreq: 90, lsFreq: 200, lsGain: 1.0, p1Freq: 1200, p1Gain: -3.0, p1Q: 1.5, hsFreq: 8000, hsGain: 3.0, hcFreq: 16000 },
+            compressor: { ...effects.compressor, threshold: -18, ratio: 3.5, attack: 0.008, release: 0.12, gain: 3.5 },
+            reverb: { ...effects.reverb, room: 'medium', mix: 0.22, damp: 6000, predelay: 0.02 }
         }
     },
     "Drums (Punch)": {
@@ -1719,10 +1738,10 @@ const DEFAULT_GLOBAL_PRESETS = {
         active: { eq: true, compressor: true, reverb: true, distortion: true, dusk: false, delay: false, fuzz: false, overdrive: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
-            eq: { ...effects.eq, lcFreq: 30, lsFreq: 60, lsGain: 3.0, p1Freq: 400, p1Gain: -5.0, p1Q: 1.0, hsFreq: 8000, hsGain: 2.0 },
-            compressor: { ...effects.compressor, threshold: -22, ratio: 6.0, attack: 0.03, release: 0.1, gain: 4.0 },
-            distortion: { ...effects.distortion, amount: 10, tone: 8000, mix: 0.2 },
-            reverb: { ...effects.reverb, room: 'small', mix: 0.10, volume: 0.9 }
+            eq: { ...effects.eq, lcFreq: 25, lsFreq: 60, lsGain: 4.0, p1Freq: 350, p1Gain: -4.0, p1Q: 1.2, hsFreq: 8000, hsGain: 2.5, hcFreq: 18000 },
+            compressor: { ...effects.compressor, threshold: -20, ratio: 6.0, attack: 0.025, release: 0.08, gain: 4.5 },
+            distortion: { ...effects.distortion, amount: 8, tone: 6000, mix: 0.15 },
+            reverb: { ...effects.reverb, room: 'medium', mix: 0.12, damp: 5000, predelay: 0.01 }
         }
     },
     "Bass (Solid)": {
@@ -1730,9 +1749,9 @@ const DEFAULT_GLOBAL_PRESETS = {
         active: { eq: true, compressor: true, overdrive: true, dusk: false, delay: false, distortion: false, fuzz: false, reverb: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
-            compressor: { ...effects.compressor, threshold: -18, ratio: 8.0, attack: 0.02, release: 0.2, gain: 3.0 },
-            eq: { ...effects.eq, lcFreq: 40, lsFreq: 80, lsGain: 3.0, p1Freq: 250, p1Gain: -4.0, p2Freq: 1500, p2Gain: 3.0, hsFreq: 5000, hsGain: 0 },
-            overdrive: { ...effects.overdrive, drive: 15, tone: 3000, mix: 0.3 }
+            compressor: { ...effects.compressor, threshold: -16, ratio: 8.0, attack: 0.015, release: 0.18, gain: 3.5 },
+            eq: { ...effects.eq, lcFreq: 35, lsFreq: 80, lsGain: 4.0, p1Freq: 250, p1Gain: -3.0, p2Freq: 1500, p2Gain: 2.0, hsFreq: 5000, hsGain: 0 },
+            overdrive: { ...effects.overdrive, drive: 18, tone: 2500, mix: 0.35 }
         }
     },
     "Guitar (Acoustic)": {
@@ -1740,20 +1759,21 @@ const DEFAULT_GLOBAL_PRESETS = {
         active: { eq: true, compressor: true, reverb: true, dusk: true, delay: false, distortion: false, fuzz: false, overdrive: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
-            compressor: { ...effects.compressor, threshold: -20, ratio: 4.0, attack: 0.02, release: 0.2, gain: 3.0 },
-            eq: { ...effects.eq, lcFreq: 80, p1Freq: 350, p1Gain: -2.0, hsFreq: 4000, hsGain: 2.0 },
-            dusk: { ...effects.dusk, shimmer: 0.1, verbMix: 0.2, grainMix: 0.0, time: 2000 },
-            reverb: { ...effects.reverb, room: 'medium', mix: 0.15 }
+            compressor: { ...effects.compressor, threshold: -18, ratio: 3.5, attack: 0.015, release: 0.25, gain: 3.0 },
+            eq: { ...effects.eq, lcFreq: 70, p1Freq: 350, p1Gain: -2.5, p1Q: 0.8, hsFreq: 4000, hsGain: 2.5, hcFreq: 14000 },
+            dusk: { ...effects.dusk, shimmer: 0.15, verbMix: 0.25, grainMix: 0.02, time: 1800, haunt: 10 },
+            reverb: { ...effects.reverb, room: 'medium', mix: 0.18, damp: 6000, predelay: 0.02 }
         }
     },
     "Guitar (Rock)": {
         chain: "OCQATFDBVKZG",
-        active: { eq: true, overdrive: true, compressor: false, reverb: true, dusk: false, delay: false, distortion: false, fuzz: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
+        active: { eq: true, overdrive: true, compressor: true, reverb: true, dusk: false, delay: false, distortion: false, fuzz: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
-            overdrive: { ...effects.overdrive, drive: 25, tone: 5000, mix: 1.0 },
-            eq: { ...effects.eq, lcFreq: 100, p1Freq: 800, p1Gain: 3.0, hsFreq: 3000, hsGain: 2.0 },
-            reverb: { ...effects.reverb, room: 'small', mix: 0.15 }
+            compressor: { ...effects.compressor, threshold: -16, ratio: 3.5, attack: 0.01, release: 0.12, gain: 2.5 },
+            overdrive: { ...effects.overdrive, drive: 28, tone: 4500, mix: 1.0 },
+            eq: { ...effects.eq, lcFreq: 90, p1Freq: 800, p1Gain: 2.5, p1Q: 0.8, hsFreq: 3500, hsGain: 2.5, hcFreq: 14000 },
+            reverb: { ...effects.reverb, room: 'medium', mix: 0.18, damp: 5000, predelay: 0.015 }
         }
     },
     "Guitar (Psychedelic)": {
@@ -1761,9 +1781,9 @@ const DEFAULT_GLOBAL_PRESETS = {
         active: { eq: true, delay: true, reverb: true, zigZ: true, compressor: false, distortion: false, fuzz: false, overdrive: false, machineReverb: false, arpDelay: false, dusk: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
-            zigZ: { rate: 2.0, depth: 1.0, phase: 0.0 },
-            delay: { ...effects.delay, time: 0.4, repetitions: 7, mix: 0.45, panSpeed: 0.5 },
-            reverb: { ...effects.reverb, room: 'large', mix: 0.4 }
+            zigZ: { rate: 1.5, depth: 0.8, phase: 0.0 },
+            delay: { ...effects.delay, time: 0.45, repetitions: 8, mix: 0.45, panSpeed: 0.3, panDepth: 0.6, damp: 4000 },
+            reverb: { ...effects.reverb, room: 'large', mix: 0.4, damp: 4000, predelay: 0.03, duration: 3.0 }
         }
     },
     "Guitar (Noise)": {
@@ -1771,10 +1791,10 @@ const DEFAULT_GLOBAL_PRESETS = {
         active: { eq: true, distortion: true, machineReverb: true, fuzz: true, dusk: false, compressor: false, reverb: false, overdrive: false, delay: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
-            fuzz: { ...effects.fuzz, gain: 45, bias: 0.3, tone: 2500, mix: 1.0 },
-            distortion: { ...effects.distortion, amount: 60, tone: 8000, mix: 0.5 },
-            machineReverb: { ...effects.machineReverb, decay: 4.0, warp: 0.8, mix: 0.6 },
-            eq: { ...effects.eq, lcFreq: 150, hcFreq: 10000 }
+            fuzz: { ...effects.fuzz, gain: 42, bias: 0.25, tone: 2200, mix: 1.0 },
+            distortion: { ...effects.distortion, amount: 55, tone: 7000, mix: 0.45 },
+            machineReverb: { ...effects.machineReverb, decay: 5.0, warp: 0.75, mix: 0.55, feedback: 0.6 },
+            eq: { ...effects.eq, lcFreq: 120, p1Freq: 1500, p1Gain: 3.0, hcFreq: 9000 }
         }
     },
     "Style: Dub": {
@@ -1782,33 +1802,35 @@ const DEFAULT_GLOBAL_PRESETS = {
         active: { eq: true, delay: true, compressor: true, reverb: true, dusk: false, distortion: false, fuzz: false, overdrive: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
-            compressor: { ...effects.compressor, ratio: 4.0, threshold: -15, release: 0.3 },
-            eq: { ...effects.eq, lcFreq: 30, lsFreq: 80, lsGain: 5.0, hcFreq: 4000 },
-            delay: { ...effects.delay, time: 0.5, repetitions: 9, damp: 800, mix: 0.5, panSpeed: 0.2 },
-            reverb: { ...effects.reverb, room: 'large', mix: 0.3 }
+            compressor: { ...effects.compressor, ratio: 4.0, threshold: -14, attack: 0.01, release: 0.35, gain: 2.5 },
+            eq: { ...effects.eq, lcFreq: 25, lsFreq: 80, lsGain: 6.0, p1Freq: 500, p1Gain: -2.0, hsFreq: 3500, hsGain: -3.0, hcFreq: 4000 },
+            delay: { ...effects.delay, time: 0.5, repetitions: 10, damp: 600, mix: 0.55, panSpeed: 0.15, panDepth: 0.8 },
+            reverb: { ...effects.reverb, room: 'large', mix: 0.35, damp: 3000, predelay: 0.04, duration: 3.0 }
         }
     },
     "Style: Noise Rock": {
         chain: "TFQCAODBVKZG",
-        active: { eq: true, fuzz: true, delay: true, compressor: false, reverb: false, distortion: false, overdrive: false, machineReverb: false, dusk: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
+        active: { eq: true, fuzz: true, delay: true, compressor: true, reverb: false, distortion: false, overdrive: false, machineReverb: false, dusk: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
-            distortion: { ...effects.distortion, amount: 40, mix: 1.0 },
-            fuzz: { ...effects.fuzz, gain: 45, bias: 0.2, tone: 2500, mix: 1.0 },
-            eq: { ...effects.eq, lcFreq: 100, p1Freq: 1000, p1Gain: 6.0, p1Q: 1.0, hcFreq: 12000 },
-            delay: { ...effects.delay, time: 0.1, repetitions: 1, mix: 0.25 }
+            compressor: { ...effects.compressor, threshold: -16, ratio: 5.0, attack: 0.005, release: 0.08, gain: 3.5 },
+            distortion: { ...effects.distortion, amount: 35, tone: 6000, mix: 0.9 },
+            fuzz: { ...effects.fuzz, gain: 42, bias: 0.15, tone: 2200, mix: 1.0 },
+            eq: { ...effects.eq, lcFreq: 90, p1Freq: 1000, p1Gain: 5.0, p1Q: 1.2, hsFreq: 4000, hsGain: 3.0, hcFreq: 10000 },
+            delay: { ...effects.delay, time: 0.08, repetitions: 1, mix: 0.2, damp: 4000 }
         }
     },
     "Lo-Fi Tape": {
-        chain: "ZCQDATFOBVKG",
-        active: { eq: true, zigZ: true, compressor: true, delay: true, overdrive: true, dusk: false, reverb: false, distortion: false, fuzz: false, machineReverb: false, arpDelay: false, griz: false, harmony: false },
+        chain: "ZGCQDATFOVBK",
+        active: { eq: true, zigZ: true, griz: true, compressor: true, delay: true, overdrive: true, dusk: false, reverb: false, distortion: false, fuzz: false, machineReverb: false, arpDelay: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
-            eq: { ...effects.eq, lcFreq: 150, p1Freq: 400, p1Gain: -3, hsFreq: 6000, hsGain: -4, hcFreq: 10000 },
-            zigZ: { rate: 0.1, depth: 0.15, phase: 0 },
-            compressor: { ...effects.compressor, threshold: -20, ratio: 3.5, attack: 0.05, release: 0.3, gain: 2.0 },
-            overdrive: { ...effects.overdrive, drive: 12, tone: 4000, mix: 0.4 },
-            delay: { ...effects.delay, time: 0.08, repetitions: 1, mix: 0.25, panSpeed: 0 }
+            eq: { ...effects.eq, lcFreq: 180, lsFreq: 400, lsGain: -2, p1Freq: 400, p1Gain: -2, hsFreq: 5000, hsGain: -5, hcFreq: 8000 },
+            zigZ: { rate: 0.08, depth: 0.12, phase: 0 },
+            griz: { ...effects.griz, mix: 0.15, grainSize: 0.05, density: 0.3, spread: 0.2 },
+            compressor: { ...effects.compressor, threshold: -18, ratio: 3.5, attack: 0.06, release: 0.35, gain: 2.5 },
+            overdrive: { ...effects.overdrive, drive: 10, tone: 3500, mix: 0.35 },
+            delay: { ...effects.delay, time: 0.07, repetitions: 1, mix: 0.2, panSpeed: 0, damp: 3000 }
         }
     },
     "Ambient Wash": {
@@ -1816,10 +1838,44 @@ const DEFAULT_GLOBAL_PRESETS = {
         active: { eq: true, dusk: true, machineReverb: true, delay: true, reverb: false, distortion: false, fuzz: false, overdrive: false, arpDelay: false, zigZ: false, compressor: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
-            dusk: { ...effects.dusk, shimmer: 0.8, verbMix: 0.6, grainMix: 0.1, time: 3000 },
-            machineReverb: { ...effects.machineReverb, decay: 8.0, mix: 0.5 },
-            delay: { ...effects.delay, time: 0.6, repetitions: 6, mix: 0.4, panSpeed: 0.2 },
-            eq: { ...effects.eq, lcFreq: 60, hcFreq: 8000 }
+            dusk: { ...effects.dusk, shimmer: 0.75, verbMix: 0.55, grainMix: 0.12, time: 3500, haunt: 25 },
+            machineReverb: { ...effects.machineReverb, decay: 9.0, mix: 0.45, warp: 0.5, feedback: 0.7 },
+            delay: { ...effects.delay, time: 0.65, repetitions: 7, mix: 0.35, panSpeed: 0.15, panDepth: 0.5, damp: 5000 },
+            eq: { ...effects.eq, lcFreq: 50, lsFreq: 120, lsGain: 1.0, hsFreq: 8000, hsGain: -2.0, hcFreq: 10000 }
+        }
+    },
+    "Ambient Pad": {
+        chain: "KQBVDG",
+        active: { dusk: true, eq: true, compressor: true, reverb: true, delay: false, distortion: false, fuzz: false, overdrive: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
+        params: {
+            ...JSON.parse(JSON.stringify(effects)),
+            dusk: { ...effects.dusk, shimmer: 0.6, verbMix: 0.5, grainMix: 0.15, time: 2500, haunt: 30 },
+            compressor: { ...effects.compressor, threshold: -14, ratio: 2.0, attack: 0.08, release: 0.5, gain: 2.0 },
+            reverb: { ...effects.reverb, room: 'cathedral', mix: 0.45, damp: 4000, predelay: 0.05 },
+            eq: { ...effects.eq, lcFreq: 50, lsFreq: 120, lsGain: 1, p1Freq: 800, p1Gain: -1, hsFreq: 10000, hsGain: 2, hcFreq: 16000 }
+        }
+    },
+    "Electronic Pulse": {
+        chain: "CQDATFVBKZG",
+        active: { compressor: true, eq: true, delay: true, arpDelay: true, distortion: false, fuzz: false, overdrive: false, reverb: true, dusk: false, machineReverb: false, zigZ: false, griz: false, harmony: false },
+        params: {
+            ...JSON.parse(JSON.stringify(effects)),
+            compressor: { ...effects.compressor, threshold: -18, ratio: 4.0, attack: 0.005, release: 0.1, gain: 3.0 },
+            eq: { ...effects.eq, lcFreq: 40, lsFreq: 100, lsGain: 2, p1Freq: 2000, p1Gain: -2, hsFreq: 8000, hsGain: 3, hcFreq: 18000 },
+            delay: { ...effects.delay, time: 0.3, repetitions: 4, damp: 4000, mix: 0.35, panSpeed: 0.5, panDepth: 0.7 },
+            arpDelay: { ...effects.arpDelay, time: 0.25, repetitions: 5, mix: 0.4, scale: 1, sync: 0, humanize: 0.2 },
+            reverb: { ...effects.reverb, room: 'hall', mix: 0.3, damp: 6000, predelay: 0.03 }
+        }
+    },
+    "Cinematic Score": {
+        chain: "CQKBDG",
+        active: { compressor: true, eq: true, dusk: true, reverb: true, delay: false, distortion: false, fuzz: false, overdrive: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
+        params: {
+            ...JSON.parse(JSON.stringify(effects)),
+            compressor: { ...effects.compressor, threshold: -16, ratio: 2.5, attack: 0.05, release: 0.3, gain: 2.0 },
+            eq: { ...effects.eq, lcFreq: 35, lsFreq: 100, lsGain: 2, p1Freq: 600, p1Gain: -1.5, p1Q: 0.7, hsFreq: 10000, hsGain: 2.5, hcFreq: 18000 },
+            dusk: { ...effects.dusk, shimmer: 0.3, verbMix: 0.4, grainMix: 0.05, time: 2000, haunt: 20 },
+            reverb: { ...effects.reverb, room: 'hall', mix: 0.4, damp: 5000, predelay: 0.04, duration: 2.5 }
         }
     },
     "Drone (Deep Space)": {
@@ -1827,9 +1883,9 @@ const DEFAULT_GLOBAL_PRESETS = {
         active: { dusk: true, machineReverb: true, eq: true, reverb: false, delay: false, distortion: false, fuzz: false, overdrive: false, arpDelay: false, zigZ: false, compressor: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
-            dusk: { ...effects.dusk, time: 4000, grainMix: 0.3, verbMix: 0.6, shimmer: 0.4, haunt: 55 },
-            machineReverb: { ...effects.machineReverb, decay: 8.0, mix: 0.5, warp: 0.6 },
-            eq: { ...effects.eq, lcFreq: 40, hsFreq: 4000, hsGain: -5 }
+            dusk: { ...effects.dusk, time: 5000, grainMix: 0.25, verbMix: 0.55, shimmer: 0.35, haunt: 50 },
+            machineReverb: { ...effects.machineReverb, decay: 10.0, mix: 0.5, warp: 0.7, feedback: 0.8 },
+            eq: { ...effects.eq, lcFreq: 35, lsFreq: 80, lsGain: 2.0, hsFreq: 4000, hsGain: -4.0, hcFreq: 8000 }
         }
     },
     "Exp (Glitch Texture)": {
@@ -1837,29 +1893,33 @@ const DEFAULT_GLOBAL_PRESETS = {
         active: { zigZ: true, arpDelay: true, fuzz: true, eq: true, compressor: true, reverb: false, delay: false, distortion: false, overdrive: false, machineReverb: false, dusk: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
-            zigZ: { rate: 16.0, depth: 1.0, phase: 0.0 },
-            arpDelay: { ...effects.arpDelay, time: 0.05, repetitions: 8, mix: 0.8, scale: 19, sync: 0 },
-            fuzz: { ...effects.fuzz, gain: 50, bias: 0.45, tone: 8000, mix: 0.6 }
+            zigZ: { rate: 14.0, depth: 0.9, phase: 0.0 },
+            arpDelay: { ...effects.arpDelay, time: 0.04, repetitions: 8, mix: 0.75, scale: 19, sync: 0, humanize: 0.15 },
+            fuzz: { ...effects.fuzz, gain: 48, bias: 0.4, tone: 7000, mix: 0.55 },
+            compressor: { ...effects.compressor, threshold: -22, ratio: 5.0, attack: 0.002, release: 0.08, gain: 3.0 },
+            eq: { ...effects.eq, lcFreq: 80, p1Freq: 2000, p1Gain: 4.0, p1Q: 1.5, hcFreq: 12000 }
         }
     },
     "Style: Experimental": {
         chain: "AKZQCTFODBVG",
-        active: { arpDelay: true, dusk: true, zigZ: true, eq: false, distortion: false, machineReverb: false, compressor: false, reverb: false, fuzz: false, overdrive: false, delay: false, griz: false, harmony: false },
+        active: { arpDelay: true, dusk: true, zigZ: true, eq: true, distortion: false, machineReverb: false, compressor: false, reverb: false, fuzz: false, overdrive: false, delay: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
-            arpDelay: { ...effects.arpDelay, time: 0.15, mix: 0.6, scale: 19, stay: 0 },
-            dusk: { ...effects.dusk, haunt: 150, grainMix: 0.6, verbMix: 0.4, time: 500 },
-            zigZ: { rate: 8.0, depth: 1.0, phase: 0.0 }
+            arpDelay: { ...effects.arpDelay, time: 0.12, mix: 0.55, scale: 19, stay: 0, humanize: 0.1 },
+            dusk: { ...effects.dusk, haunt: 120, grainMix: 0.5, verbMix: 0.35, time: 600, shimmer: 0.2 },
+            zigZ: { rate: 6.0, depth: 0.85, phase: 0.0 },
+            eq: { ...effects.eq, lcFreq: 60, p1Freq: 1500, p1Gain: 3.0, p1Q: 1.0, hcFreq: 10000 }
         }
     },
     "Style: Rock": {
         chain: "OCQATFDBVKZG",
-        active: { overdrive: true, compressor: true, eq: true, reverb: false, dusk: false, delay: false, distortion: false, fuzz: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
+        active: { overdrive: true, compressor: true, eq: true, reverb: true, dusk: false, delay: false, distortion: false, fuzz: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
-            compressor: { ...effects.compressor, threshold: -18, ratio: 4.0 },
-            overdrive: { ...effects.overdrive, drive: 12, mix: 1.0 },
-            eq: { ...effects.eq, lsFreq: 100, lsGain: 2.0, hsFreq: 5000, hsGain: 2.0 }
+            compressor: { ...effects.compressor, threshold: -16, ratio: 4.5, attack: 0.008, release: 0.1, gain: 3.0 },
+            overdrive: { ...effects.overdrive, drive: 20, tone: 4000, mix: 1.0 },
+            eq: { ...effects.eq, lcFreq: 80, lsFreq: 100, lsGain: 2.5, p1Freq: 800, p1Gain: 2.0, hsFreq: 5000, hsGain: 2.5, hcFreq: 14000 },
+            reverb: { ...effects.reverb, room: 'medium', mix: 0.2, damp: 5000, predelay: 0.015 }
         }
     },
     "Master (Glue)": {
@@ -1867,8 +1927,8 @@ const DEFAULT_GLOBAL_PRESETS = {
         active: { eq: true, compressor: true, reverb: false, dusk: false, delay: false, distortion: false, fuzz: false, overdrive: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
-            eq: { ...effects.eq, lcFreq: 30, lsFreq: 80, lsGain: 2.0, p1Freq: 500, p1Gain: -1.0, p1Q: 0.7, hsFreq: 12000, hsGain: 2.0 },
-            compressor: { ...effects.compressor, threshold: -14, ratio: 2.0, attack: 0.05, release: 0.3, gain: 1.5, mix: 1.0 }
+            eq: { ...effects.eq, lcFreq: 25, lsFreq: 80, lsGain: 1.5, p1Freq: 500, p1Gain: -1.0, p1Q: 0.7, hsFreq: 12000, hsGain: 1.5, hcFreq: 18000 },
+            compressor: { ...effects.compressor, threshold: -12, ratio: 2.0, attack: 0.03, release: 0.35, gain: 1.5, mix: 0.8 }
         }
     },
     "Voice (Radio)": {
@@ -1876,10 +1936,10 @@ const DEFAULT_GLOBAL_PRESETS = {
         active: { eq: true, compressor: true, distortion: true, delay: true, reverb: false, dusk: false, fuzz: false, overdrive: false, machineReverb: false, arpDelay: false, zigZ: false, griz: false, harmony: false },
         params: {
             ...JSON.parse(JSON.stringify(effects)),
-            eq: { ...effects.eq, lcFreq: 300, hcFreq: 4000, p1Freq: 1500, p1Gain: 6.0, p1Q: 2.0 },
-            compressor: { ...effects.compressor, threshold: -24, ratio: 8.0, attack: 0.01, release: 0.1, gain: 4.0 },
-            distortion: { ...effects.distortion, amount: 60, mix: 0.3 },
-            delay: { ...effects.delay, time: 0.1, repetitions: 2, mix: 0.2 }
+            eq: { ...effects.eq, lcFreq: 350, hcFreq: 3500, p1Freq: 1500, p1Gain: 5.0, p1Q: 1.8, hsFreq: 2000, hsGain: -3.0 },
+            compressor: { ...effects.compressor, threshold: -22, ratio: 8.0, attack: 0.005, release: 0.08, gain: 5.0 },
+            distortion: { ...effects.distortion, amount: 50, tone: 4000, mix: 0.25 },
+            delay: { ...effects.delay, time: 0.08, repetitions: 2, mix: 0.15, damp: 3000 }
         }
     }
 };
@@ -1954,7 +2014,9 @@ const COMPRESSOR_PRESETS = {
     'soft': { threshold: -12, ratio: 1.5, knee: 30, attack: 0.05, release: 0.5, gain: 1.5, mix: 1.0 },
     'hard': { threshold: -30, ratio: 12, knee: 0, attack: 0.002, release: 0.05, gain: 6.0, mix: 1.0 },
     'sustain': { threshold: -32, ratio: 8, knee: 5, attack: 0.005, release: 0.8, gain: 5.0, mix: 1.0 },
-    'parallel-crush': { threshold: -30, ratio: 10, knee: 0, attack: 0.005, release: 0.1, gain: 8.0, mix: 1.0 }
+    'parallel-crush': { threshold: -30, ratio: 10, knee: 0, attack: 0.005, release: 0.1, gain: 8.0, mix: 1.0 },
+    'gentle-glide': { threshold: -10, ratio: 1.5, knee: 30, attack: 0.1, release: 0.6, gain: 1.0, mix: 0.8 },
+    'snap': { threshold: -20, ratio: 6, knee: 3, attack: 0.03, release: 0.15, gain: 3.0, mix: 1.0 }
 };
 
 const DELAY_PRESETS = {
@@ -1962,30 +2024,37 @@ const DELAY_PRESETS = {
     'slapback': { time: 0.11, repetitions: 1, damp: 6000, mix: 0.30, panSpeed: 0, panDepth: 0.8, sync: false },
     'dotted8th': { time: 0.45, repetitions: 5, damp: 2500, mix: 0.45, panSpeed: 0, panDepth: 0.8, sync: false },
     'dub': { time: 0.6, repetitions: 8, damp: 600, mix: 0.6, panSpeed: 0.1, panDepth: 0.8, sync: false },
-    'infinite': { time: 0.2, repetitions: 10, damp: 15000, mix: 0.6, panSpeed: 0, panDepth: 0.8, sync: false },
+    'infinite': { time: 0.25, repetitions: 10, damp: 18000, mix: 0.65, panSpeed: 0, panDepth: 0.8, sync: false },
     'ping-pong': { time: 0.4, repetitions: 6, damp: 4000, mix: 0.5, panSpeed: 1.5, panDepth: 0.9, sync: false },
-    'short-ambience': { time: 0.08, repetitions: 3, damp: 1500, mix: 0.25, panSpeed: 0, panDepth: 0.8, sync: false }
+    'short-ambience': { time: 0.08, repetitions: 3, damp: 1500, mix: 0.25, panSpeed: 0, panDepth: 0.8, sync: false },
+    'tape-echo': { time: 0.35, repetitions: 5, damp: 1800, mix: 0.4, panSpeed: 0.2, panDepth: 0.6, sync: false },
+    'rhythmic': { time: 0.25, repetitions: 4, damp: 3500, mix: 0.35, panSpeed: 0.5, panDepth: 0.7, sync: false }
 };
 
 const DISTORTION_PRESETS = {
     'default': { amount: 35, shape: 0.5, tone: 5000, volume: 0.8, mix: 1.0 },
     'tube-warmth': { amount: 20, shape: 0.5, tone: 3000, volume: 0.9, mix: 0.8 },
     'analog-edge': { amount: 50, shape: 0.5, tone: 6000, volume: 0.75, mix: 1.0 },
-    'console-slam': { amount: 80, shape: 0.5, tone: 12000, volume: 0.6, mix: 1.0 }
+    'console-slam': { amount: 80, shape: 0.5, tone: 12000, volume: 0.6, mix: 1.0 },
+    'bit-crush': { amount: 60, shape: 0.8, tone: 4000, volume: 0.7, mix: 0.9 },
+    'tape-saturate': { amount: 15, shape: 0.3, tone: 5500, volume: 0.95, mix: 0.7 }
 };
 
 const FUZZ_PRESETS = {
-    'Vintage (Raw)': { gain: 25, tone: 5000, volume: 0.5, mix: 1.0, bias: 0.0 },
-    'Pi Fuzz (Sustain)': { gain: 45, tone: 800, volume: 0.8, mix: 1.0, bias: 0.0 },
-    'Oscillating (Velcro)': { gain: 50, tone: 5000, volume: 0.9, mix: 1.0, bias: 0.4 },
-    'Oscillating (Drone)': { gain: 50, tone: 400, volume: 0.8, mix: 1.0, bias: -0.3 }
+    'Vintage Fuzz': { gain: 25, tone: 5000, volume: 0.5, mix: 1.0, bias: 0.0 },
+    'Big Muff': { gain: 45, tone: 800, volume: 0.8, mix: 1.0, bias: 0.0 },
+    'Velcro Sputter': { gain: 50, tone: 5000, volume: 0.9, mix: 1.0, bias: 0.4 },
+    'Drone Fuzz': { gain: 50, tone: 400, volume: 0.8, mix: 1.0, bias: -0.3 },
+    'Fuzz Face': { gain: 35, tone: 3000, volume: 0.7, mix: 0.9, bias: 0.1 }
 };
 
 const OVERDRIVE_PRESETS = {
-    'American (Sparkle)': { drive: 6, tone: 7000, volume: 1.0, mix: 1.0 },
-    'British (Crunch)': { drive: 15, tone: 4000, volume: 0.9, mix: 1.0 },
+    'Clean Boost': { drive: 3, tone: 8000, volume: 1.0, mix: 1.0 },
+    'American Sparkle': { drive: 6, tone: 7000, volume: 1.0, mix: 1.0 },
+    'British Crunch': { drive: 15, tone: 4000, volume: 0.9, mix: 1.0 },
     'Thick Overdrive': { drive: 25, tone: 1000, volume: 0.9, mix: 1.0 },
-    'Blues Overdrive': { drive: 10, tone: 3500, volume: 0.95, mix: 1.0 }
+    'Blues Breaker': { drive: 10, tone: 3500, volume: 0.95, mix: 1.0 },
+    'Lead Boost': { drive: 20, tone: 5000, volume: 0.85, mix: 1.0 }
 };
 
 const MACHINE_PRESETS = {
@@ -1993,7 +2062,9 @@ const MACHINE_PRESETS = {
     'industrial': { decay: 1.0, feedback: 0.8, warp: 0.9, mix: 0.6, highCut: 8000, lowCut: 100 },
     'ethereal': { decay: 6.0, feedback: 0.4, warp: 0.1, mix: 0.7, highCut: 8000, lowCut: 100 },
     'metallic': { decay: 0.5, feedback: 0.9, warp: 0.7, mix: 0.5, highCut: 8000, lowCut: 100 },
-    'drone-verb': { decay: 8.0, feedback: 0.6, warp: 0.2, mix: 0.8, highCut: 8000, lowCut: 100 }
+    'drone-verb': { decay: 8.0, feedback: 0.6, warp: 0.2, mix: 0.8, highCut: 8000, lowCut: 100 },
+    'shimmer-machine': { decay: 5.0, feedback: 0.5, warp: 0.05, mix: 0.65, highCut: 12000, lowCut: 200 },
+    'lo-fi spring': { decay: 1.8, feedback: 0.6, warp: 0.8, mix: 0.55, highCut: 5000, lowCut: 300 }
 };
 
 const ARPDELAY_PRESETS = {
@@ -2002,7 +2073,9 @@ const ARPDELAY_PRESETS = {
     'angel-oct': { time: 0.3, repetitions: 5, mix: 0.6, stay: 0, scale: 0, sync: 0, amplitude: 1.0, range: 1, humanize: 0.35, panSpeed: 0, panDepth: 0.8 },
     'frozen': { time: 0.5, repetitions: 9, mix: 0.5, stay: 1, scale: 1, sync: 0, amplitude: 1.0, range: 1, humanize: 0.35, panSpeed: 0, panDepth: 0.8 },
     'swirling': { time: 0.4, repetitions: 8, mix: 0.5, stay: 0, scale: 4, sync: 1, amplitude: 1.0, range: 1, humanize: 0.35, panSpeed: 0.8, panDepth: 0.8 },
-    'sync-trip': { time: 0.33, repetitions: 7, mix: 0.5, stay: 0, scale: 4, sync: 1, amplitude: 1.0, range: 1, humanize: 0.35, panSpeed: 0, panDepth: 0.8 }
+    'sync-trip': { time: 0.33, repetitions: 7, mix: 0.5, stay: 0, scale: 4, sync: 1, amplitude: 1.0, range: 1, humanize: 0.35, panSpeed: 0, panDepth: 0.8 },
+    'pentatonic-rise': { time: 0.35, repetitions: 5, mix: 0.55, stay: 0, scale: 3, sync: 0, amplitude: 1.0, range: 1, humanize: 0.3, panSpeed: 0.3, panDepth: 0.7 },
+    'chromatic-descent': { time: 0.25, repetitions: 8, mix: 0.45, stay: 0, scale: 5, sync: 0, amplitude: 1.0, range: 2, humanize: 0.4, panSpeed: 0, panDepth: 0.8 }
 };
 
 const REVERB_PRESETS = {
@@ -2019,7 +2092,10 @@ const REVERB_PRESETS = {
     'tight-drum': { room: 'small', volume: 1.0, mix: 0.15, damp: 10000, predelay: 0.005, duration: 0.4 },
     'ambient-cloud': { room: 'cathedral', volume: 1.1, mix: 0.8, damp: 3000, predelay: 0.08, duration: 4.5, decay: 2.4 },
     'dark-cave': { room: 'hall', volume: 1.15, mix: 0.7, damp: 1500, predelay: 0.07, duration: 3.5, decay: 2.8 },
-    'dub-space': { room: 'hall', volume: 1.0, mix: 0.55, damp: 2500, predelay: 0.09, duration: 2.8 }
+    'dub-space': { room: 'hall', volume: 1.0, mix: 0.55, damp: 2500, predelay: 0.09, duration: 2.8 },
+    'vocal-room': { room: 'medium', volume: 1.0, mix: 0.2, damp: 10000, predelay: 0.02, duration: 0.8 },
+    'garage': { room: 'large', volume: 1.0, mix: 0.35, damp: 4000, predelay: 0.03, duration: 1.5 },
+    'shimmer-hall': { room: 'cathedral', volume: 1.3, mix: 0.65, damp: 8000, predelay: 0.05, duration: 3.5, decay: 2.0 }
 };
 
 const DUSK_PRESETS = {
@@ -2029,22 +2105,27 @@ const DUSK_PRESETS = {
     'horror-drone': { time: 2500, grainMix: 0.0, verbMix: 0.5, shimmer: 0.0, haunt: 200, grainSize: 0.9, panSpeed: 0.1, panDepth: 0.8 },
     'glitch-verb': { time: 537, grainMix: 0.8, verbMix: 0.4, shimmer: 0.3, haunt: 60, grainSize: 0.1, panSpeed: 0, panDepth: 0.8 },
     'deep-space': { time: 4000, grainMix: 0.1, verbMix: 0.6, shimmer: 0.1, haunt: 50, grainSize: 0.9, panSpeed: 0, panDepth: 0.8 },
-    'scary': { time: 545, grainMix: 0.0, verbMix: 0.5, shimmer: 0.6, haunt: 423, grainSize: 0.5, panSpeed: 0, panDepth: 0.8 }
+    'eerie-whisper': { time: 700, grainMix: 0.15, verbMix: 0.55, shimmer: 0.4, haunt: 300, grainSize: 0.6, panSpeed: 0.05, panDepth: 0.8 },
+    'frozen-texture': { time: 3500, grainMix: 0.05, verbMix: 0.65, shimmer: 0.2, haunt: 80, grainSize: 0.95, panSpeed: 0.02, panDepth: 0.6 }
 };
 
 const ZIGZ_PRESETS = {
     'default': { rate: 4, depth: 0.7, phase: 0.0 },
-    'slow-pan': { rate: 4.0, depth: 0.8, phase: 0.0 },
+    'slow-pan': { rate: 0.5, depth: 0.8, phase: 0.0 },
     'fast-chop': { rate: 0.25, depth: 1.0, phase: 0.0 },
     'offset-mid': { rate: 2.0, depth: 1.0, phase: 0.5 },
-    'subtle-sway': { rate: 8.0, depth: 0.4, phase: 0.0 }
+    'subtle-sway': { rate: 8.0, depth: 0.3, phase: 0.0 },
+    'tremolo-pulse': { rate: 6.0, depth: 0.9, phase: 0.0 },
+    'wide-drift': { rate: 0.2, depth: 0.6, phase: 0.25 }
 };
 
 const GRIZ_PRESETS = {
     'default': { rate: 4.0, wave: 1, depth: 0.8, bias: 0.5, drive: 10.0, vcfMode: 0, makeup: 1.0, slewLimit: 0, mix: 1.0 },
     'slow-grind': { rate: 0.5, wave: 3, depth: 1.0, bias: 0.2, drive: 30.0, vcfMode: 1, makeup: 1.0, slewLimit: 0, mix: 1.0 },
     'fast-chop': { rate: 12.0, wave: 3, depth: 1.0, bias: 0.5, drive: 5.0, vcfMode: 0, makeup: 1.0, slewLimit: 0, mix: 1.0 },
-    'bandpass-sweep': { rate: 2.0, wave: 0, depth: 0.9, bias: 0.5, drive: 20.0, vcfMode: 2, makeup: 1.0, slewLimit: 0, mix: 0.8 }
+    'bandpass-sweep': { rate: 2.0, wave: 0, depth: 0.9, bias: 0.5, drive: 20.0, vcfMode: 2, makeup: 1.0, slewLimit: 0, mix: 0.8 },
+    'stutter': { rate: 8.0, wave: 3, depth: 1.0, bias: 0.8, drive: 15.0, vcfMode: 0, makeup: 1.0, slewLimit: 0, mix: 1.0 },
+    'vinyl-crackle': { rate: 16.0, wave: 1, depth: 0.4, bias: 0.3, drive: 8.0, vcfMode: 1, makeup: 1.2, slewLimit: 5, mix: 0.7 }
 };
 
 // mode: 0 = chromatic (degrees are semitones), 1 = major, 2 = natural minor.
@@ -2053,30 +2134,34 @@ const GRIZ_PRESETS = {
 // TODO: Rework with formant-correct pitch-shift and better pitch-tracking before re-enabling.
 const HARMONY_PRESETS = {
     'default': { voices: 2, mode: 1, key: 0, h1: 2, h2: 4, h3: -3, h4: 6, humanize: 0.5, mix: 0.5, volume: 1.0 },
-    'beach-boys': { voices: 3, mode: 1, key: 0, h1: 2, h2: 4, h3: -3, h4: 6, humanize: 0.65, mix: 0.5, volume: 1.0 },
-    'gospel-stack': { voices: 4, mode: 1, key: 0, h1: 2, h2: 4, h3: 6, h4: -3, humanize: 0.75, mix: 0.55, volume: 1.0 },
-    'barbershop': { voices: 3, mode: 0, key: 0, h1: 4, h2: -5, h3: -12, h4: 7, humanize: 0.5, mix: 0.5, volume: 1.0 },
-    'sweet-thirds': { voices: 1, mode: 1, key: 0, h1: 2, h2: 4, h3: -3, h4: 6, humanize: 0.4, mix: 0.45, volume: 1.0 },
+    'beach-boys': { voices: 3, mode: 1, key: 0, h1: 4, h2: 7, h3: -3, h4: 6, humanize: 0.65, mix: 0.5, volume: 1.0 },
+    'gospel-stack': { voices: 4, mode: 1, key: 0, h1: 3, h2: 5, h3: 7, h4: -5, humanize: 0.75, mix: 0.55, volume: 1.0 },
+    'barbershop': { voices: 3, mode: 0, key: 0, h1: 4, h2: 7, h3: -5, h4: 7, humanize: 0.5, mix: 0.5, volume: 1.0 },
+    'sweet-thirds': { voices: 1, mode: 1, key: 0, h1: 4, h2: 4, h3: -3, h4: 6, humanize: 0.4, mix: 0.45, volume: 1.0 },
     'octave-up': { voices: 1, mode: 0, key: 0, h1: 12, h2: 4, h3: -3, h4: 6, humanize: 0.3, mix: 0.5, volume: 1.0 },
     'octaves': { voices: 2, mode: 0, key: 0, h1: 12, h2: -12, h3: -3, h4: 6, humanize: 0.35, mix: 0.5, volume: 1.0 },
-    'angel-choir': { voices: 4, mode: 1, key: 0, h1: 2, h2: 4, h3: 6, h4: -5, humanize: 0.9, mix: 0.65, volume: 1.0 },
-    'dark-minor': { voices: 3, mode: 2, key: 0, h1: 2, h2: 4, h3: -3, h4: 6, humanize: 0.5, mix: 0.5, volume: 1.0 },
+    'angel-choir': { voices: 4, mode: 1, key: 0, h1: 3, h2: 5, h3: 7, h4: 10, humanize: 0.9, mix: 0.65, volume: 1.0 },
+    'dark-minor': { voices: 3, mode: 2, key: 0, h1: 3, h2: 5, h3: -3, h4: 7, humanize: 0.5, mix: 0.5, volume: 1.0 },
     'dissonant': { voices: 2, mode: 0, key: 0, h1: 1, h2: 6, h3: -3, h4: 6, humanize: 0.25, mix: 0.5, volume: 1.0 },
     'evil': { voices: 3, mode: 0, key: 0, h1: 6, h2: 1, h3: -6, h4: 6, humanize: 0.3, mix: 0.55, volume: 1.0 },
     'demonic': { voices: 4, mode: 0, key: 0, h1: -1, h2: 6, h3: 11, h4: -12, humanize: 0.45, mix: 0.6, volume: 0.9 },
     'tone-cluster': { voices: 3, mode: 0, key: 0, h1: 1, h2: 2, h3: -1, h4: 6, humanize: 0.2, mix: 0.5, volume: 1.0 },
-    'tritone': { voices: 1, mode: 0, key: 0, h1: 6, h2: 4, h3: -3, h4: 6, humanize: 0.2, mix: 0.5, volume: 1.0 }
+    'tritone': { voices: 1, mode: 0, key: 0, h1: 6, h2: 4, h3: -3, h4: 6, humanize: 0.2, mix: 0.5, volume: 1.0 },
+    'open-fifths': { voices: 2, mode: 0, key: 0, h1: 7, h2: -5, h3: -3, h4: 6, humanize: 0.4, mix: 0.5, volume: 1.0 },
+    'power-chord': { voices: 2, mode: 0, key: 0, h1: 7, h2: 12, h3: -3, h4: 6, humanize: 0.3, mix: 0.55, volume: 1.0 }
 };
 
 const EQ_PRESETS = {
     'Drums': { lcFreq: 30, lsFreq: 80, lsGain: 3, p1Freq: 400, p1Gain: -4, p1Q: 1.0, hsFreq: 8000, hsGain: 3, hcFreq: 18000 },
     'Low End Clean': { lcFreq: 40, lsFreq: 120, lsGain: -2, p1Freq: 300, p1Gain: -4, p1Q: 0.7, hsFreq: 5000, hsGain: 0, hcFreq: 22000 },
-    'Vocal': { lcFreq: 100, lsFreq: 200, lsGain: -2, p1Freq: 3000, p1Gain: 2, p1Q: 0.7, hsFreq: 10000, hsGain: 2, hcFreq: 20000 },
-    'Anti-Nasal Vocals': { lcFreq: 90, lsFreq: 200, lsGain: 0, p1Freq: 1000, p1Gain: -4, p1Q: 2.0, hsFreq: 5000, hsGain: 0, hcFreq: 20000 },
+    'Vocal Presence': { lcFreq: 100, lsFreq: 200, lsGain: -2, p1Freq: 3000, p1Gain: 3, p1Q: 0.7, hsFreq: 10000, hsGain: 2, hcFreq: 20000 },
+    'De-Ess & Clean': { lcFreq: 90, lsFreq: 200, lsGain: 0, p1Freq: 1000, p1Gain: -4, p1Q: 2.0, hsFreq: 5000, hsGain: 0, hcFreq: 20000 },
     'Guitar': { lcFreq: 80, lsFreq: 150, lsGain: 0, p1Freq: 2500, p1Gain: 3, p1Q: 0.7, hsFreq: 6000, hsGain: 0, hcFreq: 12000 },
     'Master Air': { lcFreq: 30, lsFreq: 100, lsGain: 0, p1Freq: 1000, p1Gain: 0, p1Q: 0.7, hsFreq: 12000, hsGain: 3, hcFreq: 22000 },
     'Bass': { lcFreq: 30, lsFreq: 80, lsGain: 4, p1Freq: 300, p1Gain: -3, p1Q: 1.0, hsFreq: 2000, hsGain: 0, hcFreq: 5000 },
-    'Radio': { lcFreq: 300, lsFreq: 400, lsGain: -12, p1Freq: 1500, p1Gain: 8, p1Q: 2.0, hsFreq: 4000, hsGain: -12, hcFreq: 5000 }
+    'Radio': { lcFreq: 300, lsFreq: 400, lsGain: -12, p1Freq: 1500, p1Gain: 8, p1Q: 2.0, hsFreq: 4000, hsGain: -12, hcFreq: 5000 },
+    'Synth Pad': { lcFreq: 50, lsFreq: 120, lsGain: 1, p1Freq: 800, p1Gain: -2, p1Q: 0.7, hsFreq: 8000, hsGain: 2, hcFreq: 16000 },
+    'Telephone': { lcFreq: 400, lsFreq: 500, lsGain: -6, p1Freq: 2000, p1Gain: 4, p1Q: 1.5, hsFreq: 3000, hsGain: -8, hcFreq: 4000 }
 };
 
 // Mastering-only presets for the MASTER bus (gentle, full-mix curves).
@@ -2292,20 +2377,21 @@ window.ScalesModule = { ARPDELAY_SCALES, DRONE_SCALES, DRONE_SCALE_NAMES, DRONE_
 const DRONE_PRESETS = {
     'Init': { volume: 0.25, detune: 5, unison: 0.3, subMix: 0.5, noiseMix: 0.0, cutoff: 1200, res: 5, envMod: 500, attack: 0.05, decay: 0.2, sustain: 0.8, release: 0.5, punch: 0, fmAmt: 0, lfoRate: 1.0, lfoDepth: 0, glide: 0.1, filterType: 'lowpass', osc1Type: 'triangle', osc2Type: 'sawtooth' },
     'Cold Bass': { volume: 0.5, detune: 8, unison: 0.15, subMix: 0.9, noiseMix: 0.0, cutoff: 280, res: 6, envMod: 400, attack: 0.01, decay: 0.2, sustain: 0.8, release: 0.2, punch: 100, fmAmt: 0, lfoRate: 0.2, lfoDepth: 20, glide: 0.05, filterType: 'lowpass', osc1Type: 'sawtooth', osc2Type: 'square' },
-    'Goth Pad': { volume: 0.3, detune: 18, unison: 0.55, subMix: 0.3, noiseMix: 0.05, cutoff: 800, res: 2, envMod: 100, attack: 1.0, decay: 1.0, sustain: 1.0, release: 2.0, lfoRate: 0.2, lfoDepth: 150, glide: 0.6, filterType: 'lowpass', osc1Type: 'sawtooth', osc2Type: 'triangle' },
+    'Goth Pad': { volume: 0.3, detune: 22, unison: 0.6, subMix: 0.35, noiseMix: 0.03, cutoff: 700, res: 3, envMod: 80, attack: 1.5, decay: 1.2, sustain: 1.0, release: 3.0, lfoRate: 0.15, lfoDepth: 180, glide: 0.8, filterType: 'lowpass', osc1Type: 'sawtooth', osc2Type: 'triangle' },
     'Dark Kick': { volume: 0.95, detune: 0, unison: 0, subMix: 0.8, noiseMix: 0.02, cutoff: 80, res: 1, envMod: 4000, attack: 0.001, decay: 0.3, sustain: 0.0, release: 0.2, punch: 250, fmAmt: 0, lfoRate: 0, lfoDepth: 0, glide: 0.0, filterType: 'lowpass', osc1Type: 'sine', osc2Type: 'sine' },
     'Syn Tom': { volume: 0.85, detune: 3, unison: 0, subMix: 0.7, noiseMix: 0.02, cutoff: 120, res: 2, envMod: 600, attack: 0.001, decay: 0.4, sustain: 0.0, release: 0.4, punch: 400, fmAmt: 20, lfoRate: 0, lfoDepth: 0, glide: 0.0, filterType: 'lowpass', osc1Type: 'sine', osc2Type: 'triangle' },
     'Indus Cymbal': { volume: 0.7, detune: 50, unison: 0.2, subMix: 0.0, noiseMix: 0.6, cutoff: 4000, res: 2, envMod: 0, attack: 0.001, decay: 1.0, sustain: 0.2, release: 1.5, punch: 0, fmAmt: 4500, lfoRate: 12, lfoDepth: 500, glide: 0.0, filterType: 'highpass', osc1Type: 'square', osc2Type: 'sawtooth', noiseType: 'white' },
     'Metal Crash': { volume: 0.6, detune: 45, unison: 0.25, subMix: 0.0, noiseMix: 0.8, cutoff: 2500, res: 8, envMod: 2000, attack: 0.01, decay: 1.0, sustain: 0.1, release: 2.0, punch: 100, fmAmt: 3000, lfoRate: 8, lfoDepth: 0, glide: 0.0, filterType: 'highpass', osc1Type: 'square', osc2Type: 'square', noiseType: 'white' },
     'Noise Hat': { volume: 0.6, detune: 0, unison: 0, subMix: 0.0, noiseMix: 0.9, cutoff: 6000, res: 1, envMod: -2000, attack: 0.001, decay: 0.1, sustain: 0.0, release: 0.08, punch: 0, fmAmt: 1000, lfoRate: 0, lfoDepth: 0, glide: 0.0, filterType: 'highpass', osc1Type: 'sine', osc2Type: 'sine', noiseType: 'white' },
-    'Witch Lead': { volume: 0.35, detune: 30, unison: 0.5, subMix: 0.6, noiseMix: 0.1, cutoff: 2200, res: 12, envMod: -300, attack: 0.05, decay: 0.3, sustain: 0.7, release: 0.6, lfoRate: 4.5, lfoDepth: 100, glide: 0.2, filterType: 'lowpass', osc1Type: 'sawtooth', osc2Type: 'sawtooth' },
-    'Doppelganger': { volume: 0.3, detune: 15, unison: 0.45, subMix: 0.5, noiseMix: 0.3, cutoff: 600, res: 8, envMod: 600, attack: 0.8, decay: 0.5, sustain: 0.8, release: 2.5, lfoRate: 0.1, lfoDepth: 200, glide: 0.5, filterType: 'lowpass', osc1Type: 'square', osc2Type: 'square' },
-    'Anxiety': { volume: 0.25, detune: 50, unison: 0.3, subMix: 0.0, noiseMix: 0.2, cutoff: 3500, res: 18, envMod: 0, attack: 0.02, decay: 0.2, sustain: 0.5, release: 0.3, lfoRate: 15.0, lfoDepth: 500, glide: 0.0, filterType: 'notch', osc1Type: 'sawtooth', osc2Type: 'sawtooth' },
-    'Acid Rain': { volume: 0.35, detune: 8, unison: 0.15, subMix: 0.4, noiseMix: 0.0, cutoff: 800, res: 22, envMod: 1500, attack: 0.01, decay: 0.2, sustain: 0.6, release: 0.2, lfoRate: 6.0, lfoDepth: 400, glide: 0.15, filterType: 'lowpass', osc1Type: 'square', osc2Type: 'sawtooth' },
-    'SumO drone': { volume: 0.6, detune: 15, unison: 0.5, subMix: 0.9, noiseMix: 0.05, cutoff: 400, res: 2, envMod: 0, drive: 80, attack: 2.0, decay: 1.0, sustain: 1.0, release: 4.0, lfoRate: 0.1, lfoDepth: 20, glide: 0.1, filterType: 'lowpass', osc1Type: 'sawtooth', osc2Type: 'square', rate: 1 },
+    'Witch Lead': { volume: 0.35, detune: 35, unison: 0.55, subMix: 0.5, noiseMix: 0.08, cutoff: 2400, res: 14, envMod: -400, attack: 0.04, decay: 0.25, sustain: 0.65, release: 0.5, lfoRate: 5.0, lfoDepth: 120, glide: 0.15, filterType: 'lowpass', osc1Type: 'sawtooth', osc2Type: 'sawtooth' },
+    'Doppelganger': { volume: 0.3, detune: 18, unison: 0.5, subMix: 0.45, noiseMix: 0.25, cutoff: 550, res: 10, envMod: 500, attack: 1.0, decay: 0.6, sustain: 0.8, release: 3.0, lfoRate: 0.08, lfoDepth: 250, glide: 0.6, filterType: 'lowpass', osc1Type: 'square', osc2Type: 'square' },
+    'Anxiety': { volume: 0.25, detune: 50, unison: 0.35, subMix: 0.0, noiseMix: 0.15, cutoff: 3000, res: 20, envMod: 0, attack: 0.02, decay: 0.15, sustain: 0.4, release: 0.25, lfoRate: 18.0, lfoDepth: 600, glide: 0.0, filterType: 'notch', osc1Type: 'sawtooth', osc2Type: 'sawtooth' },
+    'Acid Rain': { volume: 0.35, detune: 10, unison: 0.2, subMix: 0.35, noiseMix: 0.0, cutoff: 900, res: 24, envMod: 1800, attack: 0.01, decay: 0.15, sustain: 0.5, release: 0.15, lfoRate: 7.0, lfoDepth: 500, glide: 0.12, filterType: 'lowpass', osc1Type: 'square', osc2Type: 'sawtooth' },
+    'Summit Drone': { volume: 0.6, detune: 15, unison: 0.5, subMix: 0.9, noiseMix: 0.05, cutoff: 400, res: 2, envMod: 0, drive: 80, attack: 2.0, decay: 1.0, sustain: 1.0, release: 4.0, lfoRate: 0.1, lfoDepth: 20, glide: 0.1, filterType: 'lowpass', osc1Type: 'sawtooth', osc2Type: 'square', rate: 1 },
     'Data Stream': { volume: 0.4, detune: 0, unison: 0.1, subMix: 0.0, noiseMix: 0.9, cutoff: 12000, res: 5, envMod: 0, attack: 0.001, decay: 0.1, sustain: 0.0, release: 0.05, punch: 0, fmAmt: 2000, lfoRate: 0, lfoDepth: 0, glide: 0, filterType: 'highpass', osc1Type: 'sine', osc2Type: 'sine' },
-    'Cinematic': { volume: 0.35, detune: 6, unison: 0.45, subMix: 0.4, noiseMix: 0.0, cutoff: 900, res: 3, envMod: 200, attack: 0.3, decay: 0.8, sustain: 0.9, release: 1.2, lfoRate: 3.0, lfoDepth: 50, glide: 0.2, filterType: 'lowpass', osc1Type: 'sawtooth', osc2Type: 'sawtooth' },
-    'Broken Circuit': { volume: 0.4, detune: 50, unison: 0.2, subMix: 0.0, noiseMix: 0.3, cutoff: 1200, res: 20, envMod: -800, attack: 0.01, decay: 0.2, sustain: 0.5, release: 0.2, punch: 0, fmAmt: 800, lfoRate: 40, lfoDepth: 1500, glide: 0.0, filterType: 'bandpass', osc1Type: 'square', osc2Type: 'triangle' },
+    'Cinematic': { volume: 0.35, detune: 8, unison: 0.5, subMix: 0.45, noiseMix: 0.02, cutoff: 750, res: 4, envMod: 250, attack: 0.5, decay: 1.0, sustain: 0.9, release: 2.0, lfoRate: 2.0, lfoDepth: 80, glide: 0.3, filterType: 'lowpass', osc1Type: 'sawtooth', osc2Type: 'sawtooth' },
+    'Deep Space': { volume: 0.3, detune: 12, unison: 0.4, subMix: 0.6, noiseMix: 0.08, cutoff: 350, res: 6, envMod: 100, attack: 2.5, decay: 1.5, sustain: 1.0, release: 5.0, lfoRate: 0.05, lfoDepth: 100, glide: 0.5, filterType: 'lowpass', osc1Type: 'sawtooth', osc2Type: 'triangle' },
+    'Broken Circuit': { volume: 0.4, detune: 50, unison: 0.25, subMix: 0.0, noiseMix: 0.25, cutoff: 1400, res: 22, envMod: -1000, attack: 0.01, decay: 0.15, sustain: 0.4, release: 0.15, punch: 0, fmAmt: 1000, lfoRate: 45, lfoDepth: 1800, glide: 0.0, filterType: 'bandpass', osc1Type: 'square', osc2Type: 'triangle' },
     'Industrial Snare': { volume: 0.85, detune: 0, unison: 0, subMix: 0.3, noiseMix: 0.85, cutoff: 700, res: 1, envMod: 3500, drive: 100, attack: 0.001, decay: 0.2, sustain: 0.0, release: 0.25, punch: 600, fmAmt: 800, lfoRate: 0, lfoDepth: 0, filterType: 'lowpass', osc1Type: 'sine', osc2Type: 'sine', noiseType: 'white' },
     'Happy Pluck': { volume: 0.4, detune: 3, unison: 0.15, subMix: 0.1, noiseMix: 0.0, cutoff: 1500, res: 4, envMod: 2000, attack: 0.01, decay: 0.2, sustain: 0.0, release: 0.3, punch: 20, fmAmt: 0, lfoRate: 1.0, lfoDepth: 0, glide: 0.0, filterType: 'lowpass', osc1Type: 'triangle', osc2Type: 'sine' },
     'Happy Kick': { volume: 0.9, detune: 0, unison: 0, subMix: 0.8, noiseMix: 0.0, cutoff: 100, res: 1, envMod: 5000, attack: 0.001, decay: 0.2, sustain: 0.0, release: 0.2, punch: 300, fmAmt: 0, lfoRate: 0, lfoDepth: 0, glide: 0.0, filterType: 'lowpass', osc1Type: 'sine', osc2Type: 'sine' },
