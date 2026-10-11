@@ -6,7 +6,7 @@
 // MODULE 1: CONSTANTS & GLOBALS
 // =============================================
 
-const VERSION = "v0.76.14"; // Version aligned with blueprint
+const VERSION = "v0.76.15"; // Version aligned with blueprint
 let MAX_LOOPS = 10;
 const SAMPLER_HOTKEYS = ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'ç']; // Specific to Sampler Tracks
 const AUDIO_FORMATS= {
@@ -1535,7 +1535,7 @@ class App {
             monitoredInputNode = recordingNode;
 
             // Connect monitored input to *both* rec destinations
-            if (monitoredInputNode) {
+            if (monitoredInputNode && state.inputDestination) {
                 monitoredInputNode.connect(state.inputDestination);
                 // Also add monitored input to the master mix
             }
@@ -1588,12 +1588,16 @@ class App {
                 return new Promise((resolve) => {
                     if (recorder && recorder.state === 'recording') {
                         let resolved = false;
-                        const done = () => { if (!resolved) { resolved = true; resolve(); } };
+                        let safetyId = 0;
+                        const done = () => {
+                            if (safetyId) clearTimeout(safetyId);
+                            if (!resolved) { resolved = true; resolve(); }
+                        };
                         recorder.onstop = done;
                         recorder.onerror = done;
                         recorder.stop();
                         // Safety timeout: resolve if onstop never fires (e.g. broken MediaRecorder)
-                        setTimeout(done, 3000);
+                        safetyId = setTimeout(done, 3000);
                     } else {
                         resolve();
                     }
@@ -1613,6 +1617,10 @@ class App {
                 state.masterRecorder = null;
                 state.inputRecorder = null;
                 state.stemRecorders = [];
+                // Re-enable button inside finally so an exception in disconnect
+                // cannot leave it permanently disabled.
+                const masterRecBtnStop = document.getElementById('masterRecBtn');
+                if (masterRecBtnStop) masterRecBtnStop.disabled = false;
             }
 
             // Disconnect input from recording destinations to prevent leaks
@@ -1620,9 +1628,6 @@ class App {
             if (recordingNode) {
                 try { recordingNode.disconnect(state.inputDestination); } catch(e) {}
             }
-
-            const masterRecBtnStop = document.getElementById('masterRecBtn');
-            if (masterRecBtnStop) masterRecBtnStop.disabled = false;
 
             const statusText = state.masterChunks.length > 0 ? 'STOPPED' : 'OFF';
             const mBtn = document.getElementById('masterRecBtn');

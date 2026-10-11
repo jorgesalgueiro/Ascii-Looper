@@ -185,6 +185,8 @@ class DroneSynth {
                 Object.values(synth.voices).forEach(v => {
                     try { v.osc1.stop(); v.osc2.stop(); v.sub.stop(); v.uni.stop(); } catch(e){}
                     try { v.vib.stop(); v.lfo.stop(); if (v.driftSrc) v.driftSrc.stop(); } catch(e){}
+                    // Disconnect panner from fxInput/dryDestination to prevent orphaned graph nodes
+                    try { v.panner.disconnect(); } catch(e){}
                 });
                 synth.voices = {}; // Clear active old context voices
                 if (state.audioContext) synth.wetDestination = state.audioContext.createMediaStreamDestination();
@@ -1390,7 +1392,8 @@ class DroneSynth {
         const actualAtk = Math.min(vcaAtk, duration);
         // Overlapping voices sum on the bus. Soft-compensate per-voice level so dense
         // patterns don't drive the master limiter (heard as clicks/pumping).
-        const overlap = Object.keys(synth.voices).length;
+        // Only count voices that are not in release phase (nearly silent).
+        const overlap = Object.values(synth.voices).filter(v => !v.releasing).length;
         const voiceComp = 1 / Math.sqrt(Math.max(1, overlap));
         const peak = 0.5 * (actualAtk / vcaAtk) * accent * voiceComp;
 
@@ -1880,7 +1883,8 @@ class DroneSynth {
         v.vca.gain.linearRampToValueAtTime(0, now + startOffset); // Smooth to zero
         
         const gainScale = isDrone ? 0.8 : 0.2;
-        const overlapN = Object.keys(synth.voices).length;
+        // Only count voices that are not in release phase (nearly silent).
+        const overlapN = Object.values(synth.voices).filter(v => !v.releasing).length;
         const voiceCompN = 1 / Math.sqrt(Math.max(1, overlapN));
         const peakGain = Math.pow(vel / 127.0, 1.5) * gainScale * voiceCompN;
         

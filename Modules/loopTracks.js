@@ -785,6 +785,11 @@ class AudioGraph {
        // --- 7. Connect to Master ---
         AudioEngine.connectToMaster(finalNode); // Connect to the main mix
         if (this.loop.wetDestination) {
+            // Recreate the wet destination node if the AudioContext was replaced
+            if (this.loop.wetDestination.context !== state.audioContext) {
+                try { this.loop.wetDestination.disconnect(); } catch(e) {}
+                this.loop.wetDestination = state.audioContext.createMediaStreamDestination();
+            }
             finalNode.connect(this.loop.wetDestination);
         }
 
@@ -2710,6 +2715,7 @@ class LoopManager {
             const channelData = buffer.getChannelData(ch);
             let offset = 0;
             for (let i = 0; i < chunks.length; i++) {
+                if (!chunks[i][ch]) continue;
                 channelData.set(chunks[i][ch], offset);
                 offset += chunks[i][ch].length;
             }

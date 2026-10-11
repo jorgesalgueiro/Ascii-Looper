@@ -4173,8 +4173,10 @@ class EffectManager {
 
     static saveGlobalPreset() {
         const nameInput = document.getElementById('newGlobalPresetName');
+        const sourceSelect = document.getElementById('presetSourceSelect');
+        if (!nameInput || !sourceSelect) return;
         const name = nameInput.value.trim();
-        const source = document.getElementById('presetSourceSelect').value;
+        const source = sourceSelect.value;
         if (!name) return alert("Enter a preset name");
         if (state.globalPresets[name] && !confirm(`Replace global preset '${name}'?`)) return;
 
@@ -4240,7 +4242,7 @@ class EffectManager {
             const validChars = "BVDTFOCKQAZGH";
             const customChars = Object.values(state.customEffects || {}).map(e => e.code).join('');
             const cleanChain = [...new Set(chain.toUpperCase().split('').filter(c => (validChars + customChars).includes(c)))].join('');
-            if (cleanChain) state.loops[loopId].setSignalChain(cleanChain);
+            if (cleanChain && state.loops[loopId]) state.loops[loopId].setSignalChain(cleanChain);
         }
         if (this.activeTab === loopId) {
             this.renderEffectsPanel();
@@ -4278,7 +4280,7 @@ class EffectManager {
         const makeupGain = Math.pow(10, makeupDb / 20);
 
         this.isBatchUpdating = true;
-
+        try {
         // Update parameters live
         this.update('compressor', 'threshold', preset.threshold);
         this.update('compressor', 'ratio', preset.ratio);
@@ -4287,8 +4289,7 @@ class EffectManager {
         this.update('compressor', 'release', preset.release);
         this.update('compressor', 'gain', makeupGain);
         this.update('compressor', 'mix', preset.mix ?? 1.0);
-        
-        this.isBatchUpdating = false;
+        } finally { this.isBatchUpdating = false; }
         
         // Save state
         if (this.activeTab === 'input-bus') {
@@ -4409,7 +4410,13 @@ class EffectManager {
         else params = effects.reverb; // Fallback to global defaults
 
         // 2. Generate Buffer
-        const buf = AudioEngine.createSimpleReverbIR(params.duration, params.decay, state.audioContext.sampleRate);
+        let buf;
+        try {
+            buf = AudioEngine.createSimpleReverbIR(params.duration, params.decay, state.audioContext.sampleRate);
+        } catch (e) {
+            Log.warn('EffectManager', 'regenerateReverb IR generation failed:', e);
+            return;
+        }
         params.impulseBuffer = buf;
 
         // 3. Apply to Node
@@ -4481,6 +4488,7 @@ class EffectManager {
             const pObj = targetParams[effectType];
             if (!pObj) continue;
             for (const param in pObj) {
+                if (typeof pObj[param] !== 'number') continue;
                 this.updateControlUI(effectType, param, pObj[param]);
             }
         }
