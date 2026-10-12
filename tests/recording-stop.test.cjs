@@ -119,6 +119,69 @@ async function startCapture(harness, mode) {
     return { loop, recorder };
 }
 
+for (const pendingStop of [false, true]) {
+    test(`global stop immediately finishes dynamic recording (pending bar stop: ${pendingStop})`, async () => {
+        const harness = createHarness();
+        const { manager, state, timers, context } = harness;
+        const { loop, recorder } = await startCapture(harness, 'recording');
+        state.syncMode = 'dynamic';
+        context.SyncManager.getBarDuration = () => 2;
+        context.SyncManager.getTimeToNextBar = () => 1;
+        if (pendingStop) manager.stopRecording();
+        manager.stopAll();
+        manager.stopAll();
+        assert.equal(recorder.commands.filter(command => command === 'stop').length, 1);
+        assert.equal(state.recordingTimeout, null);
+        await recorder.deliver();
+        assert.equal(state.isRecording, false);
+        assert.equal(state.loopRecorder, null);
+        assert.ok(loop.audioBuffer, 'captured audio must survive the immediate stop');
+        assert.equal(loop.state, 'stopped');
+        assert.equal(timers.size, 0, 'global stop must not enqueue autoplay or the next recording');
+    });
+}
+
+test('a second dynamic stop tap stops immediately instead of scheduling another bar', async () => {
+    const harness = createHarness();
+    const { manager, state, timers, context } = harness;
+    const { recorder } = await startCapture(harness, 'recording');
+    state.syncMode = 'dynamic';
+    state.autoPlayAfterRecord = false;
+    state.autoRecordNext = false;
+    context.SyncManager.getBarDuration = () => 2;
+    context.SyncManager.getTimeToNextBar = () => 1;
+    manager.stopRecording();
+    const pending = state.recordingTimeout;
+    assert.ok(timers.has(pending));
+    assert.equal(recorder.commands.includes('stop'), false, 'first tap waits for the bar');
+    manager.stopRecording();
+    assert.equal(timers.has(pending), false);
+    assert.equal(state.recordingTimeout, null);
+    assert.equal(recorder.commands.filter(command => command === 'stop').length, 1);
+    await recorder.deliver();
+    assert.equal(state.isRecording, false);
+});
+
+test('a single dynamic stop tap still completes at the next bar', async () => {
+    const harness = createHarness();
+    const { manager, state, timers, context } = harness;
+    const { recorder } = await startCapture(harness, 'recording');
+    state.syncMode = 'dynamic';
+    state.autoPlayAfterRecord = false;
+    state.autoRecordNext = false;
+    context.SyncManager.getBarDuration = () => 2;
+    context.SyncManager.getTimeToNextBar = () => 1;
+    manager.stopRecording();
+    const pending = state.recordingTimeout;
+    const timer = timers.get(pending);
+    assert.equal(timer.delay, 1000);
+    timers.delete(pending);
+    timer.callback();
+    assert.equal(recorder.commands.filter(command => command === 'stop').length, 1);
+    await recorder.deliver();
+    assert.equal(state.isRecording, false);
+});
+
 for (const mode of ['recording', 'overdubbing', 'substituting', 'multiplying']) {
     test(`global stop finishes ${mode} without losing captured audio or restarting`, async () => {
         const harness = createHarness();

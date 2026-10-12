@@ -181,20 +181,10 @@ class TrackerManager {
     static remapLoopColumns(patterns, savedLoopColumns) {
         if (!Number.isInteger(savedLoopColumns) || savedLoopColumns < 1) return patterns;
         if (savedLoopColumns > MAX_LOOPS && savedLoopColumns <= 20) {
-            MAX_LOOPS = savedLoopColumns;
+            LoopManager.addTracks();
         }
         const shift = MAX_LOOPS - savedLoopColumns;
-        if (shift === 0) return patterns;
-        if (shift < 0) {
-            // Song was saved with more loops than current session - clip columns beyond MAX_LOOPS
-            return patterns.map(pattern => ({
-                ...pattern,
-                data: Object.fromEntries(Object.entries(pattern.data).filter(([key, command]) => {
-                    const [, column] = key.split('_');
-                    return Number(column) < MAX_LOOPS;
-                }))
-            }));
-        }
+        if (shift <= 0) return patterns;
         return patterns.map(pattern => ({
             ...pattern,
             data: Object.fromEntries(Object.entries(pattern.data).map(([key, command]) => {

@@ -2526,7 +2526,7 @@ class LoopManager {
             return;
         }
         this.transportGeneration++;
-        if (state.isRecording) this.stopRecording();
+        if (state.isRecording) this.stopRecording(true);
 
         const now = AudioEngine.currentTime;
         state.samplers.forEach(sampler => {
@@ -2940,12 +2940,14 @@ class LoopManager {
     /**
      * Stops the currently active recording.
      */
-    static stopRecording() {
+    static stopRecording(forceImmediate = false) {
         if (!state.isRecording) return;
         // LOCK: If we are already finalizing a recording, ignore subsequent stop requests
         // to prevent processing empty chunks or creating errors.
         if (state.isFinishingRecording) return;
         
+        // Remember a pending bar stop before clearing it: a second tap stops now.
+        const pendingBarStop = state.syncMode === 'dynamic' && !!state.recordingTimeout;
         // Priority: Clean up timers immediately to prevent race conditions
         if (state.recordingStartTimeout) { clearTimeout(state.recordingStartTimeout); state.recordingStartTimeout = null; }
         if (state.recordingTimeout) { clearTimeout(state.recordingTimeout); state.recordingTimeout = null; }
@@ -3005,40 +3007,33 @@ class LoopManager {
         // so the loop length is always a bar-length multiple.
         // If a bar-aligned stop is already pending, cancel it and stop immediately
         // (second tap = "stop now, don't wait for the bar").
-        if (state.syncMode === 'dynamic' && loop.state === 'recording') {
-            if (state.recordingTimeout) {
-                // Already waiting for a bar boundary — cancel and stop immediately
-                clearTimeout(state.recordingTimeout);
-                state.recordingTimeout = null;
-                // Fall through to immediate stop below
-            } else {
-                const now = AudioEngine.currentTime;
-                const barDur = SyncManager.getBarDuration();
-                const timeToNextBar = SyncManager.getTimeToNextBar(now);
-                const snapThreshold = 0.05; // 50ms — if within 50ms of bar end, stop immediately
+        if (!forceImmediate && !pendingBarStop && state.syncMode === 'dynamic' && loop.state === 'recording') {
+            const now = AudioEngine.currentTime;
+            const barDur = SyncManager.getBarDuration();
+            const timeToNextBar = SyncManager.getTimeToNextBar(now);
+            const snapThreshold = 0.05; // 50ms — if within 50ms of bar end, stop immediately
 
-                if (timeToNextBar > snapThreshold && barDur > 0) {
-                    // Schedule stop at the next bar boundary
-                    const delayMs = Math.max(0, timeToNextBar * 1000);
-                    const expectedLoopId = state.recordingLoopId;
-                    state.recordingTimeout = setTimeout(() => {
-                        state.recordingTimeout = null;
-                        // Re-check state — user may have switched loops or cancelled
-                        if (!state.isRecording || state.recordingLoopId !== expectedLoopId) return;
-                        if (state.loopRecorder) {
-                            try {
-                                state.isFinishingRecording = true;
-                                state.loopRecorder.port.postMessage({ command: 'stop' });
-                            } catch (e) {
-                                console.warn("Recorder port disconnected during dynamic stop.", e);
-                                this.forceCleanupRecording(loop);
-                            }
+            if (timeToNextBar > snapThreshold && barDur > 0) {
+                // Schedule stop at the next bar boundary
+                const delayMs = Math.max(0, timeToNextBar * 1000);
+                const expectedLoopId = state.recordingLoopId;
+                state.recordingTimeout = setTimeout(() => {
+                    state.recordingTimeout = null;
+                    // Re-check state — user may have switched loops or cancelled
+                    if (!state.isRecording || state.recordingLoopId !== expectedLoopId) return;
+                    if (state.loopRecorder) {
+                        try {
+                            state.isFinishingRecording = true;
+                            state.loopRecorder.port.postMessage({ command: 'stop' });
+                        } catch (e) {
+                            console.warn("Recorder port disconnected during dynamic stop.", e);
+                            this.forceCleanupRecording(loop);
                         }
-                    }, delayMs);
-                    return; // Don't stop yet — wait for bar boundary
-                }
-                // Close enough to bar end — stop immediately (fall through)
+                    }
+                }, delayMs);
+                return; // Don't stop yet — wait for bar boundary
             }
+            // Close enough to bar end — stop immediately (fall through)
         }
 
         if (state.loopRecorder) {

@@ -62,6 +62,7 @@ class ProjectManager {
                     effects: {...loop.effects},
                     activePresets: loop.activePresets,
                     originalBpm: loop.originalBpm,
+                    dynamicRecorded: loop.dynamicRecorded,
                     params: loop.params, // Include loop specific effect params
                     audioWavBase64: wavBase64
                 };
@@ -624,6 +625,7 @@ class ProjectManager {
             loop.startDelay = loopData.startDelay || 0.0;
             loop.signalChain = loopData.signalChain || "QCATFODBVKZG";
             loop.originalBpm = loopData.originalBpm || state.bpm;
+            loop.dynamicRecorded = loopData.dynamicRecorded === true;
             loop.state = (loop.audioBuffer) ? 'stopped' : 'empty';
             if (loopData.activePresets) loop.activePresets = loopData.activePresets;
 

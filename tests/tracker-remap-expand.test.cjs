@@ -1,98 +1,81 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const vm = require('node:vm');
 
-// Bug #51: remapLoopColumns doesn't expand MAX_LOOPS when loading wider songs
-// When loading a song saved with 20 loops into a 10-loop station, the function
-// returns patterns unchanged, leaving drone/sampler commands in columns 10-19
-// that reference non-existent loop strips.
-
 function makeContext(initialMaxLoops) {
-    const context = { console };
+    const noop = () => {};
+    const context = {
+        console, MAX_LOOPS: initialMaxLoops, effects: {}, FACTORY_EFFECTS: {},
+        state: {
+            loops: [], samplers: [], audioContext: { state: 'running', createMediaStreamDestination: () => ({ stream: {} }) },
+            soloState: { active: false }, keyMapping: { kbd: [] },
+            tracker: { isPlaying: false, mode: 'song', patterns: [{ rows: 16, data: {} }], playlist: [0] }
+        },
+        document: { head: { appendChild: noop }, createElement: () => ({}), getElementById: () => null },
+        requestAnimationFrame: noop, clearTimeout: noop, alert: noop, confirm: () => false,
+        EffectManager: { refreshPresetDropdowns: noop }, KeyMapManager: { renderLayout: noop, renderUI: noop }
+    };
+    context.window = context;
     vm.createContext(context);
-    vm.runInContext(`
-        let MAX_LOOPS = ${initialMaxLoops};
-
-        class TrackerManager {
-            static remapLoopColumns(patterns, savedLoopColumns) {
-                if (!Number.isInteger(savedLoopColumns) || savedLoopColumns < 1) return patterns;
-                if (savedLoopColumns > MAX_LOOPS && savedLoopColumns <= 20) {
-                    MAX_LOOPS = savedLoopColumns;
-                }
-                const shift = MAX_LOOPS - savedLoopColumns;
-                if (shift <= 0) return patterns;
-                return patterns.map(pattern => ({
-                    ...pattern,
-                    data: Object.fromEntries(Object.entries(pattern.data).map(([key, command]) => {
-                        const [row, column] = key.split('_');
-                        return Number(column) < savedLoopColumns ? [key, command] : [\`\${row}_\${Number(column) + shift}\`, command];
-                    }))
-                }));
-            }
-        }
-
-        globalThis.TrackerManager = TrackerManager;
-        globalThis.getMaxLoops = () => MAX_LOOPS;
-        globalThis.setMaxLoops = (v) => { MAX_LOOPS = v; };
-    `, context);
+    for (const file of ['loopTracks.js', 'tracker.js']) {
+        vm.runInContext(fs.readFileSync(path.join(__dirname, '../Modules', file), 'utf8'), context);
+    }
+    vm.runInContext('Object.assign(globalThis, { Loop, LoopManager, TrackerManager, UIManager, SamplerManager });', context);
+    for (const method of ['renderLoops', 'renderEffectsTabs', 'updateLoop', 'updateStatus']) context.UIManager[method] = noop;
+    context.TrackerManager.updateControlUI = noop;
+    context.TrackerManager.renderSequence = noop;
+    context.TrackerManager.updatePatternSelect = noop;
+    context.LoopManager.stopAll = noop;
+    context.state.loops = Array.from({ length: initialMaxLoops }, (_, id) => new context.Loop(id));
+    context.getMaxLoops = () => context.MAX_LOOPS;
     return context;
 }
 
-test('remapLoopColumns should expand MAX_LOOPS when loading wider song', () => {
+test('importing a wider song allocates tracks and routes loop, drone and sampler commands', async () => {
     const ctx = makeContext(10);
-
-    // Song saved with 20 loops, has drone command in column 20
-    const songPatterns = [{
-        rows: 16,
-        data: {
-            '0_0': 'LOP',
-            '0_20': 'ON'
-        }
-    }];
-
-    const result = ctx.TrackerManager.remapLoopColumns(songPatterns, 20);
-
-    // BUG: shift = 10 - 20 = -10, so function returns patterns unchanged.
-    // Column 20 is kept but MAX_LOOPS is only 10 — drone command is orphaned.
-    // After fix: MAX_LOOPS should expand to 20 so column 20 is valid.
-    assert.equal(ctx.getMaxLoops(), 20, 'MAX_LOOPS should expand to match saved song width');
-    assert.ok(result[0].data['0_20'], 'Drone command should remain accessible after expansion');
+    const triggers = [];
+    ctx.DroneSynth = { instances: [{ state: 'stopped' }], stopAll() {}, togglePlay: () => triggers.push('drone') };
+    ctx.state.samplers = [{ state: 'stopped' }];
+    ctx.SamplerManager.togglePlay = () => triggers.push('sampler');
+    const song = { type: 'ascii_tracker_song', loopColumns: 20, playlist: [0],
+        patterns: [{ rows: 16, data: { '0_15': 'ON', '0_20': 'ON', '0_21': 'ON' } }] };
+    await ctx.TrackerManager.loadSong({ target: { files: [{ text: async () => JSON.stringify(song) }] } });
+    assert.equal(ctx.getMaxLoops(), 20);
+    assert.equal(ctx.state.loops.length, 20);
+    for (let id = 10; id < 20; id++) {
+        assert.equal(ctx.state.loops[id].id, id);
+        assert.ok(ctx.state.loops[id].wetDestination, 'new loops need recording destinations');
+    }
+    ctx.state.loops[15].play = () => triggers.push('loop 15');
+    ctx.TrackerManager.executeRow(0, 0, 10);
+    assert.deepEqual(triggers, ['loop 15', 'drone', 'sampler']);
+    await ctx.TrackerManager.loadSong({ target: { files: [{ text: async () => JSON.stringify(song) }] } });
+    assert.equal(ctx.state.loops.length, 20, 'another import must not allocate duplicate tracks');
 });
 
-test('remapLoopColumns shifts drone commands up when loading narrower song into wider station', () => {
+test('expansion remaps existing live drone cells before a wider song replaces them', () => {
+    const ctx = makeContext(10);
+    ctx.state.tracker.patterns[0].data = { '0_10': 'ON' };
+    const result = ctx.TrackerManager.remapLoopColumns([{ rows: 16, data: { '0_20': 'ON' } }], 20);
+    assert.equal(ctx.state.loops.length, 20);
+    assert.equal(ctx.state.tracker.patterns[0].data['0_20'], 'ON');
+    assert.equal(result[0].data['0_20'], 'ON');
+});
+
+test('remapLoopColumns shifts drone commands up for a narrower song', () => {
     const ctx = makeContext(20);
-
-    // Song saved with 10 loops, has drone command in column 10
-    const songPatterns = [{
-        rows: 16,
-        data: {
-            '0_0': 'LOP',
-            '0_10': 'ON'
-        }
-    }];
-
-    const result = ctx.TrackerManager.remapLoopColumns(songPatterns, 10);
-
-    // shift = 20 - 10 = 10, columns >= 10 shift up by 10
-    assert.ok(result[0].data['0_20'], 'Drone command should shift from column 10 to column 20');
-    assert.equal(result[0].data['0_10'], undefined, 'Drone command should no longer be in column 10');
-    assert.equal(result[0].data['0_0'], 'LOP', 'Loop commands should stay in place');
+    const result = ctx.TrackerManager.remapLoopColumns([{ rows: 16, data: { '0_0': 'LOP', '0_10': 'ON' } }], 10);
+    assert.equal(result[0].data['0_20'], 'ON');
+    assert.equal(result[0].data['0_10'], undefined);
+    assert.equal(result[0].data['0_0'], 'LOP');
 });
 
-test('remapLoopColumns returns patterns unchanged when widths match', () => {
+test('remapLoopColumns leaves matching widths untouched', () => {
     const ctx = makeContext(10);
-
-    const songPatterns = [{
-        rows: 16,
-        data: {
-            '0_0': 'LOP',
-            '0_10': 'ON'
-        }
-    }];
-
-    const result = ctx.TrackerManager.remapLoopColumns(songPatterns, 10);
-
-    assert.equal(ctx.getMaxLoops(), 10, 'MAX_LOOPS should not change');
-    assert.equal(result[0].data['0_0'], 'LOP');
-    assert.equal(result[0].data['0_10'], 'ON');
+    const patterns = [{ rows: 16, data: { '0_10': 'ON' } }];
+    assert.equal(ctx.TrackerManager.remapLoopColumns(patterns, 10), patterns);
+    assert.equal(ctx.getMaxLoops(), 10);
+    assert.equal(ctx.state.loops.length, 10);
 });
