@@ -644,6 +644,7 @@ class AudioGraph {
         
         this.scheduledTime = Number(startTime) || 0;
         this.immediate = false;
+        this.retiredSources = new Set();
     }
 
     /**
@@ -665,6 +666,11 @@ class AudioGraph {
         if (this.source) {
             try { this.source.stop(actualT); } catch(e) {}
             const oldSource = this.source;
+            this.retiredSources.add(oldSource);
+            oldSource.onended = () => {
+                try { oldSource.disconnect(); } catch(e) {}
+                this.retiredSources.delete(oldSource);
+            };
             const delayMs = Math.max(50, (actualT - now) * 1000 + 50);
             // Track the cleanup timer so cleanup() can cancel it if the graph
             // is torn down before it fires.
@@ -672,6 +678,7 @@ class AudioGraph {
             this._retriggerTimer = setTimeout(() => {
                 this._retriggerTimer = null;
                 try { oldSource.disconnect(); } catch(e){}
+                this.retiredSources.delete(oldSource);
             }, delayMs);
         }
 
@@ -1650,6 +1657,12 @@ class AudioGraph {
             this._retriggerTimer = null;
         }
         this.isDestroyed = true;
+        for (const source of this.retiredSources) {
+            try { source.stop(); } catch(e) {}
+            try { source.disconnect(); } catch(e) {}
+            source.onended = null;
+        }
+        this.retiredSources.clear();
         // Disconnect and stop all nodes
         const disconnect = (node) => {
             if (node) {
@@ -1782,6 +1795,7 @@ class Loop {
         
         this.stopTimeout = null; // Store stop timeout to prevent race conditions
         this.playRequest = 0;
+        this.loadRequest = 0;
         // Loop Parameters
         this.undoStack = [];
         this.redoStack = [];
@@ -2303,6 +2317,7 @@ class Loop {
      */
     clear() {
         this.playRequest++;
+        this.loadRequest++;
         if (this.stopTimeout) clearTimeout(this.stopTimeout);
         this.stopTimeout = null;
         if (this.queueTimeout) clearTimeout(this.queueTimeout);
@@ -3790,11 +3805,16 @@ class LoopManager {
         const loop = state.loops[loopId];
         
         try {
+            const request = (loop.loadRequest || 0) + 1;
+            loop.loadRequest = request;
             if (!await AudioEngine.resume()) { // Ensure context is running
                  throw new Error("AudioContext not running.");
             }
+            if (state.loops[loopId] !== loop || loop.loadRequest !== request) return;
+            const ctx = state.audioContext;
             const arrayBuffer = await file.arrayBuffer();
-            const audioBuffer = await state.audioContext.decodeAudioData(arrayBuffer);
+            const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+            if (state.audioContext !== ctx || state.loops[loopId] !== loop || loop.loadRequest !== request) return;
 
             // Clear only once the new take is decodable: clearing up front meant a
             // rejected file wiped the loop's recording, and that clear() also edits

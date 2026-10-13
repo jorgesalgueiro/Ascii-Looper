@@ -153,3 +153,17 @@ test('a destroyed voice cannot re-enter a full pool', () => {
     assert.equal(drone.voicePool.length, drone.MAX_POOL_SIZE);
     assert.equal(drone.voicePool.includes(voice), false);
 });
+
+test('reinitializing drones rebuilds noise buffers for the new context and sample rate', () => {
+    const h = createHarness();
+    const old = h.drone.createNoise(h.audioContext, 'white');
+    h.context.state.audioContext = { ...h.audioContext, sampleRate: 48000, createMediaStreamDestination: () => ({}) };
+    h.context.AudioEngine.connectToMaster = () => {};
+    h.drone.renderAll = () => {};
+    h.drone.bindStepEditor = () => {};
+    h.drone.startScheduler = () => {};
+    h.drone.init();
+    const fresh = h.drone.createNoise(h.context.state.audioContext, 'white');
+    assert.notEqual(fresh.buffer, old.buffer);
+    assert.equal(fresh.buffer.length, 96000);
+});

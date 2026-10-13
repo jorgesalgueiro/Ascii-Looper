@@ -163,3 +163,11 @@ test('reloading a project restores the channel volume of an un-muted drone', asy
     assert.equal(aimedAt(drone.instances[0].output.gain), 0.5);
     assert.equal(aimedAt(drone.instances[1].output.gain), 0.4);
 });
+
+test('project reload clears drone solo state rather than silencing the new set', async () => {
+    const { drone, addSynth, saveThenReload } = createHarness();
+    addSynth();
+    drone.soloInstanceId = 0;
+    await saveThenReload();
+    assert.equal(drone.soloInstanceId, -1);
+});

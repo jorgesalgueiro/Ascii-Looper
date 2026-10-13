@@ -543,15 +543,15 @@ class App {
                         window.SoundTouch = module.SoundTouch;
                         window.SimpleFilter = module.SimpleFilter;
                     } catch(e) {
-                        Log.debug('AudioEngine', 'SoundTouchJS not loaded (CDN & Local failed). Will use SOLA fallback.');
+                        Log.debug('AudioEngine', 'SoundTouchJS not loaded (CDN & Local failed). Time-stretch and pitch processing unavailable.');
                         if (driverInfo) {
-                            driverInfo.innerHTML += "<br><span style='color:#ff0'>[WARN] SoundTouch Lib missing. Using basic time-stretch (SOLA).</span>";
+                            driverInfo.innerHTML += "<br><span style='color:#ff0'>[WARN] Time-stretch and pitch processing unavailable. Sample editing still works.</span>";
                         }
                     }
                 } else {
                     Log.debug('AudioEngine', 'Skipping SoundTouch local import due to file:// protocol restrictions.');
                     if (driverInfo) {
-                        driverInfo.innerHTML += "<br><span style='color:#ff0'>[WARN] SoundTouch Lib missing. Using basic time-stretch (SOLA).</span>";
+                        driverInfo.innerHTML += "<br><span style='color:#ff0'>[WARN] Time-stretch and pitch processing unavailable. Sample editing still works.</span>";
                     }
                 }
             }
@@ -1503,7 +1503,7 @@ class App {
         if (!state.masterRecording) {
             // --- START ---
             // Resume handled implicitly, but good check
-            await AudioEngine.resume();
+            if (!await AudioEngine.resume()) return;
 
             state.masterRecording = true;
             state.masterRecordingStartTime = AudioEngine.currentTime;
@@ -2173,6 +2173,7 @@ class InputManager {
         state.inputs.push(input);
         
         const success = await this.initInputAudio(id, deviceId);
+        if (success === null) return; // A newer request or removal owns this input now.
         if (!success) {
             const idx = state.inputs.indexOf(input);
             if (idx !== -1) state.inputs.splice(idx, 1);
@@ -2226,61 +2227,67 @@ class InputManager {
 
     static async initInputAudio(id, deviceId = null) {
         const input = state.inputs[id];
-        if (!input) return;
-        
+        if (!input) return null;
+        const ctx = state.audioContext;
+        const request = (input.audioRequest || 0) + 1;
+        input.audioRequest = request;
+        const current = () => state.inputs.includes(input) && input.audioRequest === request &&
+            state.audioContext === ctx && ctx && ctx.state !== 'closed';
+        let stream = null;
         this.stopChannelDetect(input);
         if (input.stream) input.stream.getTracks().forEach(t => t.stop());
         if (input.source) input.source.disconnect();
 
         try {
             if (input.type === 'system') {
-                // Capture System/App Audio (e.g. MIDI Piano App, Web Browser)
-                input.stream = await navigator.mediaDevices.getDisplayMedia({
-                    video: { width: 1, height: 1 }, // Required to trigger dialog
+                stream = await navigator.mediaDevices.getDisplayMedia({
+                    video: { width: 1, height: 1 },
                     audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 2 }
                 });
-                // Stop video track immediately to save resources
-                input.stream.getVideoTracks().forEach(t => t.stop());
-                input.deviceId = 'system';
+                stream.getVideoTracks().forEach(t => t.stop());
             } else {
-                // Standard Mic/Line Input
-                const constraints = { 
-                    audio: { 
+                const constraints = {
+                    audio: {
                         deviceId: deviceId ? { exact: deviceId } : undefined,
                         echoCancellation: false, noiseSuppression: false, autoGainControl: false,
-                        channelCount: 2, // Force stereo request for interfaces
-                        latency: 0 // Request lowest possible latency
-                    } 
+                        channelCount: 2, latency: 0
+                    }
                 };
                 try {
-                    input.stream = await navigator.mediaDevices.getUserMedia(constraints);
+                    stream = await navigator.mediaDevices.getUserMedia(constraints);
                 } catch (err) {
+                    if (!current()) return null;
                     if (deviceId) {
-                         delete constraints.audio.deviceId;
-                         Log.warn('InputManager', `Input ${id} specific device failed, trying default.`, err);
-                         input.stream = await navigator.mediaDevices.getUserMedia(constraints);
+                        delete constraints.audio.deviceId;
+                        Log.warn('InputManager', `Input ${input.id} specific device failed, trying default.`, err);
+                        stream = await navigator.mediaDevices.getUserMedia(constraints);
                     } else throw err;
                 }
             }
-            
-            input.source = state.audioContext.createMediaStreamSource(input.stream);
-
-            this.rebuildInputGraph(id);
+            // Permission dialogs may finish after removal, reindexing, a newer
+            // device choice or a context restart. Never attach their stale stream.
+            if (!current()) { stream.getTracks().forEach(t => t.stop()); return null; }
+            if (stream.getAudioTracks().length === 0) throw new Error('The selected source has no audio track.');
+            input.stream = stream;
+            input.deviceId = input.type === 'system' ? 'system' : (stream.getAudioTracks()[0].getSettings?.().deviceId || deviceId || 'default');
+            input.source = ctx.createMediaStreamSource(stream);
+            this.rebuildInputGraph(input.id);
             this.detectActiveChannel(input);
             this.lastInputError = null;
             return true;
-
         } catch (e) {
-            console.warn(`Input ${id} init failed:`, e);
+            if (stream) stream.getTracks().forEach(t => t.stop());
+            if (!current()) return null;
+            if (input.stream === stream) input.stream = null;
+            console.warn(`Input ${input.id} init failed:`, e);
             const isPermission = e.name === 'NotAllowedError' || e.name === 'SecurityError';
             const kind = input.type === 'system' ? 'APP/SYS' : 'MIC/LINE';
             this.lastInputError = isPermission
-                ? `INPUT ${id + 1} (${kind}): permission denied. Allow it via the padlock icon in the address bar, then press "+ ${kind === 'APP/SYS' ? 'APP/SYS' : 'MIC/LINE'}" to retry.`
-                : `INPUT ${id + 1} (${kind}): ${e.message}`;
+                ? `INPUT ${input.id + 1} (${kind}): permission denied. Allow it via the padlock icon in the address bar, then press "+ ${kind === 'APP/SYS' ? 'APP/SYS' : 'MIC/LINE'}" to retry.`
+                : `INPUT ${input.id + 1} (${kind}): ${e.message}`;
             return false;
         }
     }
-
     static rebuildInputGraph(id) {
         const input = state.inputs[id];
         if (!input) return;
@@ -2310,6 +2317,7 @@ class InputManager {
         }
         
         if (!input.panNode || !input.panNode.context) input.panNode = state.audioContext.createStereoPanner();
+        input.panNode.pan.value = (input.pan / 5.0) - 1.0;
         
         input.gain.connect(input.panNode);
         

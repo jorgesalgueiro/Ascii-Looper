@@ -139,6 +139,7 @@ class TrackerManager {
             playlist: state.tracker.playlist,
             patterns: state.tracker.patterns,
             loopColumns: MAX_LOOPS,
+            droneColumns: window.DroneSynth ? DroneSynth.instances.length : 0,
             bpm: state.bpm,
             timeSig: state.timeSig
         };
@@ -213,7 +214,8 @@ class TrackerManager {
             const importTempo = data.bpm !== undefined && confirm(`Import Song Tempo (${data.bpm} BPM)?`);
 
             this.stop();
-            state.tracker.patterns = this.remapLoopColumns(patterns, data.loopColumns ?? MAX_LOOPS);
+            const loopMapped = this.remapLoopColumns(patterns, data.loopColumns ?? MAX_LOOPS);
+            state.tracker.patterns = this.remapDroneColumns(loopMapped, data.droneColumns);
             state.tracker.playlist = this.normalizePlaylist(data.playlist);
 
             if (importTempo) {
@@ -244,6 +246,18 @@ class TrackerManager {
     static setMode(mode) {
         state.tracker.mode = mode === 'pattern' ? 'pattern' : 'song';
         this.updateControlUI();
+    }
+
+    static remapDroneColumns(patterns, savedDroneColumns) {
+        if (!window.DroneSynth || !Number.isInteger(savedDroneColumns) || savedDroneColumns < 1 || savedDroneColumns > DroneSynth.MAX_INSTANCES) return patterns;
+        while (DroneSynth.instances.length < savedDroneColumns) DroneSynth.addInstance();
+        const shift = DroneSynth.instances.length - savedDroneColumns;
+        if (!shift) return patterns;
+        const boundary = MAX_LOOPS + savedDroneColumns;
+        return patterns.map(pattern => ({ ...pattern, data: Object.fromEntries(Object.entries(pattern.data).map(([key, command]) => {
+            const [row, column] = key.split('_').map(Number);
+            return [column >= boundary ? `${row}_${column + shift}` : key, command];
+        })) }));
     }
 
     static stop() {
@@ -722,7 +736,7 @@ class TrackerManager {
  * SAMPLE LAB
  * Offline DSP processing for high-quality time stretching/pitch shifting
  * without real-time granular artifacts.
- * Uses a naive SOLA (Synchronized Overlap-Add) approach.
+ * Uses SoundTouchJS for time stretching and pitch shifting.
  * Don't touch the window size unless you know DSP.
  */
 class SampleLab {
@@ -732,6 +746,9 @@ class SampleLab {
     static isRecording = false;
     static recChunks = [];
     static previewSource = null;
+    static recordRequest = 0;
+    static previewRequest = 0;
+    static recordingInput = null;
     static canvas = null;
 
     static init() {
@@ -900,13 +917,20 @@ class SampleLab {
         const btn = document.getElementById('labRecBtn');
         if (this.isRecording) {
             this.isRecording = false;
+            this.recordRequest++;
             const rec = this.recorder;
-            this.recorder = null;
             if (rec) {
-                try { rec.port.postMessage({ command: 'stop' }); } catch(e) {}
-                // Disconnect after a tick so the stop message flushes
+                const inputNode = this.recordingInput;
+                try { rec.port.postMessage({ command: 'stop' }); } catch(e) { this.finishRecording([], rec); }
+                try { if (inputNode) inputNode.disconnect(rec); } catch(e) {}
+                // Keep identity until the reply arrives; only the fallback discards it.
                 if (this._recDisconnectTimer) clearTimeout(this._recDisconnectTimer);
-                this._recDisconnectTimer = setTimeout(() => { try { rec.disconnect(); } catch(e) {} this._recDisconnectTimer = null; }, 50);
+                if (this.recorder === rec) this._recDisconnectTimer = setTimeout(() => {
+                    rec.port.onmessage = null;
+                    try { rec.disconnect(); } catch(e) {}
+                    if (this.recorder === rec) { this.recorder = null; this.recordingInput = null; }
+                    this._recDisconnectTimer = null;
+                }, 3000);
             }
             if (btn) {
                 btn.innerHTML = I18n.t('REC_SAMPLER');
@@ -915,17 +939,28 @@ class SampleLab {
         } else {
             // Set recording flag BEFORE await to prevent re-entry race condition
             this.isRecording = true;
-            if (!await AudioEngine.resume()) { this.isRecording = false; return; }
+            const request = ++this.recordRequest;
+            const resumed = await AudioEngine.resume();
+            if (request !== this.recordRequest || !this.isRecording) return;
+            if (!resumed) { this.isRecording = false; return; }
             const inputNode = InputManager.getRecordingNode();
             if (!inputNode) { this.isRecording = false; return alert("No input source available"); }
             this.recChunks = [];
             try {
+                if (this.recorder) {
+                    try { this.recordingInput?.disconnect(this.recorder); } catch(e) {}
+                    this.recorder.port.onmessage = null;
+                    this.recorder.disconnect();
+                }
+                if (this._recDisconnectTimer) clearTimeout(this._recDisconnectTimer);
+                this._recDisconnectTimer = null;
                 this.recorder = new AudioWorkletNode(state.audioContext, 'recorder-processor');
+                this.recordingInput = inputNode;
                 const capturedRecorder = this.recorder;
                 this.recorder.port.onmessage = (e) => {
                     if (e.data.event === 'recorded') {
                         // Guard: only accept if this recorder is still current
-                        if (this.recorder === capturedRecorder) this.finishRecording(e.data.chunks);
+                        if (this.recorder === capturedRecorder) this.finishRecording(e.data.chunks, capturedRecorder);
                     }
                 };
                 inputNode.connect(this.recorder);
@@ -936,6 +971,7 @@ class SampleLab {
             } catch (e) {
                 Log.error('SampleLab', 'Recorder failed to start:', e);
                 this.isRecording = false;
+                this.finishRecording([], this.recorder);
             }
         }
     }
@@ -958,14 +994,19 @@ class SampleLab {
         });
     }
 
-    static finishRecording(chunks) {
+    static finishRecording(chunks, recorder = this.recorder) {
+        if (!recorder || this.recorder !== recorder) return;
         // Disconnect input from recorder to prevent graph leaks
-        const inputNode = InputManager.getRecordingNode();
+        const inputNode = this.recordingInput;
         if (inputNode && this.recorder) {
             try { inputNode.disconnect(this.recorder); } catch(e) {}
         }
 
-        if (this.recorder) { this.recorder.disconnect(); this.recorder = null; }
+        if (this.recorder) { this.recorder.port.onmessage = null; this.recorder.disconnect(); this.recorder = null; }
+        this.recordingInput = null;
+        if (this._recDisconnectTimer) clearTimeout(this._recDisconnectTimer);
+        this._recDisconnectTimer = null;
+        this.isRecording = false;
         let buffer = LoopManager.createBufferFromChunks(chunks, state.audioContext.sampleRate);
         if (buffer) {
             // Apply Latency Compensation for Lab recordings too
@@ -1164,6 +1205,7 @@ class SampleLab {
         if (targetVal.startsWith('s')) {
             const sId = parseInt(targetVal.substring(1));
             const sampler = state.samplers[sId];
+            if (!sampler) return alert("Invalid sampler target.");
             if (!sampler || !sampler.buffer) {
                 alert("Sampler " + (sId+1) + " is empty.");
                 return;
@@ -1200,12 +1242,14 @@ class SampleLab {
         if (targetVal.startsWith('s')) {
             const sId = parseInt(targetVal.substring(1));
             const sampler = state.samplers[sId];
+            if (!sampler) return alert("Invalid sampler target.");
             if (sampler.buffer && !confirm(`Overwrite Sampler ${sId+1}?`)) return;
             // 'armed' belongs here: a queued source already bound the old buffer, and its
             // pending start would promote it to PLAYING on top of the sample being PUT.
             if (sampler.state === 'playing' || sampler.state === 'armed' || sampler.state === 'stopping') SamplerManager.stop(sId);
             sampler.buffer = this.cloneBuffer(bufferToSend);
             sampler.speed = 1.0;
+            sampler.state = 'stopped';
             if (UIManager.generateWaveformPeaks) sampler.wavePeaks = UIManager.generateWaveformPeaks(sampler.buffer);
             SamplerManager.renderUI();
             alert(`Sent to Sampler ${sId+1}`);
@@ -1229,6 +1273,8 @@ class SampleLab {
         loop.duration = loop.audioBuffer.duration;
         loop.startDelay = 0; 
         loop.playbackRate = 1.0; // Reset speed when importing new audio
+        loop.originalBpm = state.bpm;
+        loop.dynamicRecorded = false;
         if(UIManager.generateWaveformPeaks) loop.wavePeaks = UIManager.generateWaveformPeaks(loop.audioBuffer);
         loop.state = 'stopped';
         UIManager.updateLoop(loopId);
@@ -1262,11 +1308,13 @@ class SampleLab {
         }
 
         if(!buf) return;
-        if (!await AudioEngine.resume()) return;
+        const request = ++this.previewRequest;
+        if (!await AudioEngine.resume() || request !== this.previewRequest) return;
         this.playBuf(buf, true); // Loop preview by default
     }
 
     static stopPreview() {
+        this.previewRequest++;
         if (this.previewSource) {
             try { this.previewSource.stop(); } catch(e){}
             this.previewSource = null;
@@ -1386,6 +1434,22 @@ class SampleLab {
         const rate = buffer.sampleRate;
         const length = buffer.length;
         const expectedOut = Math.max(1, Math.round(length * ratio));
+        // SoundTouchJS 0.1.30 always consumes and produces interleaved stereo.
+        // Adapt mono (and channel pairs in wider files) rather than handing its
+        // FIFO an undersized mono array or scrambling multichannel frames.
+        if (channels !== 2) {
+            const dest = state.audioContext.createBuffer(channels, expectedOut, rate);
+            for (let base = 0; base < channels; base += 2) {
+                const pair = state.audioContext.createBuffer(2, length, rate);
+                pair.getChannelData(0).set(buffer.getChannelData(base));
+                pair.getChannelData(1).set(buffer.getChannelData(Math.min(base + 1, channels - 1)));
+                const processed = this.soundTouchTimeStretch(pair, ratio, pitchSemi);
+                for (let side = 0; side < 2 && base + side < channels; side++) {
+                    dest.getChannelData(base + side).set(processed.getChannelData(side).subarray(0, expectedOut));
+                }
+            }
+            return dest;
+        }
 
         // 1. Interleave Input
         const input = new Float32Array(length * channels);

@@ -245,3 +245,11 @@ test('a project from an older build leaves the live pads alone', async () => {
     assert.equal(pads[0].name, 'KEEP');
     assert.deepEqual(renders, [], 'untouched pads need no redraw');
 });
+
+test('project reload resets sampler solo flags from the preceding set', async () => {
+    const h = createHarness([pad(0), pad(1, { isMutedBySolo: true })]);
+    h.context.SamplerManager.soloId = 0;
+    await h.load({ samplers: [savedPad(0), savedPad(1)] });
+    assert.equal(h.context.SamplerManager.soloId, -1);
+    assert.equal(h.pads[1].isMutedBySolo, false);
+});

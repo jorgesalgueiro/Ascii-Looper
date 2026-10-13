@@ -2892,6 +2892,20 @@ class EffectManager {
         if (!fxData.name || !fxData.code || !fxData.processorName || !fxData.workletCode) {
             throw new Error("Invalid .afx file format");
         }
+        if (!Object.prototype.hasOwnProperty.call(state.customEffects, fxData.name) && fxData.name in FACTORY_EFFECTS) {
+            throw new Error(`Effect name '${fxData.name}' is reserved.`);
+        }
+        // Validate before addModule: registration in the worklet realm cannot be
+        // undone, so a bad parameter list must not poison a later retry.
+        if (fxData.parameters == null) fxData.parameters = [];
+        if (!Array.isArray(fxData.parameters)) throw new Error('Invalid effect parameters');
+        const defaultParams = {};
+        for (const p of fxData.parameters) {
+            if (!p || typeof p.name !== 'string' || !p.name || p.name in defaultParams) {
+                throw new Error('Invalid or duplicate effect parameter');
+            }
+            defaultParams[p.name] = p.defaultValue;
+        }
 
         // Check existing name
         if (state.customEffects[fxData.name] && !skipPrompt) {
@@ -2947,9 +2961,6 @@ class EffectManager {
         // consumer iterates the list, so normalise it before the state mutation below.
         // Validate parameters BEFORE registering so a bad definition can't leave a
         // half-registered effect in state.
-        if (fxData.parameters == null) fxData.parameters = [];
-        const defaultParams = {};
-        fxData.parameters.forEach(p => defaultParams[p.name] = p.defaultValue);
 
         // 5. Register — immediately after worklet success so subsequent bundle
         // iterations see the updated state and don't assign duplicate codes.

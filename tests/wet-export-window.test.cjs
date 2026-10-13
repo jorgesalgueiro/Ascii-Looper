@@ -60,7 +60,7 @@ function createHarness() {
             getElementById: id => (/^loop-wrapper-/.test(id)
                 ? { querySelector: () => ({ textContent: '' }) }
                 : null),
-            createElement: () => ({ style: {}, click() {}, setAttribute() {}, removeAttribute() {} }),
+            createElement: () => ({ style: {}, click() {}, remove() {}, setAttribute() {}, removeAttribute() {} }),
             body: { appendChild() {}, removeChild() {}, style: {} },
             head: { appendChild() {} },
             querySelector: () => null, querySelectorAll: () => [], activeElement: null
@@ -135,7 +135,7 @@ function createHarness() {
         return Math.max(...exportTimers.map(timer => timer.time)) - clock.currentTime;
     }
 
-    return { context, addLoop, bounceWindow };
+    return { context, addLoop, bounceWindow, timers, clock };
 }
 
 test('a half-speed loop is bounced for its whole slowed length', () => {
@@ -158,4 +158,32 @@ test('a loop bounced at original speed keeps the old window', () => {
     const loop = addLoop(4, 1);
 
     assert.equal(bounceWindow(loop), 7, 'the bounce window must stay duration + 3 s tail');
+});
+
+test('a long wet bounce remains locked after 30 seconds and cannot overlap another export', () => {
+    const h = createHarness(), loop = h.addLoop(40, 1);
+    h.context.ProjectManager.exportDryWet('loop', loop.id);
+    h.clock.currentTime += 31;
+    for (const timer of h.timers.filter(t => t.time <= h.clock.currentTime)) timer.callback();
+    assert.equal(h.context.ProjectManager._exporting, true);
+    let blocked = false;
+    h.context.alert = () => { blocked = true; };
+    h.context.ProjectManager.exportDryWet('loop', loop.id);
+    assert.equal(blocked, true);
+});
+
+test('rapid retriggers release every retired source when the graph is cleared', () => {
+    const h = createHarness(), loop = h.addLoop(4, 1);
+    h.context.AudioBufferSourceNode = class {};
+    const graph = new h.context.AudioGraph(loop);
+    graph.build();
+    const oldest = graph.source;
+    graph.retrigger(0, loop);
+    const middle = graph.source;
+    graph.retrigger(0, loop);
+    assert.equal(graph.retiredSources.size, 2);
+    graph.cleanup();
+    assert.equal(graph.retiredSources.size, 0);
+    assert.equal(oldest.connections.length, 0);
+    assert.equal(middle.connections.length, 0);
 });

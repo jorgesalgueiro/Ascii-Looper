@@ -99,3 +99,29 @@ test('a decodable file replaces the take and restarts the loop clean', async () 
     assert.equal(h.loop.startDelay, 0);
     assert.match(h.alerts[0] || '', /loaded/i);
 });
+
+test('clearing a loop cancels an in-flight audio import instead of restoring the cleared take', async () => {
+    const h = createHarness(false); let decoded;
+    h.context.state.audioContext.decodeAudioData = () => new Promise(resolve => { decoded = resolve; });
+    const pending = h.LoopManager.loadAudioToLoop(0, h.file);
+    await new Promise(setImmediate);
+    h.loop.loadRequest++;
+    decoded({ duration: 9 });
+    await pending;
+    assert.equal(h.loop.audioBuffer, h.recorded);
+    assert.equal(h.loop.cleared, 0);
+});
+
+test('a newer audio import wins even if the earlier decoder finishes last', async () => {
+    const h = createHarness(false), decoders = [];
+    h.context.state.audioContext.decodeAudioData = () => new Promise(resolve => decoders.push(resolve));
+    const first = h.LoopManager.loadAudioToLoop(0, h.file);
+    await new Promise(setImmediate);
+    const second = h.LoopManager.loadAudioToLoop(0, h.file);
+    await new Promise(setImmediate);
+    const latest = { duration: 3 };
+    decoders[1](latest); await second;
+    decoders[0]({ duration: 9 }); await first;
+    assert.equal(h.loop.audioBuffer, latest);
+    assert.equal(h.loop.cleared, 1);
+});

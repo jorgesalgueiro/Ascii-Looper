@@ -199,3 +199,16 @@ test('the loaded file still registers itself and frees the picker', async () => 
     assert.equal(drone.PRESETS['Bright'].cutoff, 3000, 'so the preset is selectable afterwards');
     assert.equal(input.value, '', 'the picker must clear so the same file loads twice');
 });
+
+test('copying a drone updates already sounding oscillators and retains independent parameters', () => {
+    const { context, drone, addSynth } = createHarness();
+    context.confirm = () => true;
+    const src = addSynth(0.25), target = addSynth(0.8);
+    src.params.osc1Type = 'square';
+    target.voices = { live: liveVoice() };
+    drone.copySynth(src.id, target.id);
+    assert.equal(target.voices.live.osc1.type, 'square');
+    assert.equal(aimedAt(target.output.gain), 0.25);
+    target.params.steps[0] = 0.123;
+    assert.notEqual(src.params.steps[0], 0.123);
+});

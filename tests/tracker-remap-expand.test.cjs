@@ -79,3 +79,20 @@ test('remapLoopColumns leaves matching widths untouched', () => {
     assert.equal(ctx.getMaxLoops(), 10);
     assert.equal(ctx.state.loops.length, 10);
 });
+
+test('drone expansion preserves sampler cells in live patterns and imported songs', () => {
+    const ctx = makeContext(10);
+    ctx.EffectManager.setActiveTab = () => {};
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../Modules/droneSynth.js'), 'utf8') + '\nObject.assign(globalThis, { DroneSynth, SynthInstance });', ctx);
+    ctx.DroneSynth.instances = Array.from({ length: 10 }, (_, id) => new ctx.SynthInstance(id));
+    ctx.state.tracker.patterns[0].data = { '0_0': 'ON', '0_10': 'ON', '0_20': 'ON' };
+    ctx.DroneSynth.addInstance();
+    assert.equal(ctx.DroneSynth.instances.length, 15);
+    assert.equal(ctx.state.tracker.patterns[0].data['0_25'], 'ON');
+    assert.equal(ctx.state.tracker.patterns[0].data['0_20'], undefined);
+    const mapped = ctx.TrackerManager.remapDroneColumns([{ rows: 16, data: { '0_20': 'ON' } }], 10);
+    assert.equal(mapped[0].data['0_25'], 'ON');
+    const wide = ctx.TrackerManager.remapDroneColumns([{ rows: 16, data: { '0_30': 'ON' } }], 20);
+    assert.equal(ctx.DroneSynth.instances.length, 20);
+    assert.equal(wide[0].data['0_30'], 'ON');
+});

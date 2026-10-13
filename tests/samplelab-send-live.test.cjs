@@ -251,3 +251,27 @@ test('PUT into a resting pad just swaps its take', () => {
     assert.equal(h.sampler.state, 'stopped');
     assert.match(h.alerts[0] || '', /Sent to Sampler 1/);
 });
+
+test('PUT into an empty pad makes it ready instead of retaining the EMPTY badge', () => {
+    const h = createHarness();
+    h.elements.set('labLoopTarget', { value: 's0' });
+    h.context.SampleLab.sendToLoop();
+    assert.equal(h.sampler.state, 'stopped');
+    assert.equal(h.context.SamplerManager.getStateMeta(h.sampler).label, 'READY');
+});
+
+test('PUT resets a replaced loop\'s tempo basis and dynamic-recording flag', () => {
+    const h = createHarness();
+    h.loop.originalBpm = 60;
+    h.loop.dynamicRecorded = true;
+    h.context.SampleLab.sendToLoop();
+    assert.equal(h.loop.originalBpm, h.context.state.bpm);
+    assert.equal(h.loop.dynamicRecorded, false);
+});
+
+test('PUT refuses a missing sampler target without throwing', () => {
+    const h = createHarness();
+    h.elements.set('labLoopTarget', { value: 's99' });
+    assert.doesNotThrow(() => h.context.SampleLab.sendToLoop());
+    assert.match(h.alerts[0], /Invalid sampler target/);
+});

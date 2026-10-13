@@ -503,9 +503,13 @@ class ProjectManager {
             
             // Restore Input Tracks
             state.inputs.forEach(i => { 
+                InputManager.stopChannelDetect?.(i);
                 if(i.stream) i.stream.getTracks().forEach(t=>t.stop());
                 if(i.source) i.source.disconnect();
                 if(i.panNode) i.panNode.disconnect();
+                for (const node of [i.gain, i.analyser, i.splitter]) {
+                    try { node?.disconnect(); } catch(e) {}
+                }
             });
             state.inputs = [];
 
@@ -551,6 +555,7 @@ class ProjectManager {
             // key existed carry no samplers at all, and treating that as "empty" would
             // erase a live set's one-shots.
             if (Array.isArray(data.samplers)) {
+                SamplerManager.soloId = -1;
                 const savedPads = new Map(data.samplers.map(s => [s.id, s]));
                 for (const sampler of state.samplers) {
                     try {
@@ -676,6 +681,7 @@ class ProjectManager {
         sampler.volume = samplerData?.volume ?? 0.8;
         sampler.pan = samplerData?.pan ?? 5;
         sampler.muted = samplerData?.muted ?? false;
+        sampler.isMutedBySolo = false;
         sampler.isLooping = samplerData?.isLooping ?? true;
         sampler.state = buffer ? 'stopped' : 'empty';
     }
@@ -699,7 +705,8 @@ class ProjectManager {
     static async exportDryWet(type, id) {
         if (this._exporting) return alert('An export is already in progress.');
         this._exporting = true;
-        setTimeout(() => { this._exporting = false; }, 30000); // Safety timeout
+        // The bounce duration can exceed 30 seconds. Release only after its
+        // recorder/decode finishes; an unrelated timer could unlock a newer export.
         try {
         const ts = Date.now();
         const safeName = this.getSafeProjectName();

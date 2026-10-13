@@ -154,6 +154,7 @@ class DroneSynth {
         this.bus = null;
         this.helperGraph = null;
         this.noiseCtx = null;
+        this.noiseBuffers = {};
         this.voicePool = []; // Clear old context voices
 
         if (!this.bus && state.audioContext) {
@@ -211,6 +212,19 @@ class DroneSynth {
             const synth = new SynthInstance(i);
             if (state.audioContext) synth.wetDestination = state.audioContext.createMediaStreamDestination();
             this.instances.push(synth);
+        }
+        // Sampler columns follow the drone block; expansion must preserve their
+        // addresses rather than turn a pad command into a new drone command.
+        if (typeof MAX_LOOPS !== 'undefined' && state.tracker?.patterns) {
+            const boundary = MAX_LOOPS + currentCount;
+            const shift = targetCount - currentCount;
+            state.tracker.patterns.forEach(pattern => {
+                pattern.data = Object.fromEntries(Object.entries(pattern.data).map(([key, command]) => {
+                    const [row, column] = key.split('_').map(Number);
+                    return [column >= boundary ? `${row}_${column + shift}` : key, command];
+                }));
+            });
+            if (window.TrackerManager) TrackerManager.renderGrid();
         }
         
         this.renderAll();
@@ -546,7 +560,8 @@ class DroneSynth {
         if (!src || !target) return;
         if (!confirm(`Get settings from Drone ${srcId+1} into Drone ${targetId+1}?`)) return;
 
-        target.params = JSON.parse(JSON.stringify(src.params));
+        const params = JSON.parse(JSON.stringify(src.params));
+        for (const key in params) this.setParam(targetId, key, params[key]);
         target.fxParams = JSON.parse(JSON.stringify(src.fxParams));
         target.signalChain = src.signalChain;
         target.fxState = JSON.parse(JSON.stringify(src.fxState));
@@ -2312,6 +2327,7 @@ class DroneSynth {
 
     static loadState(data) {
         if (!data || !data.instances) return;
+        this.soloInstanceId = -1;
         
         // Clean existing audio graphs to prevent memory/audio leaks
         this.stopAll();

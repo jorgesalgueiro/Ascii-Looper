@@ -96,3 +96,24 @@ test('a definition whose parameters cannot be read is rejected before anything i
         'a rejected effect must not reach the chain legend or be saved into the project');
     assert.equal(effects.Crusher, undefined);
 });
+
+test('malformed parameters never load a worklet and a corrected retry can register', async () => {
+    const h = createHarness(); let modules = 0;
+    h.state.audioContext.audioWorklet.addModule = async () => modules++;
+    const fx = { name: 'Retry', code: 'J', processorName: 'retry', workletCode: 'class x {}', parameters: [null] };
+    await assert.rejects(() => h.context.EffectManager.registerCustomEffect(fx, true));
+    assert.equal(modules, 0);
+    fx.parameters = [];
+    await h.context.EffectManager.registerCustomEffect(fx, true);
+    assert.equal(modules, 1);
+});
+
+test('custom effects cannot replace built-in parameters or prototype properties', async () => {
+    const h = createHarness(); let modules = 0;
+    h.state.audioContext.audioWorklet.addModule = async () => modules++;
+    for (const name of ['eq', '__proto__', 'constructor']) {
+        await assert.rejects(() => h.context.EffectManager.registerCustomEffect({ name, code: 'J', processorName: 'x', workletCode: 'class x {}' }, true), /reserved/);
+    }
+    assert.equal(modules, 0);
+    assert.ok(h.effects.eq);
+});
