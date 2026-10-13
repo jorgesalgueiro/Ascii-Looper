@@ -34,7 +34,7 @@ Created by **Jorge Salgueiro**, **ASCII Looper** is an all-in-one web applicatio
 
 ### 🎚️ Mixing Console & Master Bus
 * **Multi-Input Routing:** Route multiple external audio interfaces and inputs with dedicated monitoring.
-* **Master Processing:** Master EQ, bus compressor, soft clipper, and brickwall safety limiter.
+* **Master Processing:** Master EQ, compressor, and safety limiter process the master recording; live output uses a soft clipper for protection with less delay.
 * **Visual Interface:** ASCII-art VU meters and real-time visual feedback.
 
 ### 🔌 Hardware Integration & Latency Control

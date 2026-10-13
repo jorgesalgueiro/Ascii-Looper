@@ -221,13 +221,7 @@ class SyncManager {
             loopLengthEl.textContent = state.loopLength.toFixed(2) + 's';
         }
         
-        // Update Latency Display
-        const latEl = document.getElementById('latencyDisplay');
-        if (latEl && state.audioContext) {
-            const totalLat = (state.audioContext.baseLatency || 0) + (state.audioContext.outputLatency || 0);
-            latEl.textContent = ((totalLat * 1000) + state.inputLatencyMs).toFixed(1) + 'ms';
-            latEl.title = `System: ${(totalLat*1000).toFixed(1)}ms | Manual: ${state.inputLatencyMs}ms`;
-        }
+        this.updateLatencyDisplay();
 
         this.renderTimelineMarkers();
         if (window.MetronomeScheduler) window.MetronomeScheduler.updateSettings();
@@ -425,108 +419,215 @@ class SyncManager {
         return Math.max(0, t - this.getPreviousBarTime(t));
     }
 
+    static updateLatencyDisplay() {
+        const el = document.getElementById('latencyDisplay');
+        if (!el) return;
+        const measured = state.latencyCalibration;
+        const valid = measured && measured.context === state.audioContext &&
+            (state.inputs || []).some(i => i.source === measured.inputSource);
+        el.textContent = valid ? `${measured.latencyMs.toFixed(1)}ms` : '—';
+        el.title = valid ? `Measured physical roundtrip (includes acoustic travel). Recording correction: ${state.inputLatencyMs || 0}ms; this does not reduce monitoring delay.`
+            : 'Run latency calibration to measure physical roundtrip. Browser estimates are available in the debug log.';
+    }
+
+    static _pingRunning = false;
+
+    static createPingReference(sampleRate) {
+        const signal = new Float32Array(Math.round(sampleRate * 0.024));
+        const duration = signal.length / sampleRate;
+        const low = 700, high = Math.min(2500, sampleRate * 0.3);
+        for (let i = 0; i < signal.length; i++) {
+            const t = i / sampleRate;
+            const envelope = Math.sin(Math.PI * i / (signal.length - 1)) ** 2;
+            signal[i] = 0.35 * envelope * Math.sin(2 * Math.PI * (low * t + (high - low) * t * t / (2 * duration)));
+        }
+        return signal;
+    }
+
+    // Match the known chirp, not a beep's loudest sample. Decimated scans bound
+    // the work; sample-resolution refinement preserves timing precision.
+    static matchPing(data, reference, sampleRate, expectedSample) {
+        const stride = Math.max(1, Math.floor(sampleRate / 12000));
+        const first = Math.max(0, Math.ceil(expectedSample));
+        const last = Math.min(data.length - reference.length, Math.floor(expectedSample + sampleRate * 0.5));
+        if (last < first) return null;
+        // Sanitize once, rather than performing finite checks in every correlation.
+        const samples = new Float32Array(Math.min(data.length, last + reference.length));
+        let peak = 0;
+        for (let i = first; i < samples.length; i++) {
+            samples[i] = Number.isFinite(data[i]) ? data[i] : 0;
+            peak = Math.max(peak, Math.abs(samples[i]));
+        }
+        if (peak < 0.0003) return null;
+        let refEnergy = 0;
+        for (let i = 0; i < reference.length; i += stride) refEnergy += reference[i] ** 2;
+        const scoreAt = offset => {
+            let dot = 0, energy = 0;
+            for (let i = 0; i < reference.length; i += stride) {
+                const value = samples[offset + i];
+                dot += value * reference[i];
+                energy += value * value;
+            }
+            return { sample: offset, confidence: energy > 0 ? Math.abs(dot) / Math.sqrt(energy * refEnergy) : 0,
+                strength: Math.abs(dot) / refEnergy };
+        };
+        const scores = [];
+        let best = { confidence: 0, strength: 0 };
+        for (let offset = first; offset <= last; offset += stride) {
+            const match = scoreAt(offset);
+            scores.push(match);
+            if (match.confidence > best.confidence && match.strength >= 0.001) best = match;
+        }
+        if (best.confidence < 0.45) return null;
+        // Prefer the first strong arrival over a louder room reflection.
+        const candidate = scores.find((m, i) => m.confidence >= Math.max(0.45, best.confidence * 0.95) &&
+            m.strength >= Math.max(0.001, best.strength * 0.08) &&
+            (i === 0 || m.confidence >= scores[i - 1].confidence) &&
+            (i === scores.length - 1 || m.confidence >= scores[i + 1].confidence));
+        if (!candidate) return null;
+        let refined = candidate;
+        for (let offset = Math.max(first, candidate.sample - stride); offset <= Math.min(last, candidate.sample + stride); offset++) {
+            const match = scoreAt(offset);
+            if (match.confidence > refined.confidence) refined = match;
+        }
+        return { latencyMs: (refined.sample - expectedSample) / sampleRate * 1000, confidence: refined.confidence };
+    }
+
+    static analyzePingCapture(buffer, startFrame, times, reference) {
+        if (!buffer || typeof buffer.getChannelData !== 'function' || !Number.isFinite(buffer.sampleRate) ||
+            buffer.sampleRate <= 0 || !Number.isInteger(buffer.numberOfChannels) || buffer.numberOfChannels < 1) {
+            throw new Error('No audio captured. Check the microphone connection and browser permissions, then calibrate again.');
+        }
+        if (!Number.isSafeInteger(startFrame) || startFrame < 0) throw new Error('Capture timestamp unavailable. Calibration was not applied.');
+        let best = null;
+        for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+            const data = buffer.getChannelData(channel);
+            const trials = times.map(time => this.matchPing(data, reference, buffer.sampleRate, time * buffer.sampleRate - startFrame)).filter(Boolean);
+            if (trials.length < 2) continue;
+            const ordered = trials.map(t => t.latencyMs).sort((a, b) => a - b);
+            const median = ordered[Math.floor(ordered.length / 2)];
+            const consistent = trials.filter(t => Math.abs(t.latencyMs - median) <= 3);
+            if (consistent.length < 2) continue;
+            const values = consistent.map(t => t.latencyMs).sort((a, b) => a - b);
+            const result = { latencyMs: values.reduce((sum, v) => sum + v, 0) / values.length,
+                spreadMs: values[values.length - 1] - values[0], trials: consistent,
+                confidence: Math.min(...consistent.map(t => t.confidence)), channel };
+            if (!best || result.trials.length > best.trials.length ||
+                (result.trials.length === best.trials.length && result.confidence > best.confidence)) best = result;
+        }
+        if (!best) throw new Error('No consistent ping detected. Let the microphone hear the speakers, reduce background sound, and try again.');
+        return best;
+    }
+
     static async runPingTest() {
+        const log = (event, result) => { if (window.DebugManager) DebugManager.logLatency(event, result); };
+        log('Calibration requested');
+        log('Calibration method: timestamped three-chirp correlation; raw microphone capture');
+        if (this._pingRunning) { log('Calibration already running'); return; }
+        this._pingRunning = true;
         const btn = document.getElementById('pingTestBtn');
         const label = (key, fallback) => typeof I18n !== 'undefined' ? I18n.t(key) : fallback;
-        if(btn) { btn.textContent = label('PING_LISTENING', 'LISTENING...'); btn.disabled = true; }
-        
+        if (btn) { btn.textContent = label('PING_LISTENING', 'LISTENING...'); btn.disabled = true; }
+        let recorder, input, inputSource, stopTimer, timeoutTimer;
+        const sources = [], mutedInputs = [];
         try {
+            if (state.masterRecording || state.isRecording) throw new Error('Stop recording before calibrating latency.');
             if (!state.audioContext || state.audioContext.state !== 'running') await AudioEngine.resume();
             const ctx = state.audioContext;
-            
-            // Tap into Input Bus (Pre-FX) to catch raw mic input
-            if (!InputManager.inputBus) throw new Error("Audio Engine not ready.");
-
-            // Create temp recorder
-            const recorder = new AudioWorkletNode(ctx, 'recorder-processor');
-            InputManager.inputBus.connect(recorder); // Record whatever is on input bus
-            recorder.connect(ctx.destination); // Keep alive
-
-            // Blip Generator — full-scale sine burst for maximum mic capture
-            const osc = ctx.createOscillator();
-            const gain = ctx.createGain();
-            osc.type = 'sine';
-            osc.frequency.value = 1000;
-            osc.connect(gain);
-            gain.connect(state.masterLimiter || ctx.destination); // Send to speakers
-
-            // Schedule two blips for better detection reliability
+            if (!ctx || ctx.state !== 'running') throw new Error('Audio Engine not ready.');
+            input = (state.inputs || []).find(i => i.type !== 'system' && i.source &&
+                (!i.stream || i.stream.getAudioTracks().some(t => t.readyState !== 'ended')));
+            if (!input) throw new Error('Connect a microphone or loopback input before calibrating.');
+            const reference = this.createPingReference(ctx.sampleRate);
+            const probe = ctx.createBuffer(1, reference.length, ctx.sampleRate);
+            probe.getChannelData(0).set(reference);
+            recorder = new AudioWorkletNode(ctx, 'recorder-processor');
+            inputSource = input.source;
+            inputSource.connect(recorder); // Raw input, independent of monitor and FX.
+            recorder.connect(ctx.destination); // Recorder emits silence; keeps capture active.
+            // Break microphone feedback while keeping raw capture connected.
+            for (const channel of state.inputs) {
+                if (channel.monitor && channel.panNode && InputManager.inputBus) {
+                    const panNode = channel.panNode;
+                    channel.panNode.disconnect(InputManager.inputBus);
+                    mutedInputs.push({ input: channel, panNode, bus: InputManager.inputBus });
+                }
+            }
             const now = ctx.currentTime;
-            const preDelay = 0.2; // 200ms wait before first blip
-            const blipDur = 0.1; // 100ms each blip
-            const blipGap = 0.3; // gap between blips
-            const blipTime1 = now + preDelay;
-            const blipTime2 = blipTime1 + blipDur + blipGap;
-
-            osc.start(blipTime1);
-            osc.stop(blipTime2 + blipDur + 0.01);
-            gain.gain.setValueAtTime(0.001, blipTime1);
-            gain.gain.linearRampToValueAtTime(1.0, blipTime1 + 0.005);
-            gain.gain.setValueAtTime(1.0, blipTime1 + blipDur - 0.01);
-            gain.gain.linearRampToValueAtTime(0.001, blipTime1 + blipDur);
-            gain.gain.setValueAtTime(0.001, blipTime2);
-            gain.gain.linearRampToValueAtTime(1.0, blipTime2 + 0.005);
-            gain.gain.setValueAtTime(1.0, blipTime2 + blipDur - 0.01);
-            gain.gain.linearRampToValueAtTime(0.001, blipTime2 + blipDur);
-
-            // Capture
-            let messageReceived = false;
-            let timedOut = false;
-            recorder.port.onmessage = (e) => {
-                if (timedOut) return; // Timeout already fired — discard late messages
-                if (e.data.event === 'recorded') {
-                    messageReceived = true;
-                    try {
-                        recorder.disconnect();
-                        InputManager.inputBus.disconnect(recorder);
-                        const buffer = LoopManager.createBufferFromChunks(e.data.chunks, ctx.sampleRate);
-                        const data = buffer.getChannelData(0);
-                        let maxVal = 0, maxIdx = 0;
-                        // Search only within the first blip's expected response window to avoid
-                        // locking onto a louder late reflection or background noise.
-                        const searchStart = Math.max(0, Math.floor((preDelay - 0.05) * ctx.sampleRate));
-                        const searchEnd = Math.min(data.length, Math.ceil((preDelay + 2.0) * ctx.sampleRate));
-                        for(let i=searchStart; i<searchEnd; i++) { if(Math.abs(data[i])>maxVal){ maxVal=Math.abs(data[i]); maxIdx=i; }}
-
-                        if(maxVal < 0.01) { alert("Signal too low. Ensure mic hears speakers."); }
-                        else {
-                            const measuredTime = maxIdx / ctx.sampleRate;
-                            const latencySec = measuredTime - preDelay; // Raw RT delay
-                            const sysLat = (ctx.baseLatency || 0) + (ctx.outputLatency || 0);
-                            const correction = Math.round((latencySec - sysLat) * 1000);
-                            if(confirm(`Roundtrip: ${(latencySec*1000).toFixed(1)}ms\nSystem Reported: ${(sysLat*1000).toFixed(1)}ms\n\nApply offset: ${correction}ms?`)) {
-                                const latEl = document.getElementById('latencyCorrection');
-                                if (latEl) latEl.value = correction;
-                                SyncManager.updateSettings();
-                            }
-                        }
-                    } catch (err) {
-                        alert("Ping test processing error: " + err.message);
-                    } finally {
-                        if(btn) { btn.textContent = label('PING_TEST', 'PING TEST (AUTO-CALIBRATE)'); btn.disabled = false; }
-                    }
+            const times = [0.25, 0.95, 1.65].map(offset => now + offset);
+            const message = await new Promise((resolve, reject) => {
+                recorder.port.onmessage = e => { if (e.data.event === 'recorded') resolve(e.data); };
+                timeoutTimer = setTimeout(() => reject(new Error('Ping capture timed out. Calibration was not applied.')), 8000);
+                recorder.port.postMessage({ command: 'start' });
+                for (const time of times) {
+                    const source = ctx.createBufferSource();
+                    sources.push(source);
+                    source.buffer = probe;
+                    source.connect(state.masterSoftClip || ctx.destination);
+                    source.start(time);
                 }
-            };
-
-            // Timeout fallback: disconnect recorder if no message arrives
-            setTimeout(() => {
-                if (!messageReceived) {
-                    timedOut = true;
-                    try { recorder.disconnect(); } catch(e) {}
-                    try { InputManager.inputBus.disconnect(recorder); } catch(e) {}
-                    if(btn) { btn.textContent = label('PING_TEST', 'PING TEST (AUTO-CALIBRATE)'); btn.disabled = false; }
-                    alert("Ping test timed out. No signal received.");
-                }
-            }, 8000); // 8 second timeout
-            
-            recorder.port.postMessage({ command: 'start' });
-            setTimeout(() => recorder.port.postMessage({ command: 'stop' }), 2000);
-            
-        } catch(e) {
-            alert("Ping Test Error: " + e.message);
-            if(btn) { btn.textContent = label('PING_TEST', 'PING TEST (AUTO-CALIBRATE)'); btn.disabled = false; }
+                stopTimer = setTimeout(() => {
+                    try { recorder.port.postMessage({ command: 'stop' }); } catch (e) { reject(e); }
+                }, 2600);
+            });
+            clearTimeout(stopTimer);
+            clearTimeout(timeoutTimer);
+            const chunks = Array.isArray(message.chunks) ? message.chunks : [];
+            const frames = chunks.reduce((sum, chunk) => sum + (chunk?.[0]?.length || 0), 0);
+            log(`Capture received: input=${input.name || input.id + 1}; chunks=${chunks.length}; frames=${frames}; startFrame=${message.startFrame}; context=${ctx.state}`);
+            if (!frames) throw new Error('No audio frames received from the microphone. Check the input device and browser permissions, then calibrate again.');
+            const buffer = LoopManager.createBufferFromChunks(message.chunks, ctx.sampleRate);
+            const result = this.analyzePingCapture(buffer, message.startFrame, times, reference);
+            if (state.audioContext !== ctx || !(state.inputs || []).some(i => i.source === inputSource)) {
+                throw new Error('Audio device changed during calibration. Please run calibration again.');
+            }
+            result.inputName = input.name || `Input ${input.id + 1}`;
+            state.latencyCalibration = { ...result, context: ctx, inputSource };
+            this.updateLatencyDisplay();
+            log('Calibration measured', result);
+            const reported = (ctx.baseLatency || 0) + (ctx.outputLatency || 0);
+            const correction = Math.round(result.latencyMs - reported * 1000);
+            const slider = document.getElementById('latencyCorrection');
+            const min = slider && slider.min !== '' ? Number(slider.min) : -200;
+            const max = slider && slider.max !== '' ? Number(slider.max) : 500;
+            if (correction < min || correction > max) throw new Error(`Measured correction ${correction}ms is outside the supported range. Calibration was not applied.`);
+            // Restore microphone monitoring before displaying a blocking prompt.
+            this._restorePingInputs(mutedInputs);
+            if (confirm(`Physical roundtrip: ${result.latencyMs.toFixed(1)}ms (${result.trials.length} consistent trials)\nBrowser output estimate: ${(reported * 1000).toFixed(1)}ms\n\nApply recording alignment correction: ${correction}ms?\nThis does not reduce live monitoring latency.`)) {
+                state.inputLatencyMs = correction;
+                if (slider) slider.value = correction;
+                this.updateSettings();
+                log(`Recording alignment correction applied: ${correction}ms`);
+            } else log('Calibration measured; correction not applied');
+            return result;
+        } catch (e) {
+            log(`Calibration failed: ${e.message}`);
+            alert('Ping Test Error: ' + e.message);
+        } finally {
+            clearTimeout(stopTimer);
+            clearTimeout(timeoutTimer);
+            if (recorder) {
+                recorder.port.onmessage = null;
+                try { inputSource.disconnect(recorder); } catch (e) {}
+                try { recorder.disconnect(); } catch (e) {}
+            }
+            for (const source of sources) {
+                try { source.stop(); } catch (e) {}
+                try { source.disconnect(); } catch (e) {}
+            }
+            this._restorePingInputs(mutedInputs);
+            this._pingRunning = false;
+            if (btn) { btn.textContent = label('PING_TEST', 'PING TEST (AUTO-CALIBRATE)'); btn.disabled = false; }
         }
     }
+
+    static _restorePingInputs(inputs) {
+        for (const { input, panNode, bus } of inputs.splice(0)) {
+            if (!state.inputs.includes(input) || !input.monitor || input.panNode !== panNode || InputManager.inputBus !== bus) continue;
+            try { panNode.connect(bus); } catch (e) {}
+        }
+    }
+
 }
 
 /**

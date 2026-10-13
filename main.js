@@ -6,7 +6,7 @@
 // MODULE 1: CONSTANTS & GLOBALS
 // =============================================
 
-const VERSION = "v0.76.15"; // Version aligned with blueprint
+const VERSION = "v0.76.16"; // Version aligned with blueprint
 let MAX_LOOPS = 10;
 const SAMPLER_HOTKEYS = ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'ç']; // Specific to Sampler Tracks
 const AUDIO_FORMATS= {
@@ -1973,7 +1973,7 @@ class MasterMixManager {
 
         html += `<div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; border-top:1px dashed #444; padding-top:10px;">
             <div class="retro-module" style="border-color:#4fd;">
-                <div class="module-header" style="background:#4fd; color:#000;">MASTER EQ (AIR/SMILE)</div>
+                <div class="module-header" style="background:#4fd; color:#000;">MASTER RECORDING EQ</div>
                 <div class="module-content">
                     <div class="control-group"><label for="m_eq_preset">Preset</label><select id="m_eq_preset" onchange="MasterMixManager.applyMasterEQPreset(this.value)" aria-label="Master EQ Preset"><option value="">-- PRESET --</option>${Object.keys(EffectManager.MASTER_EQ_PRESETS || {}).map(k => `<option value="${k}">${k}</option>`).join('')}</select></div>
                     <div class="control-group"><label for="m_lsGain_slide">Low Gain <span id="m_lsGain">${eq.lsGain}</span></label><input id="m_lsGain_slide" type="range" min="-12" max="12" step="0.1" value="${eq.lsGain}" oninput="AudioEngine.updateMasterEQ('lsGain', parseFloat(this.value)); document.getElementById('m_lsGain').textContent=this.value;" aria-label="Master Low Shelf Gain"></div>
@@ -1984,7 +1984,7 @@ class MasterMixManager {
             </div>
 
             <div class="retro-module" style="border-color:#afa;">
-                <div class="module-header" style="background:#afa; color:#000;">MASTER COMP (GLUE)</div>
+                <div class="module-header" style="background:#afa; color:#000;">MASTER RECORDING COMP</div>
                 <div class="module-content">
                     <div class="control-group"><label for="m_comp_preset">Preset</label><select id="m_comp_preset" onchange="MasterMixManager.applyMasterCompPreset(this.value)" aria-label="Master Comp Preset"><option value="">-- PRESET --</option>${Object.keys(EffectManager.MASTER_COMP_PRESETS || {}).map(k => `<option value="${k}">${k}</option>`).join('')}</select></div>
                     <div class="control-group"><label for="m_cThresh_slide">Thresh <span id="m_cThresh">${cp.threshold}</span></label><input id="m_cThresh_slide" type="range" min="-60" max="0" step="0.5" value="${cp.threshold}" oninput="AudioEngine.updateMasterComp('threshold', parseFloat(this.value)); document.getElementById('m_cThresh').textContent=this.value;" aria-label="Master Comp Threshold"></div>

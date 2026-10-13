@@ -184,7 +184,7 @@ registerProcessor('dropout-detector-processor', DropoutDetectorProcessor);
             { label: 'click:MASTER', node: st.masterGain || st.masterMixer, th: 0.3 },
             { label: 'click:DRONE-BUS', node: (window.DroneSynth && DroneSynth.bus) ? DroneSynth.bus : null, th: 0.1 },
             { label: 'click:INPUT-BUS', node: (window.InputManager && InputManager.masterGain) ? InputManager.masterGain : null, th: 0.3 },
-            { label: 'click:FINAL-OUTPUT', node: st.masterLimiter || null, th: 0.2 }
+            { label: 'click:FINAL-OUTPUT', node: st.masterSoftClip || st.masterGain, th: 0.2 }
         ];
 
         const Ctor = DebugManager._origAWN || window.AudioWorkletNode;
@@ -219,7 +219,7 @@ registerProcessor('dropout-detector-processor', DropoutDetectorProcessor);
 
         // Audio-thread overload monitor (sound cuts = missed render deadlines)
         try {
-            const tap = st.masterLimiter || st.masterGain || st.masterMixer;
+            const tap = st.masterSoftClip || st.masterGain || st.masterMixer;
             if (tap) {
                 const dd = new Ctor(ctx, 'dropout-detector-processor');
                 tap.connect(dd);
@@ -423,6 +423,31 @@ registerProcessor('dropout-detector-processor', DropoutDetectorProcessor);
         L.push(`Inputs       : ${(st.inputs || []).length} | Samplers: ${(st.samplers || []).length}`);
         L.push('=== END SNAPSHOT ===');
         L.forEach(line => DebugManager._push('sys', line));
+    }
+
+    // Explicit calibration diagnostics are logged even when verbose tracing is off.
+    static logLatency(event, result = null) {
+        const st = this._state();
+        const ctx = st.audioContext;
+        const ms = value => Number.isFinite(value) && value >= 0 ? `${(value * 1000).toFixed(2)}ms` : 'unavailable';
+        this._push('sys', `[LATENCY] ${event}`);
+        if (event === 'Calibration requested' && typeof navigator !== 'undefined') {
+            this._push('sys', `Browser: ${navigator.userAgent}`);
+        }
+        if (ctx) {
+            this._push('sys', `Audio: ${ctx.state}, ${ctx.sampleRate}Hz; requested hint=${typeof AudioEngine !== 'undefined' ? AudioEngine.requestedLatencyHint ?? 'unknown' : 'unknown'}; base=${ms(ctx.baseLatency)}; output=${ms(ctx.outputLatency)} (browser estimates)`);
+        }
+        for (const input of st.inputs || []) {
+            try {
+                const track = input.stream?.getAudioTracks()[0];
+                const settings = track?.getSettings() || {};
+                this._push('sys', `Input ${input.id + 1} (${input.type || 'mic'}): ${track?.label || input.name || 'unknown'}; ${settings.sampleRate ?? 'unknown'}Hz; channels=${settings.channelCount ?? 'unknown'}; capture latency=${ms(settings.latency)}; echoCancellation=${settings.echoCancellation ?? 'unknown'}; noiseSuppression=${settings.noiseSuppression ?? 'unknown'}; autoGainControl=${settings.autoGainControl ?? 'unknown'}`);
+            } catch (e) { this._push('sys', `Input ${input.id + 1}: settings unavailable (${e.message})`); }
+        }
+        this._push('sys', `Live: soft clipper -> speakers; master EQ/comp/limiter: recording only. Recording alignment correction=${st.inputLatencyMs ?? 0}ms (does not reduce monitoring delay).`);
+        if (result) {
+            this._push('sys', `Measured physical roundtrip=${result.latencyMs.toFixed(2)}ms; trials=[${result.trials.map(t => t.latencyMs.toFixed(2)).join(', ')}]ms; spread=${result.spreadMs.toFixed(2)}ms; correlation=${result.confidence.toFixed(3)}; input=${result.inputName}; includes acoustic travel, excludes recording-only processing.`);
+        }
     }
 
     // ---------- Log plumbing ----------

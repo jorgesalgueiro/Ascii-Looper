@@ -64,6 +64,7 @@ class AudioEngine {
             const latHint = (config.latencyHint === '0') ? 0 : (config.latencyHint ?? 'interactive');
 
             const options = { latencyHint: latHint };
+            this.requestedLatencyHint = latHint;
             const sampleRate = Number(config.sampleRate);
             // Auto/missing/invalid rates leave the browser free to use the device default.
             if (Number.isFinite(sampleRate) && sampleRate > 0) {
@@ -71,6 +72,7 @@ class AudioEngine {
             }
             
             state.audioContext = new (window.AudioContext || window.webkitAudioContext)(options);
+            state.latencyCalibration = null;
 
             // This is the main mix bus. All audio sources (loops, mic)
             // must be connected here *before* the masterGain.
@@ -121,9 +123,9 @@ class AudioEngine {
             state.inputDestination = state.audioContext.createMediaStreamDestination();
 
             // --- Master Audio Chain ---
-            // [All Sources] -> masterMixer -> masterGain -> Limiter -> Output
+            // Live: masterMixer -> masterGain -> SoftClip -> Output
             state.masterMixer.connect(state.masterGain);
-            // Routing is deferred until Worklet load to insert Master EQ/Comp
+            // Recording branch routing is deferred until the EQ worklet is loaded.
             
             state.masterStartTime = 0; // Will be set on resume
             
@@ -201,30 +203,26 @@ class AudioEngine {
             state.masterCompGain = state.audioContext.createGain();
             state.masterCompGain.gain.value = cp.gain ?? 1.0;
             
-            // --- Final Routing ---
-            // Gain -> EQ -> Comp -> MakeupGain -> SoftClip -> Limiter -> Out
+            // Live output uses only the soft clipper; look-ahead dynamics and EQ
+            // belong to the parallel master recording branch.
             let lastNode = state.masterGain;
-            if (state.masterEQ) { lastNode.connect(state.masterEQ); lastNode = state.masterEQ; }
-            if (state.masterComp) { lastNode.connect(state.masterComp); lastNode = state.masterComp; }
-            if (state.masterCompGain) { lastNode.connect(state.masterCompGain); lastNode = state.masterCompGain; }
-            
-            // Safe routing with fallbacks if nodes failed to initialize
             if (state.masterSoftClip) {
                 lastNode.connect(state.masterSoftClip);
                 lastNode = state.masterSoftClip;
             }
-
+            lastNode.connect(state.audioContext.destination);
+            lastNode.connect(state.masterMeter);
+            // Record the same master level, then apply the recording-only finish.
+            if (state.masterEQ) { lastNode.connect(state.masterEQ); lastNode = state.masterEQ; }
+            if (state.masterComp) { lastNode.connect(state.masterComp); lastNode = state.masterComp; }
+            if (state.masterCompGain) { lastNode.connect(state.masterCompGain); lastNode = state.masterCompGain; }
             if (state.masterLimiter) {
                 lastNode.connect(state.masterLimiter);
                 lastNode = state.masterLimiter;
             }
-            
-            lastNode.connect(state.audioContext.destination);
-            // Recording and metering both tap the signal sent to the output.
             if (state.masterDestination) {
                 lastNode.connect(state.masterDestination);
             }
-            lastNode.connect(state.masterMeter);
             return true;
             
         } catch (error) {

@@ -190,7 +190,7 @@ test('safety curve follows the quadratic knee and approaches zero slope at both 
     assert.ok(Math.abs((curve[knee + 1] - curve[knee]) / dx - 1) < 0.002);
 });
 
-test('both compressors and EQ stay intact; meter joins post-limiter recording/output', async () => {
+test('live output bypasses recording EQ and compressors while master recording remains processed', async () => {
     const { state, compressors, destinations, worklets, modules, revokedUrls } = await initialize();
     assert.equal(compressors.length, 2);
     assert.equal(state.masterLimiter, compressors[0]);
@@ -209,12 +209,12 @@ test('both compressors and EQ stay intact; meter joins post-limiter recording/ou
     assert.equal(state.masterGain.gain.value, 1);
     assert.equal(state.masterMeter.fftSize, 2048);
     assert.deepEqual(state.masterMixer.connections, [state.masterGain]);
-    assert.deepEqual(state.masterGain.connections, [state.masterEQ]);
+    assert.deepEqual(state.masterGain.connections, [state.masterSoftClip]);
     assert.deepEqual(state.masterEQ.connections, [state.masterComp]);
     assert.deepEqual(state.masterComp.connections, [state.masterCompGain]);
-    assert.deepEqual(state.masterCompGain.connections, [state.masterSoftClip]);
-    assert.deepEqual(state.masterSoftClip.connections, [state.masterLimiter]);
-    assert.deepEqual(state.masterLimiter.connections, [state.audioContext.destination, state.masterDestination, state.masterMeter]);
+    assert.deepEqual(state.masterCompGain.connections, [state.masterLimiter]);
+    assert.deepEqual(state.masterSoftClip.connections, [state.audioContext.destination, state.masterMeter, state.masterEQ]);
+    assert.deepEqual(state.masterLimiter.connections, [state.masterDestination]);
     assert.deepEqual(state.masterMeter.connections, []);
 });
 
