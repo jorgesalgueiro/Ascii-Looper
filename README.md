@@ -7,8 +7,8 @@ Created by **Jorge Salgueiro**, **ASCII Looper** is an all-in-one web applicatio
 
 ## ✨ Key Features
 
-### 🔄 20-Track Looper Station
-* **Multi-Track Sync:** Up to 20 synchronized audio loops running simultaneously.
+### 🔄 10-Track Looper Station
+* **Multi-Track Sync:** Up to 10 synchronized audio loops running simultaneously.
 * **Flexible Recording Modes:**
   * **Overdub:** Layer new recordings seamlessly on top of existing tracks.
   * **Substitute:** Replace audio content in real time.
