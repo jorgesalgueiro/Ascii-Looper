@@ -2868,24 +2868,37 @@ class InputManager {
             AudioEngine.scheduledFade(this.masterGain, 0, now, FADE_MS);
         }
 
-        // 2. Clean old FX nodes immediately
+        // 2. Detach the old chain exits. Effect internals stay wired so the
+        // rebuild below can reuse delay lines and reverb tails instead of
+        // destroying and recreating every effect on each toggle.
+        const oldEffects = this.masterChain.nodes || {};
         if (this.helperGraph) {
-            this.helperGraph.destroyEffects(this.masterChain.nodes);
+            this.helperGraph.detachEffects(oldEffects);
         } else {
-            Object.values(this.masterChain.nodes).forEach(group => {
+            Object.values(oldEffects).forEach(group => {
                  if (Array.isArray(group)) group.forEach(n => { try {n.disconnect()} catch(e){} });
             });
         }
         this.masterChain.nodes = {};
 
-        // 3. Build new chain
+        // 3. Build new chain, reusing effect graphs where possible
         let lastNode = this.inputBus;
         this.helperGraph.loop.params = this.masterParams;
 
         for (const char of this.masterSignalChain) {
             const fxName = this.helperGraph._getEffectByChar(char);
             if (fxName && this.masterEffectsState[fxName]) {
-                const res = this.helperGraph._createEffectNode(fxName, lastNode);
+                const cached = oldEffects[fxName];
+                let res;
+                if (Array.isArray(cached) && cached.chainExit) {
+                    const entry = cached.chainEntry;
+                    if (entry) lastNode.connect(entry);
+                    if (cached.chainDry) lastNode.connect(cached.chainDry);
+                    res = { output: cached.chainExit, nodes: cached };
+                    delete oldEffects[fxName];
+                } else {
+                    res = this.helperGraph._createEffectNode(fxName, lastNode);
+                }
                 lastNode = res.output;
                 this.masterChain.nodes[fxName] = res.nodes;
 
@@ -2894,6 +2907,9 @@ class InputManager {
                 }
             }
         }
+
+        // 4. Destroy whatever the new chain did not reuse
+        if (this.helperGraph) this.helperGraph.destroyEffects(oldEffects);
 
         // Ensure the monitor gain and the pre-fader record tap exist
         if (!this.masterGain) {

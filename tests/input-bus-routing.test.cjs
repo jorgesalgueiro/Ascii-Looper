@@ -85,6 +85,7 @@ function createHarness() {
     InputManager.helperGraph = {
         loop: {},
         destroyEffects() {},
+        detachEffects() {},
         _getEffectByChar() { return null; },
         _createEffectNode() { throw new Error('no effects expected'); }
     };
@@ -189,4 +190,42 @@ test('the add control passes the selected source into the track', async () => {
     await h.InputManager.addSelectedInput('mic');
 
     assert.deepEqual(added, { deviceId: 'native:2-3', type: 'mic' });
+});
+
+test('input bus rebuilds reuse cached effect graphs instead of resetting tails', () => {
+    const h = createHarness();
+    const { InputManager } = h;
+    const created = [];
+    const destroyed = [];
+    InputManager.masterSignalChain = 'D';
+    InputManager.masterEffectsState = { delay: true };
+    InputManager.helperGraph.loop = {};
+    InputManager.helperGraph._getEffectByChar = () => 'delay';
+    InputManager.helperGraph._createEffectNode = () => {
+        const output = audioNode();
+        const nodes = [output];
+        nodes.chainEntry = output;
+        nodes.chainExit = output;
+        nodes.chainDry = null;
+        created.push(nodes);
+        return { output, nodes };
+    };
+    InputManager.helperGraph.detachEffects = (map) => {
+        Object.values(map).forEach(group => {
+            if (Array.isArray(group) && group.chainExit) group.chainExit.disconnect();
+        });
+    };
+    InputManager.helperGraph.destroyEffects = (map) => {
+        destroyed.push(Object.keys(map));
+    };
+
+    InputManager.rebuildMasterChain();
+    const first = InputManager.masterChain.nodes.delay;
+    InputManager.rebuildMasterChain();
+    const second = InputManager.masterChain.nodes.delay;
+
+    assert.equal(created.length, 1, 'the delay graph is created only once');
+    assert.equal(second, first, 'the same effect node group survives the rebuild');
+    const lastDestroy = destroyed[destroyed.length - 1];
+    assert.equal(lastDestroy.length, 0, 'the reused effect is removed from the disposal map');
 });

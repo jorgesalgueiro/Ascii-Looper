@@ -244,8 +244,12 @@ class FreqShifter {
         // to <0.1% for frequencies up to ~2kHz at 44.1kHz (well above the
         // haunt parameter's 880Hz max). Avoids sin()/cos() entirely.
         const dt = (frequency * 2 * Math.PI) / this.sr;
-        const cosDt = 1 - dt * dt * 0.5;
-        const sinDt = dt;
+        // Small-angle rotation with cubic terms: at the 880 Hz maximum the
+        // first-order version detuned the sideband by ~0.3%; the extra term is
+        // effectively free and keeps the shift centered.
+        const dt2 = dt * dt;
+        const cosDt = 1 - dt2 * 0.5 + dt2 * dt2 / 24;
+        const sinDt = dt - dt * dt2 / 6;
         const newCos = this.cosPh * cosDt - this.sinPh * sinDt;
         const newSin = this.sinPh * cosDt + this.cosPh * sinDt;
         this.cosPh = newCos;
@@ -256,7 +260,7 @@ class FreqShifter {
             this.normCounter = 0;
             const amp = this.cosPh * this.cosPh + this.sinPh * this.sinPh;
             if (amp > 0) {
-                const norm = 2 / (1 + amp); // Approximate 1/sqrt
+                const norm = 1 / Math.sqrt(amp);
                 this.cosPh *= norm;
                 this.sinPh *= norm;
             }
@@ -512,7 +516,9 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
     }
     constructor() {
         super();
-        this.bufferSize = Math.floor(getWorkletSampleRate() * 4); // Dynamic 4s buffer
+        const sr = getWorkletSampleRate();
+        this.sr = sr;
+        this.bufferSize = Math.floor(sr * 4); // Dynamic 4s buffer
         this.buffer = [new Float32Array(this.bufferSize), new Float32Array(this.bufferSize)]; // Stereo
         this.wPtr = 0;
         this.gPhase = 0; // Grain phase 0..1
@@ -542,6 +548,9 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
         ];
         // Lowpass state for feedback dampening
         this.lpState = [0, 0];
+        // Sample-rate-independent one-pole damping. The old fixed 0.28
+        // coefficient was ~2 kHz at 48 kHz, so repeats turned to mud quickly.
+        this.lpCoef = Math.max(0.05, Math.min(0.92, 1 - Math.exp(-2 * Math.PI * 5000 / sr)));
         // Highpass state (DC offset removal / mud cleaner)
         this.hpState = [{in:0, out:0}, {in:0, out:0}];
         // Pre-allocate subdivisions to avoid GC in process loop
@@ -550,10 +559,13 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
         this.gRate = 0;
         // Peak level last written into the delay buffer (idle fast-path gate)
         this.tailEnv = 1;
+        // ~90 ms grains at every sample rate (the old fixed 4096 samples got
+        // shorter and grainier on high-rate devices).
+        this.grainSize = Math.max(512, Math.floor(sr * 0.09));
         // Precomputed Hanning window LUT (avoids per-sample cos() in grain read)
-        this.hannLUT = new Float32Array(1024);
-        for (let i = 0; i < 1024; i++) {
-            this.hannLUT[i] = 0.5 * (1.0 - Math.cos(2.0 * Math.PI * (i / 1023)));
+        this.hannLUT = new Float32Array(2048);
+        for (let i = 0; i < this.hannLUT.length; i++) {
+            this.hannLUT[i] = 0.5 * (1.0 - Math.cos(2.0 * Math.PI * (i / (this.hannLUT.length - 1))));
         }
         // Quadrature oscillators for slow LFOs (avoids per-sample sin() calls)
         // drift, drift2, wobble, panLFO — all <1Hz, so small-angle rotation is exact.
@@ -561,6 +573,24 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
         this.qDrift2  = { c: 1, s: 0, norm: 0 };
         this.qWobble  = { c: 1, s: 0, norm: 0 };
         this.qPan     = { c: 1, s: 0, norm: 0 };
+    }
+    /**
+     * Catmull-Rom read for pitch-shifted grains. Linear interpolation leaves a
+     * glassy, grainy edge on transients; cubic keeps the echo's top end and
+     * vocal/instrument timbre intact.
+     */
+    readGrain(buf, pos) {
+        const len = buf.length;
+        let p = pos;
+        if (p >= len) p -= len;
+        if (p < 0) p += len;
+        const i = p | 0;
+        const frac = p - i;
+        const i0 = i > 0 ? i - 1 : len - 1;
+        const i2 = i + 1 < len ? i + 1 : 0;
+        const i3 = i + 2 < len ? i + 2 : 1;
+        const a = buf[i0], b = buf[i], c = buf[i2], d = buf[i3];
+        return b + 0.5 * frac * (c - a + frac * (2 * a - 5 * b + 4 * c - d + frac * (3 * (b - c) + d - a)));
     }
     process(inputs, outputs, parameters) {
         const input = inputs[0];
@@ -595,7 +625,7 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
         const range = parameters.range[0];
         const mix = parameters.mix[0];
         const humanize = parameters.humanize[0];
-        const grainSize = 4096;
+        const grainSize = this.grainSize;
         const numCh = Math.min(output.length, this.buffer.length);
         
         let delayTime = time;
@@ -612,7 +642,7 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
             delayTime = subdivision * (60 / bpm);
         }
         
-        const delaySamps = Math.max(32, Math.floor(delayTime * this.sr));
+        const delaySamps = Math.min(this.bufferSize - 1, Math.max(32, Math.floor(delayTime * this.sr)));
         const blockSize = output[0].length; // Use output length as reference
         
         // Organic Drift Parameters
@@ -648,7 +678,10 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
         
         // Process sample-by-sample for correct rate and smooth envelope
         let wrPeak = 0;
+        let writePos = this.wPtr;
         const qD = this.qDrift, qD2 = this.qDrift2, qW = this.qWobble, qP = this.qPan;
+        const win = this.hannLUT;
+        const WLAST = win.length - 1;
         for (let i = 0; i < blockSize; i++) {
             // Rotate quadrature oscillators (replaces sin(phaseAccum) per sample)
             let tmpC;
@@ -659,10 +692,10 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
             // Normalize oscillators every 512 samples to prevent amplitude drift
             if ((i & 511) === 0) {
                 let a;
-                a = qD.c*qD.c + qD.s*qD.s;  if(a>0){const n=2/(1+a); qD.c*=n; qD.s*=n;}
-                a = qD2.c*qD2.c + qD2.s*qD2.s; if(a>0){const n=2/(1+a); qD2.c*=n; qD2.s*=n;}
-                a = qW.c*qW.c + qW.s*qW.s;  if(a>0){const n=2/(1+a); qW.c*=n; qW.s*=n;}
-                a = qP.c*qP.c + qP.s*qP.s;  if(a>0){const n=2/(1+a); qP.c*=n; qP.s*=n;}
+                a = qD.c*qD.c + qD.s*qD.s;  if(a>0){const n=1/Math.sqrt(a); qD.c*=n; qD.s*=n;}
+                a = qD2.c*qD2.c + qD2.s*qD2.s; if(a>0){const n=1/Math.sqrt(a); qD2.c*=n; qD2.s*=n;}
+                a = qW.c*qW.c + qW.s*qW.s;  if(a>0){const n=1/Math.sqrt(a); qW.c*=n; qW.s*=n;}
+                a = qP.c*qP.c + qP.s*qP.s;  if(a>0){const n=1/Math.sqrt(a); qP.c*=n; qP.s*=n;}
             }
             this.driftRand += (this.driftRandTarget - this.driftRand) * wanderCoef; // Smooth humanized wander
             // 1. Clock Logic
@@ -733,15 +766,17 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
             if(this.gPhase >= 1.0) this.gPhase -= 1.0;
             if(this.gPhase < 0.0) this.gPhase += 1.0;
 
-            const w1 = this.hannLUT[(this.gPhase * 1023) | 0];
+            const wIndex = this.gPhase * WLAST;
+            const wi0 = wIndex | 0;
+            const wi1 = wi0 < WLAST ? wi0 + 1 : WLAST;
+            const w1 = win[wi0] + (win[wi1] - win[wi0]) * (wIndex - wi0);
             const w2 = 1.0 - w1;
 
             const offset1 = this.gPhase * grainSize;
             const offset2 = ((this.gPhase + 0.5) % 1.0) * grainSize;
 
             // 3. Audio Processing
-            const writePos = (this.wPtr + i) % this.bufferSize;
-            
+
             // Organic Offset: evolving two-oscillator wow + humanized wander + flutter
             // Using quadrature oscillator .s outputs instead of Math.sin()
             const baseDrift = (qD.s * 0.62 + qD2.s * 0.38) * driftDepth * 0.8 + this.driftRand;
@@ -750,9 +785,11 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
             for (let ch = 0; ch < numCh; ch++) {
                 // Safety: Prevent crash if host output channels > internal state
                 if (ch >= this.lpState.length) break;
-                // Stereo unlinking: Invert drift for Left/Right to widen image
+                // Stereo unlinking: Invert drift for Left/Right to widen image.
+                // The right side also runs slightly less wow, so the pair does not
+                // collapse into a single mono-modulated echo.
                 const stereoMod = (ch === 0) ? 1 : -1;
-                const totalDrift = baseDrift + (flutter * 0.5 * stereoMod);
+                const totalDrift = baseDrift * (ch === 0 ? 1.0 : 0.84) + (flutter * 0.5 * stereoMod);
                 
                 const rPtrBase = (writePos - delaySamps + grainSize * 0.5 + totalDrift + this.bufferSize) % this.bufferSize;
 
@@ -765,20 +802,18 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
                 const stereoOffset = ((ch === 0) ? -8 : 8) + (pan * 10);
                 const r1Pos = (rPtrBase - offset1 + stereoOffset + this.bufferSize) % this.bufferSize;
                 const r2Pos = (rPtrBase - offset2 + stereoOffset + this.bufferSize) % this.bufferSize;
-                const r1 = Math.floor(r1Pos);
-                const r2 = Math.floor(r2Pos);
-                const r1Next = (r1 + 1 === this.bufferSize) ? 0 : r1 + 1;
-                const r2Next = (r2 + 1 === this.bufferSize) ? 0 : r2 + 1;
-                const grain1 = buf[r1] + (buf[r1Next] - buf[r1]) * (r1Pos - r1);
-                const grain2 = buf[r2] + (buf[r2Next] - buf[r2]) * (r2Pos - r2);
+                const grain1 = this.readGrain(buf, r1Pos);
+                const grain2 = this.readGrain(buf, r2Pos);
                 
                 // Pluck-shaped, humanized arp voice
                 const wet = ((grain1 * w1) + (grain2 * w2)) * amp * stepGain;
                 
                 // --- Organic Feedback Loop ---
-                // Fast tanh approximation: Pade[3,3] — accurate to <0.1% for |x|<2.
-                // tanh(wet*0.9)/0.9 ≈ wet * (27 + (wet*0.9)²) / (0.9 * (27 + 9*(wet*0.9)²))
-                const wx = wet * 0.9;
+                // Bounded Padé tanh approximation. The raw Pade[3,3] is only
+                // accurate/stable for |x| < ~3; clamping the drive prevents a
+                // hot echo from growing instead of saturating.
+                let wx = wet * 0.9;
+                if (wx > 3) wx = 3; else if (wx < -3) wx = -3;
                 const wx2 = wx * wx;
                 let fbSignal = wx * (27 + wx2) / (0.9 * (27 + 9 * wx2));
                 
@@ -790,8 +825,8 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
                 if (Math.abs(hpOut) < 1e-9) this.hpState[ch].out = 0; // Flush denormal
                 fbSignal = hpOut;
 
-                // Lowpass (gentle tape smoothing)
-                this.lpState[ch] += (fbSignal - this.lpState[ch]) * 0.28;
+                // Lowpass (tape smoothing, ~5 kHz regardless of device rate)
+                this.lpState[ch] += (fbSignal - this.lpState[ch]) * this.lpCoef;
                 if (Math.abs(this.lpState[ch]) < 1e-9) this.lpState[ch] = 0; // Flush denormal
                 fbSignal = this.lpState[ch];
                 
@@ -804,9 +839,10 @@ class ArpDelayProcessor extends AudioWorkletProcessor {
                 
                 output[ch][i] = inSample * (1-mix) + wet * mix;
             }
+            if (++writePos >= this.bufferSize) writePos = 0;
         }
         this.tailEnv = Math.max(wrPeak, this.tailEnv * 0.9);
-        this.wPtr = (this.wPtr + blockSize) % this.bufferSize;
+        this.wPtr = writePos;
         return true;
     }
 }
@@ -844,6 +880,16 @@ class GristleizerProcessor extends AudioWorkletProcessor {
         this.phase = 0;
         this.currentMod = 0;
         this.filterState = [];
+        // Precompute the Chamberlin SVF coefficient curve f = 2*sin(pi*fc/sr)
+        // over the full modulation range. This removes a Math.sin() from every
+        // sample; linear interpolation between 1024 points is inaudible.
+        const sr = getWorkletSampleRate();
+        this.fTable = new Float32Array(1025);
+        for (let i = 0; i <= 1024; i++) {
+            const mod = i / 1024;
+            const cutoff = 100 + mod * 7900;
+            this.fTable[i] = Math.min(1.99, 2.0 * Math.sin(cutoff * Math.PI / sr));
+        }
     }
     process(inputs, outputs, parameters) {
         const input = inputs[0];
@@ -873,7 +919,7 @@ class GristleizerProcessor extends AudioWorkletProcessor {
         const baseMakeupGain = p.makeupGain[0];
         const baseSlewLimit = p.slewLimit[0];
 
-        const piOverSr = Math.PI / sr;
+        const fTable = this.fTable;
 
         for (let i = 0; i < blockSize; i++) {
             const lfoFreq = isLfoFreqAuto ? p.lfoFreq[i] : baseLfoFreq;
@@ -904,9 +950,11 @@ class GristleizerProcessor extends AudioWorkletProcessor {
             this.currentMod += (targetMod - this.currentMod) * alpha;
             const mod = this.currentMod;
 
-            const cutoff = 100 + mod * 7900;
             const q = 2.0 + (drive * 0.1); 
-            const f = Math.min(1.99, 2.0 * Math.sin(cutoff * piOverSr));
+            const fi = mod * 1024;
+            const f0 = fi | 0;
+            const f1 = f0 < 1024 ? f0 + 1 : 1024;
+            const f = fTable[f0] + (fTable[f1] - fTable[f0]) * (fi - f0);
 
             for (let ch = 0; ch < numChannels; ch++) {
                 if (this.filterState.length <= ch) this.filterState.push({ lp: 0, bp: 0 });
@@ -2198,7 +2246,7 @@ const UI_CONFIG = {
     'D': { key: 'delay', title: 'DELAY (D)', color: 'green', presets: 'DELAY_PRESETS',
         extraHtml: (p) => `<div style="margin:5px 0"><label><input type="checkbox" ${p.sync?'checked':''} onchange="EffectManager.update('delay', 'sync', this.checked?true:false); EffectManager.renderEffectsPanel();"> Sync to Tempo</label></div>`,
         controls: [
-            { l: 'Time', p: 'time', min: 0.01, max: 4.0, step: 0.01, def: 0.375 },
+            { l: 'Time', p: 'time', min: 0.01, max: 16.0, step: 0.01, def: 0.375 },
             { l: 'Reps', p: 'repetitions', min: 0, max: 10, step: 1 },
             { l: 'Damp', p: 'damp', min: 200, max: 20000, step: 100 },
             { l: 'Mix', p: 'mix', min: 0, max: 1, step: 0.01 },
@@ -3130,8 +3178,20 @@ class EffectManager {
         if (!targetParams[effectType] && effects[effectType]) {
             targetParams[effectType] = JSON.parse(JSON.stringify(effects[effectType]));
         }
+        const previousValue = targetParams[effectType] ? targetParams[effectType][param] : undefined;
         if (targetParams[effectType]) {
             targetParams[effectType][param] = value;
+        }
+
+        // Delay time changes units with its tempo-sync switch: seconds when
+        // free-running, beats when locked to the project tempo.
+        if (effectType === 'delay' && param === 'sync' && targetParams.delay &&
+            !!value !== !!previousValue) {
+            this.convertDelaySyncTime(targetParams.delay, !!value, state.bpm);
+        }
+        if (effectType === 'arpDelay' && param === 'sync' && targetParams.arpDelay &&
+            !!value !== !!previousValue) {
+            this.convertArpDelaySyncTime(targetParams.arpDelay, !!value, state.bpm);
         }
 
         // Clear preset name if manual change detected (switches to Custom)
@@ -3192,6 +3252,43 @@ class EffectManager {
         } catch(e) {}
     }
 
+    static setDiscreteParam(audioParam, val, now) {
+        if (!audioParam) return;
+        try {
+            audioParam.cancelScheduledValues(now);
+            audioParam.setValueAtTime(val, now);
+        } catch(e) {}
+    }
+
+    /**
+     * Delay `time` is stored in seconds while sync is off and in beats while
+     * sync is on. Convert on toggle so the slider and the audible delay agree.
+     */
+    static convertDelaySyncTime(params, syncOn, bpm = state.bpm) {
+        if (!params) return;
+        const beat = 60 / Math.max(10, bpm || 120);
+        const current = Number.isFinite(params.time) ? params.time : 0.375;
+        if (syncOn) {
+            params.time = Math.max(1, Math.min(8, current / beat));
+        } else {
+            params.time = Math.max(0.01, Math.min(16, current * beat));
+        }
+        params.sync = !!syncOn;
+    }
+
+    /** Arp Delay uses the same seconds/beats unit switch as Delay. */
+    static convertArpDelaySyncTime(params, syncOn, bpm = state.bpm) {
+        if (!params) return;
+        const beat = 60 / Math.max(10, bpm || 120);
+        const current = Number.isFinite(params.time) ? params.time : 0.4;
+        if (syncOn) {
+            params.time = Math.max(0.166, Math.min(2, current / beat));
+        } else {
+            params.time = Math.max(0.01, Math.min(4, current * beat));
+        }
+        params.sync = syncOn ? 1 : 0;
+    }
+
     static updateLoopNode(loop, effectType, param, value, now) {
         if (!loop || !loop.graph || !loop.graph.nodes || !loop.graph.nodes.effects) return;
         
@@ -3202,9 +3299,15 @@ class EffectManager {
                  if (param === 'decay') {
                      const ir = AudioEngine.createSimpleReverbIR(value, 1.0, state.audioContext.sampleRate);
                      nodes[0].buffer = ir;
+                      const mp = loop.params && loop.params.machineReverb;
+                      if (mp) mp.impulseBuffer = ir;
                  }
                  else if (param === 'warp' && nodes[9]) {
                      this.smoothSetParam(nodes[9].gain, value * 0.01, now);
+                      // Keep the delay offset above zero: the LFO swings by the
+                      // same amount around this centre, and negative delay time
+                      // is clamped by the host (audible modulation flattening).
+                      if (nodes[7]) this.smoothSetParam(nodes[7].delayTime, 0.005 + value * 0.01, now);
                  }
                  else if (nodes[2] && nodes[3]) {
                      if (param === 'highCut') this.smoothSetParam(nodes[2].frequency, value, now);
@@ -3237,7 +3340,11 @@ class EffectManager {
                         this.smoothSetParam(nodes[0].parameters.get('feedback'), fb, now);
                     } else {
                         const aP = { time:'time',mix:'mix',stay:'stay',scale:'scale', sync:'sync', amplitude:'amplitude', range:'range', humanize:'humanize' };
-                        if(aP[param]) this.smoothSetParam(nodes[0].parameters.get(aP[param]), value, now);
+                        if (param === 'stay' || param === 'scale' || param === 'sync') {
+                            if (aP[param]) this.setDiscreteParam(nodes[0].parameters.get(aP[param]), value, now);
+                        } else if(aP[param]) {
+                            this.smoothSetParam(nodes[0].parameters.get(aP[param]), value, now);
+                        }
                         else if (param === 'panSpeed' || param === 'panDepth') {
                             if (nodes.length >= 4) { // Always [worklet, pan, lfo, gain]
                                 if (param === 'panSpeed') this.smoothSetParam(nodes[2].frequency, value, now);
@@ -3257,17 +3364,16 @@ class EffectManager {
                 case 'delay': {
                     const p = (loop.params && loop.params.delay) || effects.delay;
                     if (!p) break;
-                    if (param === 'time' || param === 'sync') { 
+                    // A synced delay must track BPM even when another parameter
+                    // changes, but that must not short-circuit the parameter's own
+                    // update below.
+                    if (param === 'time' || param === 'sync' || p.sync) {
                         let t = p.time ?? effects.delay.time;
-                        if(p.sync) t = (p.time ?? effects.delay.time) * (60.0 / state.bpm);
-                        this.smoothSetParam(nodes[0].delayTime, t, now); 
+                        if (p.sync) t = (p.time ?? effects.delay.time) * (60.0 / state.bpm);
+                        const maxT = nodes[0].delayTime.maxValue || 16;
+                        this.smoothSetParam(nodes[0].delayTime, Math.max(0, Math.min(maxT, t)), now);
                     }
-                    // If sync is on, always recalculate delay time to track BPM changes
-                    if (p.sync && param !== 'time' && param !== 'sync') {
-                        const t = (p.time ?? effects.delay.time) * (60.0 / state.bpm);
-                        this.smoothSetParam(nodes[0].delayTime, t, now);
-                    }
-                    else if (param === 'repetitions') { this.smoothSetParam(nodes[1].gain, value / 11.1, now); }
+                    if (param === 'repetitions') { this.smoothSetParam(nodes[1].gain, value / 11.1, now); }
                     else if (param === 'damp') { this.smoothSetParam(nodes[2].frequency, value, now); }
                     else if (param === 'mix') { this.smoothSetParam(nodes[3].gain, 1 - value, now); this.smoothSetParam(nodes[4].gain, value, now); }
                     else if (param === 'panSpeed' || param === 'panDepth') {
@@ -3331,16 +3437,24 @@ class EffectManager {
                    if(nodes[0] && nodes[0].parameters && nodes[0].parameters.get(param)) this.smoothSetParam(nodes[0].parameters.get(param), value, now);
                break;
                 case 'harmony':
-                   if(nodes[0] && nodes[0].parameters && nodes[0].parameters.get(param)) this.smoothSetParam(nodes[0].parameters.get(param), value, now);
+                   if (nodes[0] && nodes[0].parameters) {
+                       const hp = nodes[0].parameters.get(param);
+                       if (hp) {
+                           const discrete = param === 'voices' || param === 'mode' || param === 'key' ||
+                               param === 'h1' || param === 'h2' || param === 'h3' || param === 'h4';
+                           if (discrete) this.setDiscreteParam(hp, value, now);
+                           else this.smoothSetParam(hp, value, now);
+                       }
+                   }
                    break;
             case 'griz':
                 if (!nodes[0]) break;
                 if (param === 'rate') this.smoothSetParam(nodes[0].parameters.get('lfoFreq'), value, now);
-                else if (param === 'wave') this.smoothSetParam(nodes[0].parameters.get('lfoWave'), value, now);
+                else if (param === 'wave') this.setDiscreteParam(nodes[0].parameters.get('lfoWave'), value, now);
                 else if (param === 'depth') this.smoothSetParam(nodes[0].parameters.get('depth'), value, now);
                 else if (param === 'bias') this.smoothSetParam(nodes[0].parameters.get('bias'), value, now);
                 else if (param === 'drive') this.smoothSetParam(nodes[0].parameters.get('drive'), value, now);
-                else if (param === 'vcfMode') this.smoothSetParam(nodes[0].parameters.get('mode'), value, now);
+                else if (param === 'vcfMode') this.setDiscreteParam(nodes[0].parameters.get('mode'), value, now);
                 else if (param === 'makeup') this.smoothSetParam(nodes[0].parameters.get('makeupGain'), value, now);
                 else if (param === 'slewLimit') this.smoothSetParam(nodes[0].parameters.get('slewLimit'), value, now);
                 else if (param === 'mix') { this.smoothSetParam(nodes[1].gain, 1 - value, now); this.smoothSetParam(nodes[2].gain, value, now); }
@@ -3485,7 +3599,6 @@ class EffectManager {
                     let label = ctl.l;
                     if (conf.key === 'delay' && ctl.p === 'time') {
                         if (p.sync) { label = 'Beats'; min = 1; max = 8; step = 1; }
-                        else { max = 2; } // 2s max
                     }
                     
                     const val = (p[ctl.p] !== undefined) ? p[ctl.p] : (ctl.def || 0);
@@ -3509,8 +3622,8 @@ class EffectManager {
                         <option value="">-- Select --</option>
                         ${Object.keys(EffectManager.ARPDELAY_PRESETS).map(k => `<option value="${k}" ${getSel('arpDelay') === k ? 'selected' : ''}>${k}</option>`).join('')}
                     </select></div>`;
-                    html += `<div style="margin:5px 0"><label><input type="checkbox" ${p.sync?'checked':''} onchange="EffectManager.update('arpDelay', 'sync', this.checked?1:0)"> Sync to Tempo</label></div>`;
-                    html += createSlider('Time', 'arpDelayTime', 0.01, 2.0, 0.01, p.time, "EffectManager.update('arpDelay', 'time', parseFloat(this.value))");
+                    html += `<div style="margin:5px 0"><label><input type="checkbox" ${p.sync?'checked':''} onchange="EffectManager.update('arpDelay', 'sync', this.checked?1:0); EffectManager.renderEffectsPanel();"> Sync to Tempo</label></div>`;
+                    html += createSlider(p.sync ? 'Beats' : 'Time', 'arpDelayTime', p.sync ? 0.166 : 0.01, p.sync ? 2.0 : 4.0, p.sync ? 0.001 : 0.01, p.time, "EffectManager.update('arpDelay', 'time', parseFloat(this.value))");
                     html += createSlider('Reps', 'arpDelayRepetitions', 0, 10, 1, p.repetitions, "EffectManager.update('arpDelay', 'repetitions', parseFloat(this.value))");
                     html += createSlider('Mix', 'arpDelayMix', 0, 1, 0.01, p.mix, "EffectManager.update('arpDelay', 'mix', parseFloat(this.value))");
                     html += createSlider('Note Vol', 'arpDelayAmplitude', 0, 1.5, 0.01, p.amplitude !== undefined ? p.amplitude : 1.0, "EffectManager.update('arpDelay', 'amplitude', parseFloat(this.value))");

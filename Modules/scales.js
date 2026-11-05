@@ -259,7 +259,8 @@ class SyncManager {
                 chainNodes.zigZ[1].frequency.setTargetAtTime(freq, AudioEngine.currentTime, 0.05);
             }
             if (chainNodes.delay && chainNodes.delay[0] && params.delay && params.delay.sync) {
-                const t = params.delay.time * (60.0 / state.bpm);
+                const maxT = chainNodes.delay[0].delayTime.maxValue || 16;
+                const t = Math.min(maxT, params.delay.time * (60.0 / state.bpm));
                 chainNodes.delay[0].delayTime.setTargetAtTime(t, AudioEngine.currentTime, 0.05);
             }
         };

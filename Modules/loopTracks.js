@@ -1077,7 +1077,7 @@ class AudioGraph {
         const damp = state.audioContext.createBiquadFilter();   // wet-path high cut
         const predelay = state.audioContext.createDelay(0.5);   // pre-IR delay
 
-        if (p.impulseBuffer instanceof AudioBuffer) convolver.buffer = p.impulseBuffer;
+        if (typeof AudioBuffer !== 'undefined' && p.impulseBuffer instanceof AudioBuffer) convolver.buffer = p.impulseBuffer;
         else {
             // Fallback: Generate IR if missing (e.g. after load) or use global fallback
             const dur = p.duration ?? 1.2;
@@ -1120,7 +1120,11 @@ class AudioGraph {
         const lfo = state.audioContext.createOscillator();
         const lfoGain = state.audioContext.createGain();
         
-        const ir = AudioEngine.createSimpleReverbIR(p.decay, 1.0, state.audioContext.sampleRate);
+        let ir = p.impulseBuffer;
+        if (!(typeof AudioBuffer !== 'undefined' && ir instanceof AudioBuffer)) {
+            ir = AudioEngine.createSimpleReverbIR(p.decay, 1.0, state.audioContext.sampleRate);
+            p.impulseBuffer = ir; // keep the randomized IR stable across chain rebuilds
+        }
         convolver.buffer = ir;
         
         feedback.gain.value = Math.min(0.95, p.feedback ?? 0.4);
@@ -1130,7 +1134,7 @@ class AudioGraph {
         hpFilter.frequency.value = p.lowCut ?? 100;
         
         const warpAmt = p.warp ?? 0.2;
-        warpDelay.delayTime.value = 0.005;
+        warpDelay.delayTime.value = 0.005 + warpAmt * 0.01;
         lfo.frequency.value = 0.5;
         lfoGain.gain.value = warpAmt * 0.01;
         lfo.connect(lfoGain);
@@ -1160,7 +1164,8 @@ class AudioGraph {
 
     _createDelay(inputNode) {
         const p = this.loop.params.delay || effects.delay;
-        const delay = state.audioContext.createDelay(4.0); // Max 4s delay
+        const MAX_DELAY = 16.0; // covers 8 beats down to 30 BPM
+        const delay = state.audioContext.createDelay(MAX_DELAY);
         const feedback = state.audioContext.createGain();
         const filter = state.audioContext.createBiquadFilter();
         const dry = state.audioContext.createGain();
@@ -1170,7 +1175,7 @@ class AudioGraph {
 
         let t = p.time ?? 0.375;
         if(p.sync) t = t * (60.0 / state.bpm);
-        delay.delayTime.value = t;
+        delay.delayTime.value = Math.min(MAX_DELAY, Math.max(0, t));
 
         // Convert repetitions to feedback gain
         feedback.gain.value = (p.repetitions ?? 4) / 11.1;
@@ -1245,14 +1250,19 @@ class AudioGraph {
         const k = (Number(amount) || 0) * 0.5;
         const samples = 4097;
         const curve = new Float32Array(samples);
-        const drive = 1 + k * 0.5;
         const s = shape ?? 0.5;
-        const driveNeg = drive * (1.0 - s * 0.5);
-        for (let i = 0; i < samples; ++i) {
-            const x = i * 2 / (samples - 1) - 1;
-            curve[i] = x >= 0 ? Math.tanh(drive * x) : Math.tanh(driveNeg * x);
+        if (k === 0) {
+            // Amount 0 is a true bypass, not tanh(x): tanh still compresses peaks.
+            for (let i = 0; i < samples; ++i) curve[i] = i * 2 / (samples - 1) - 1;
+        } else {
+            const drive = 1 + k * 0.5;
+            const driveNeg = drive * (1.0 - s * 0.5);
+            for (let i = 0; i < samples; ++i) {
+                const x = i * 2 / (samples - 1) - 1;
+                curve[i] = x >= 0 ? Math.tanh(drive * x) : Math.tanh(driveNeg * x);
+            }
+            curve[(samples - 1) >> 1] = 0; // exact-zero anchor
         }
-        curve[(samples - 1) >> 1] = 0; // exact-zero anchor
         return curve;
     }
 
@@ -1432,7 +1442,10 @@ class AudioGraph {
         } catch(e) {
             Log.error('ArpDelay', 'Failed to create auto-pan stage:', e);
             // Disconnect the worklet node if it was created but we're returning early
-            if (node) { try { node.disconnect(); } catch(e2) {} }
+            if (node) {
+                try { inputNode.disconnect(node); } catch(e2) {}
+                try { node.disconnect(); } catch(e2) {}
+            }
             return { output: inputNode, nodes: [] };
         }
         return { output: panNode, nodes: nodes };
@@ -1484,7 +1497,10 @@ class AudioGraph {
         } catch(e) {
             Log.error('Dusk', 'Failed to create auto-pan stage:', e);
             // Disconnect the worklet node if we're returning early
-            if (duskNode) { try { duskNode.disconnect(); } catch(e2) {} }
+            if (duskNode) {
+                try { inputNode.disconnect(duskNode); } catch(e2) {}
+                try { duskNode.disconnect(); } catch(e2) {}
+            }
             return { output: inputNode, nodes: [] };
         }
     }
@@ -1641,7 +1657,7 @@ class AudioGraph {
             if (Array.isArray(cached) && cached.length > 0) {
                 // Sever only the link leaving the chain: internal wiring is what the
                 // reuse path in buildEffectsChain threads back up.
-                try { cached.chainExit.disconnect(); } catch(e){}
+                if (cached.chainExit) { try { cached.chainExit.disconnect(); } catch(e){} }
             }
         }
     }

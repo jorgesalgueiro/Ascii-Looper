@@ -36,6 +36,9 @@ Created by **Jorge Salgueiro**, **ASCII Looper** is an all-in-one web applicatio
 ### 🎛️ Modular FX Chain & AudioWorklets
 * **Dynamic Signal Routing:** Chain and reorder DSP effects dynamically using text-based key codes (e.g., EQ, Compressor, Distortion, Reverb, Delay).
 * **Extensible Architecture:** Full support for custom `.afx` AudioWorklet modules.
+* **Stable, efficient DSP:** Effect graphs are reused across chain rebuilds to preserve reverb/delay tails; reverb impulse responses are cached; modulation and filter curves use lookup tables instead of per-sample trig; idle worklets take a silent fast path.
+* **Parameter-safe updates:** Synced delays keep tracking BPM without blocking feedback/damping/mix edits, and discrete controls (waveform, mode, scale, harmony voice) snap instead of sweeping through invalid intermediate states. Delay/Arp Delay time converts between seconds and beats when sync is toggled, and the delay line covers 8 beats down to 30 BPM.
+* **Organic Arp Delay:** cubic grain interpolation, sample-rate-independent ~90 ms grains, a brighter tape-damping stage, bounded feedback saturation, and decorrelated stereo wow/drift.
 
 ### 🎚️ Mixing Console & Master Bus
 * **Multi-Input Routing:** Add multiple mic/line/APP sources with the source picker; every added track feeds the INPUT BUS by default. Recording taps the bus before the INPUT BUS fader, so the fader is a monitor control only — record silently with it at 0, or raise it to hear the wet bus.

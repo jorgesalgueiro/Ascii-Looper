@@ -77,3 +77,16 @@ describe('distortion shape parameter (bug #60)', () => {
         assert.ok(ratio !== 1.0, 'shape=0.5 should produce an asymmetric curve');
     });
 });
+
+test('amount=0 is a true bypass instead of tanh saturation', () => {
+    const { context } = createHarness();
+    const curve = vm.runInContext('AudioGraph.makeDistortionCurve(0, 0.5)', context);
+    const mid = (curve.length - 1) / 2;
+    for (const offset of [1, 10, 100, mid]) {
+        const x = offset / mid;
+        assert.ok(Math.abs(curve[mid + offset] - x) < 1e-6,
+            `positive ${x} must pass unchanged`);
+        assert.ok(Math.abs(curve[mid - offset] + x) < 1e-6,
+            `negative ${-x} must pass unchanged`);
+    }
+});
