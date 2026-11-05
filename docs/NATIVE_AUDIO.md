@@ -1247,6 +1247,100 @@ the optional CSV (`ASCII_LOOPER_STATS_FILE`) has matching columns. These made
 the phase bug visible: the ratio sat at the recovery value while the ring did
 not refill.
 
+## Dropout diagnostics and the render-budget limit
+
+Verbose debug now opens with a full snapshot and records native telemetry
+continuously:
+
+- Requested and negotiated engine settings: host, output/input device names,
+  sample rate, requested block, `outputBufferFrames`/`inputBufferFrames`,
+  channel counts, ASIO/WASAPI flags, buffer-fallback flag and bridge port.
+- Rust `get_stats`: callback load (`maxCallbackUs` against the block period),
+  ring fill/target, resample ratio, xruns/underruns/overruns, bridge sequence
+  gaps and latency terms.
+- Bridge Worker counters: sink/source under/overruns, short reads, send errors,
+  sink fill and the longest pump-loop gap.
+- A `render=%` figure: frames produced by the sink worklet divided by the
+  device rate. Below ~97 % the Web Audio graph is not keeping real time and the
+  native ring will drain regardless of Rust performance. `[RENDER STARVED]` is
+  logged with the measured frames/s, and the native status bar shows the same
+  percentage (red when under 97 %).
+- `[NATIVE DROPOUT]` on any counter increase, `[BRIDGE DROPOUT]` on Worker
+  counter increases, and `[DEVICE LOST]` with a snapshot.
+- Click detection now requires a true step (the jump must dwarf the preceding
+  sample slope), so high-frequency drone content no longer produces false
+  `[click:DRONE-BUS] pop` lines.
+
+Stress results on this machine (ASIO 48 kHz, 64-frame block, debug build with
+the WebView2 inspector attached). "Before" is the original voice graph;
+"after" includes the voice/effect CPU work below:
+
+| Graph | Render before | Render after | Underruns after |
+|---|---|---|---|
+| idle | 100 % | 100 % | 0 |
+| 1 drone, 3 effects | 98–99 % | 99 % | 0 |
+| 3 drones, 3 effects | 95 % | 98 % | 0 |
+| 3 drones, 6 effects | 89 % | 94–99 % | 0–40/s |
+| 5 drones, 4 effects | 80 % | 89–91 % | 60–75/s |
+| 5 drones, 12 effects | 49–53 % | 64–78 % | 260–340/s |
+| 5 drones, 12 effects, all stopped | — | 100 % | 0 |
+
+Rust itself is never the limit here: `maxCallbackUs` stayed below 0.4 ms against
+the 1.33 ms block budget (≤ 30 % load).
+
+Bugs and inefficiencies that amplified the problem, now fixed:
+
+1. **Pooled drone voices stayed connected.** Every voice ever used kept four
+   oscillators, the drift buffer and its noise loop running after being returned
+   to the pool. A long session filled the 64-voice pool and the renderer drifted
+   further below real time. `returnVoiceToPool` now disconnects the panner, so
+   Web Audio prunes the idle voice; reuse reconnects it. The voice also owns one
+   persistent noise source instead of allocating a `BufferSource` per note.
+2. **The ring could stay overfilled after a glitch.** When a starved renderer
+   caught up in one burst, hundreds of milliseconds could land in the output
+   ring; the 0.2 % PI slew would take minutes to drain it. The callback now trims
+   anything above twice the target back to the target (counted as an overrun),
+   bounding post-glitch monitoring latency.
+3. **Drive always cost a 2× oversampled waveshaper.** Drive 0 used the identity
+   curve, but the stage still ran with `oversample = '2x'` for every voice.
+   `_setDrivePath` bypasses it entirely at drive 0, and the shaper drops to
+   `oversample = 'none'` below drive 20. It returns on the next note when drive
+   is used.
+4. **Unused oscillators still rendered.** Sub, unison, noise and FM layers were
+   always connected even at gain 0. `_setAuxPath` disconnects the source so Web
+   Audio prunes it; live slider moves reconnect it at gain 0 before the ramp.
+5. **No polyphony ceiling.** A 3 s release at rate 8 stacks 20+ voices per
+   drone. `MAX_VOICES_PER_SYNTH = 16` steals the oldest releasing voice first
+   with a 15 ms fade, bounding the worst case without a hard cut.
+6. **Stopped drones kept their effect chains alive.** Convolution reverbs kept
+   processing silence. Five seconds after a stop (the tail window) the output is
+   disconnected from the bus; `_startSynth` reconnects it. Five stopped drones
+   with 12 effects now render at 100 % with 0 underruns.
+7. **Reverb ran once per drone.** Ten drones with individual reverbs rendered at
+   66 % against an 87 % no-effect baseline — by far the largest per-effect cost.
+   Drones with the same reverb settings now share one wet convolver through a
+   send bus (`_sharedReverbs`). Each drone keeps its own dry/send pair, fed
+   post-volume, so mix, volume, mute and solo remain independent; linearity
+   makes the summed wet output identical to summing the private reverbs.
+   Sharing requires reverb to be the **last enabled effect** in the chain, since
+   the shared wet goes straight to the drone bus. Five drones with reverb now
+   use one convolver (refs=5) and render at 99 % with 0 underruns. The shared
+   node is released when the last drone turns it off, and the key splits when
+   duration/decay/damping/predelay differ.
+   During master stem capture or a drone wet export, sharing is suspended and
+   private reverbs are rebuilt so each stem is complete, then sharing resumes.
+
+Practical guidance: at a 64-frame ASIO block the graph needs headroom. Reduce
+per-drone effects first (convolution reverb is the most expensive), then drone
+polyphony, then raise the block to 128 if the status bar stays below 97 %.
+
+There is no Web Audio setting that makes an arbitrarily heavy graph real time:
+the renderer has a fixed per-sample budget, and the only remaining lever beyond
+the changes above is to stop using hundreds of individual graph nodes. A
+polyphonic `AudioWorkletProcessor` that loops over all voices and effects in one
+processor (shared by browser and Tauri) is the architectural fix; a native Rust
+DSP fork is deliberately avoided because it would break the shared-core rule.
+
 ## Audio setup button and restart safety
 
 **AUDIO SETUP** (Project Menu → Session Controls) stops every transport, closes

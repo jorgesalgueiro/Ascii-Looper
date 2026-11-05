@@ -2576,6 +2576,25 @@ class EffectManager {
         
         if (effectsState[effectName]) {
             // Turning OFF
+            if (type === 'drone' && effectName === 'reverb' && obj._sharedReverb) {
+                // Shared reverb nodes are not in obj.fxChain.nodes; fade the
+                // per-drone dry/send pair instead of cutting the bus abruptly.
+                if (mixTimeMs > 20) {
+                    const now = AudioEngine.currentTime;
+                    const shared = obj._sharedReverb;
+                    AudioEngine.scheduledFade(shared.dryGain, 1.0, now, mixTimeMs);
+                    AudioEngine.scheduledFade(shared.sendGain, 0.0, now, mixTimeMs);
+                    effectsState[effectName] = false;
+                    this.updateUI(obj, type);
+                    const rebuildKey = '_rebuildTimeout_' + effectName;
+                    if (obj[rebuildKey]) clearTimeout(obj[rebuildKey]);
+                    obj[rebuildKey] = setTimeout(() => {
+                        obj[rebuildKey] = null;
+                        this.triggerRebuild(obj, type);
+                    }, mixTimeMs + 50);
+                    return;
+                }
+            }
             let nodes = null;
             if (type === 'input' && obj.masterChain) nodes = obj.masterChain.nodes[effectName];
             else if (type === 'drone' && obj.fxChain) nodes = obj.fxChain.nodes[effectName];
@@ -3221,6 +3240,20 @@ class EffectManager {
             const id = parseInt(this.activeTab.split('-')[1]);
             const synth = DroneSynth.instances[id];
             if (synth) {
+                // A shared reverb lives outside this drone's node list. Mix and
+                // volume fold into the local dry/send gains; damp/predelay
+                // change the share key, so the chain is rebuilt (which either
+                // joins another shared instance or starts a new one).
+                if (synth._sharedReverb && effectType === 'reverb') {
+                    if (param === 'mix' || param === 'volume') {
+                        DroneSynth._updateSharedReverbGains(synth, now, 25);
+                        return;
+                    }
+                    if (param === 'damp' || param === 'predelay') {
+                        DroneSynth.rebuildFxChain(id);
+                        return;
+                    }
+                }
                 const mockLoop = { graph: {
                     nodes: { effects: synth.fxChain.nodes },
                     // Drones have no AudioGraph either: borrow the builder that owns the

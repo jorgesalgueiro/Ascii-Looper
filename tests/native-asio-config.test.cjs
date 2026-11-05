@@ -9,7 +9,7 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '../Modules/native-audio.js'), 'utf8');
 
-function harness(values) {
+function harness(values, extra = {}) {
     const ids = new Map([
         ['nativeHostSelect', { value: values.host || '' }],
         ['nativeOutputSelect', { value: values.output || '' }],
@@ -29,7 +29,10 @@ function harness(values) {
         URL,
         AudioWorkletNode: function AudioWorkletNode() {},
         SharedArrayBuffer,
-        __TAURI__: { core: { invoke: async () => ({}) } }
+        __TAURI__: { core: { invoke: async () => ({}) } },
+        dispatchEvent: () => {},
+        CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init && init.detail; } },
+        ...extra
     };
     context.window = context;
     vm.createContext(context);
@@ -95,4 +98,17 @@ test('WASAPI keeps independent input and output devices', () => {
 test('the browser host has no native config', () => {
     const { native } = harness({ host: '', output: 'asio:whatever' });
     assert.equal(native.getSelectedConfig(), null);
+});
+
+test('render load is the sink production rate relative to the device rate', () => {
+    let now = 0;
+    const { native } = harness({}, { performance: { now: () => now } });
+    native.info = { sampleRate: 48000 };
+    native._onWorkerMessage({ type: 'stats', sentFrames: 0 });
+    now = 1000;
+    native._onWorkerMessage({ type: 'stats', sentFrames: 48000 });
+    assert.equal(Math.round(native.renderLoad * 100), 100);
+    now = 2000;
+    native._onWorkerMessage({ type: 'stats', sentFrames: 48000 + 28800 });
+    assert.equal(Math.round(native.renderLoad * 100), 60);
 });

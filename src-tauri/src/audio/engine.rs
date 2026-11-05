@@ -340,6 +340,35 @@ fn estimate_path_us(block: u32, ring_frames: u32, rate: u32) -> u64 {
     ((block as u64 + ring_frames as u64) * 1_000_000) / rate as u64
 }
 
+/// Drop the oldest buffered frames until `target_frames` remain.
+///
+/// A renderer that fell behind can catch up in one large burst (observed after
+/// an overload: ~480 ms landed in the ring at once). The fill PI only drains at
+/// 0.2 %, so without this trim a monitoring session would sit at ~0.5 s of
+/// latency for minutes after the glitch. Discarding the excess is a single
+/// short skip in audio that was already interrupted, and keeps latency bounded.
+fn drain_to_target(consumer: &mut AudioConsumer, target_frames: f64, scratch: &mut [f32]) -> usize {
+    let target = target_frames.max(0.0) as usize;
+    let buffered = consumer.occupied_len() / 2;
+    if buffered <= target {
+        return 0;
+    }
+    let mut excess = buffered - target;
+    let requested = excess;
+    while excess > 0 {
+        let chunk = excess.min(scratch.len() / 2);
+        if chunk == 0 {
+            break;
+        }
+        let got = pop(consumer, &mut scratch[..chunk * 2]) / 2;
+        if got == 0 {
+            break;
+        }
+        excess -= got;
+    }
+    requested - excess
+}
+
 /// cpal surfaces backend xruns and non-fatal scheduling notices through the
 /// same stream error callback as genuine device removal. Only terminal errors
 /// may set `device_lost`: JACK reports every xrun this way, and treating those
@@ -575,7 +604,20 @@ impl OutputCallback {
             self.warmup_callbacks -= 1;
         }
 
-        let fill_frames = self.consumer.occupied_len() / 2;
+        let mut fill_frames = self.consumer.occupied_len() / 2;
+        // A burst after a renderer stall can leave hundreds of milliseconds in
+        // the ring. Bound the latency instead of waiting for the 0.2 % PI slew.
+        let max_fill = (self.target_frames * 2.0) as usize;
+        if fill_frames > max_fill {
+            let dropped = drain_to_target(&mut self.consumer, self.target_frames, &mut self.pop_buf);
+            if dropped > 0 {
+                self.resampler.reset();
+                self.hold_l = 0.0;
+                self.hold_r = 0.0;
+                self.stats.record_overrun();
+                fill_frames = self.consumer.occupied_len() / 2;
+            }
+        }
         self.stats
             .ring_fill_frames
             .store(fill_frames as u32, Ordering::Relaxed);
@@ -878,5 +920,39 @@ mod tests {
         handle_stream_error(&stats, cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable));
         assert!(stats.device_lost.load(Ordering::Relaxed));
         assert_eq!(stats.xruns.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn excess_ring_fill_is_trimmed_back_to_the_target() {
+        let (mut producer, mut consumer) = make_ring(8_000);
+        let data: Vec<f32> = (0..3_000 * 2).map(|i| i as f32).collect();
+        push(&mut producer, &data);
+        assert_eq!(consumer.occupied_len() / 2, 3_000);
+
+        let mut scratch = vec![0.0f32; 1_024 * 2];
+        let dropped = drain_to_target(&mut consumer, 1_504.0, &mut scratch);
+        assert_eq!(dropped, 3_000 - 1_504);
+        assert_eq!(consumer.occupied_len() / 2, 1_504);
+    }
+
+    #[test]
+    fn drain_to_target_is_a_noop_below_the_target() {
+        let (mut producer, mut consumer) = make_ring(4_000);
+        let data: Vec<f32> = (0..500 * 2).map(|i| i as f32).collect();
+        push(&mut producer, &data);
+        let mut scratch = vec![0.0f32; 1_024 * 2];
+        assert_eq!(drain_to_target(&mut consumer, 1_504.0, &mut scratch), 0);
+        assert_eq!(consumer.occupied_len() / 2, 500);
+    }
+
+    #[test]
+    fn drain_to_target_handles_more_excess_than_one_scratch_buffer() {
+        let (mut producer, mut consumer) = make_ring(64_000);
+        let data: Vec<f32> = (0..24_000 * 2).map(|i| i as f32).collect();
+        push(&mut producer, &data);
+        let mut scratch = vec![0.0f32; 4_096 * 2];
+        let dropped = drain_to_target(&mut consumer, 1_504.0, &mut scratch);
+        assert_eq!(dropped, 24_000 - 1_504);
+        assert_eq!(consumer.occupied_len() / 2, 1_504);
     }
 }

@@ -1103,7 +1103,7 @@ class AudioGraph {
         wet.connect(output);
         dry.connect(output);
 
-        return { output, input: predelay, dry, nodes: [convolver, dry, wet, output, damp, predelay] };
+        return { output, input: predelay, dry, wet, nodes: [convolver, dry, wet, output, damp, predelay] };
     }
     
     _createMachineReverb(inputNode) {

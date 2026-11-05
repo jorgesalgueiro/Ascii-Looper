@@ -20,6 +20,7 @@ Created by **Jorge Salgueiro**, **ASCII Looper** is an all-in-one web applicatio
 ### 🎹 Drone Synth (Dark Wave Synthesizer)
 * **10 Polyphonic Synths:** Virtual analog synth engines with dual oscillators and sub-oscillators.
 * **Synthesis & Modulation:** Frequency Modulation (FM), ADSR envelopes, multi-mode filters, and LFOs.
+* **Musical envelopes and FX:** Filter `Env Mod` now attacks then decays to the sustain level instead of staying fully open; per-drone FX chains reuse existing graphs so reverb/delay tails survive effect toggles.
 * **Algorithmic Rhythm Generators:** Built-in Euclidean pattern generators and Chaos algorithms for atmospheric and evolving soundscapes.
 
 ### 📊 Song Tracker & Automation

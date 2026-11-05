@@ -1266,7 +1266,7 @@ class ProjectManager {
                         } catch (e) {
                             Log.error('ProjectManager', `Wet export decode failed for loop ${id+1}:`, e);
                             if(btn) btn.textContent = "SAVE";
-                        } finally { this._exporting = false; }
+                        } finally { this._exporting = false; if (window.DroneSynth && typeof DroneSynth.setSharedReverbEnabled === 'function') DroneSynth.setSharedReverbEnabled(true); }
                     };
                     rec.stop();
                 } catch (e) {
@@ -1294,6 +1294,9 @@ class ProjectManager {
             wetRec.ondataavailable = e => wetChunks.push(e.data);
 
             const wasPlaying = synth.state === 'playing' || synth.state === 'stopping';
+            // The wet stem must contain this drone's reverb, so suspend the
+            // shared bus and rebuild private reverbs before capture starts.
+            if (typeof DroneSynth.setSharedReverbEnabled === 'function') DroneSynth.setSharedReverbEnabled(false);
             dryRec.start(); wetRec.start();
             if (!wasPlaying) DroneSynth._startSynth(id);
             
@@ -1320,7 +1323,7 @@ class ProjectManager {
                         } catch (e) {
                             Log.error('ProjectManager', `Drone wet export decode failed for drone ${id+1}:`, e);
                             if(btn) btn.textContent = "WAV";
-                        } finally { this._exporting = false; }
+                        } finally { this._exporting = false; if (window.DroneSynth && typeof DroneSynth.setSharedReverbEnabled === 'function') DroneSynth.setSharedReverbEnabled(true); }
                     };
                     dryRec.onstop = checkDone;
                     wetRec.onstop = checkDone;
@@ -1330,6 +1333,7 @@ class ProjectManager {
                     Log.error('ProjectManager', `Drone wet export stop failed for drone ${id+1}:`, e);
                     if(btn) btn.textContent = "WAV";
                     this._exporting = false;
+                    if (window.DroneSynth && typeof DroneSynth.setSharedReverbEnabled === 'function') DroneSynth.setSharedReverbEnabled(true);
                 }
             }, dur * 1000);
         }

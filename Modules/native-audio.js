@@ -182,6 +182,8 @@ registerProcessor('native-source-processor', NativeSourceProcessor);
             this._helloReceived = false;
             this._helloWaiters = [];
             this.deviceLost = false;
+            this.renderLoad = null;
+            this._renderSample = null;
             await this._listenEvents();
             this._startPolling();
             // Open the bridge immediately so `hello` reports the real input
@@ -189,6 +191,7 @@ registerProcessor('native-source-processor', NativeSourceProcessor);
             this._ensureWorker({ sampleRate: info.sampleRate });
             await this._waitForHello(1500);
             this._updateStatus();
+            window.dispatchEvent(new CustomEvent('native-audio-started', { detail: info }));
             return info;
         }
 
@@ -246,6 +249,8 @@ registerProcessor('native-source-processor', NativeSourceProcessor);
             }
             this.info = null;
             this._stats = null;
+            this.renderLoad = null;
+            this._renderSample = null;
             this._updateStatus();
         }
 
@@ -293,11 +298,14 @@ registerProcessor('native-source-processor', NativeSourceProcessor);
                 } else {
                     const stats = this._stats || {};
                     const lost = this.deviceLost ? ' / DEVICE LOST — reconnect and use AUDIO SETUP' : '';
+                    const load = this.renderLoad;
+                    const render = load == null ? '' : ` / render ${Math.round(load * 100)}%`;
                     element.textContent =
                         `${this.info.hostId.toUpperCase()} ${this.info.sampleRate} Hz` +
                         ` / block ${this.info.outputBufferFrames || this.info.blockFrames}` +
                         ` / bridge ${stats.bridgeConnected ? 'open' : this._workerStatus}` +
-                        ` / xruns ${stats.xruns ?? 0}` + lost;
+                        ` / xruns ${stats.xruns ?? 0}` + render + lost;
+                    element.style.color = (load != null && load < 0.97) ? '#f66' : '';
                 }
             }
             const driverInfo = document.getElementById('driverInfo');
@@ -358,11 +366,35 @@ registerProcessor('native-source-processor', NativeSourceProcessor);
                     break;
                 case 'stats':
                     this._workerStats = message;
+                    this._sampleRenderLoad(message);
                     window.dispatchEvent(new CustomEvent('native-worker-stats', { detail: message }));
                     break;
                 default:
                     break;
             }
+        }
+
+        /**
+         * The sink worklet is the real-time producer. `sentFrames` over time is
+         * the only direct measure of whether the Web Audio graph keeps up with
+         * the device; when it falls below 100 %, the native ring drains and the
+         * user hears dropouts no matter how cheap the Rust callback is.
+         */
+        static _sampleRenderLoad(message) {
+            const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+            const sent = message.sentFrames || 0;
+            const previous = this._renderSample;
+            if (!previous) {
+                this._renderSample = { at: now, sentFrames: sent };
+                return;
+            }
+            const dt = (now - previous.at) / 1000;
+            if (dt < 0.4) return;
+            const rate = (this.info && this.info.sampleRate) || 48000;
+            const produced = Math.max(0, sent - previous.sentFrames);
+            this.renderLoad = rate > 0 ? Math.min(2, produced / dt / rate) : null;
+            this._renderSample = { at: now, sentFrames: sent };
+            this._updateStatus();
         }
 
         /**
@@ -747,6 +779,8 @@ registerProcessor('native-source-processor', NativeSourceProcessor);
     NativeAudio.info = null;
     NativeAudio.deviceLost = false;
     NativeAudio.isolated = null;
+    NativeAudio.renderLoad = null;
+    NativeAudio._renderSample = null;
     NativeAudio.TRANSPORT_SECONDS = TRANSPORT_SECONDS;
     global.NativeAudio = NativeAudio;
 })(window);

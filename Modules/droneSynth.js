@@ -64,6 +64,25 @@ class DroneSynth {
     static instances = [];
     static MAX_INSTANCES = 20;
     static MAX_POOL_SIZE = 64;
+    // Hard ceiling on simultaneously sounding voices per drone. A long release
+    // (e.g. a 3 s pad at rate 8) otherwise stacks 20+ voices, each with four
+    // oscillators, two filters and a noise loop, and the renderer falls below
+    // real time. The oldest releasing voice is stolen first with a short fade.
+    static MAX_VOICES_PER_SYNTH = 16;
+    // Shared convolution-reverb bus. Reverb is by far the most expensive
+    // per-drone effect (10-drone measurement: 66 % render with reverb vs 87 %
+    // without). One convolver can process the summed input of every drone with
+    // the same reverb settings; linearity makes the summed wet output identical
+    // to summing each drone's own wet output.
+    static _sharedReverbs = new Map();
+    // Stem capture and wet export need a private reverb per drone so each wet
+    // stem is complete. Sharing is suspended for the duration and restored
+    // afterwards.
+    static SHARE_REVERB = true;
+    // After a drone stops, its effects (especially convolution reverbs) keep
+    // processing silence while still connected. Give the tail time to decay,
+    // then drop the chain from the bus; starting the drone reconnects it.
+    static IDLE_DISCONNECT_MS = 5000;
     static bus = null;
     static helperGraph = null;
     static noiseBuffers = {};
@@ -171,6 +190,8 @@ class DroneSynth {
             }
         } else {
             this.instances.forEach(synth => {
+                this._releaseSharedReverb(synth);
+                if (synth._idleDisconnectTimer) { clearTimeout(synth._idleDisconnectTimer); synth._idleDisconnectTimer = null; }
                 if (synth.output) try { synth.output.disconnect(); } catch(e){}
                 if (synth.fxInput) try { synth.fxInput.disconnect(); } catch(e){}
                 if (synth.analyser) try { synth.analyser.disconnect(); } catch(e){}
@@ -186,12 +207,19 @@ class DroneSynth {
                 Object.values(synth.voices).forEach(v => {
                     try { v.osc1.stop(); v.osc2.stop(); v.sub.stop(); v.uni.stop(); } catch(e){}
                     try { v.vib.stop(); v.lfo.stop(); if (v.driftSrc) v.driftSrc.stop(); } catch(e){}
+                    try { if (v.noiseSrc) v.noiseSrc.stop(); } catch(e){}
                     // Disconnect panner from fxInput/dryDestination to prevent orphaned graph nodes
                     try { v.panner.disconnect(); } catch(e){}
                 });
                 synth.voices = {}; // Clear active old context voices
                 if (state.audioContext) synth.wetDestination = state.audioContext.createMediaStreamDestination();
             });
+            // Any shared reverbs from the old context are stale now.
+            for (const entry of this._sharedReverbs.values()) {
+                try { if (entry.output) entry.output.disconnect(); } catch (e) {}
+                try { if (this.helperGraph && entry.nodes) this.helperGraph.destroyEffects({ reverb: entry.nodes }); } catch (e) {}
+            }
+            this._sharedReverbs.clear();
         }
         this.renderAll();
         this.bindStepEditor();
@@ -1008,32 +1036,206 @@ class DroneSynth {
         if(container) container.innerHTML = this.generateFxTogglesHtml(synth);
     }
 
+    // ---- Shared reverb send ----
+    // The key excludes mix/volume: those are folded into each drone's send and
+    // dry gains, so drones can share the wet processor with different mixes.
+    static _reverbShareKey(synth) {
+        const p = (synth && synth.fxParams && synth.fxParams.reverb) || {};
+        const sampleRate = state.audioContext ? state.audioContext.sampleRate : 0;
+        return [
+            'reverb',
+            sampleRate,
+            p.room || '',
+            Math.round((p.duration ?? 1.2) * 1000),
+            Math.round((p.decay ?? 1.8) * 1000),
+            Math.round(p.damp ?? 20000),
+            Math.round((p.predelay ?? 0) * 1000),
+        ].join('|');
+    }
+
+    static _acquireSharedReverb(synth) {
+        if (!this.helperGraph || !state.audioContext || !this.bus) return null;
+        const key = this._reverbShareKey(synth);
+        let entry = this._sharedReverbs.get(key);
+        if (!entry) {
+            const ctx = state.audioContext;
+            const input = ctx.createGain();
+            const built = this.helperGraph._createReverb(input);
+            if (!built || !built.output) return null;
+            // Wet-only: the dry path stays in each drone's own chain, so the
+            // shared processor must not add the summed dry signal again.
+            try {
+                if (built.dry) input.disconnect(built.dry);
+            } catch (e) {}
+            if (built.dry) built.dry.gain.value = 0;
+            if (built.wet) built.wet.gain.value = 1;
+            built.output.gain.value = 1;
+            try { built.output.connect(this.bus); } catch (e) {}
+            entry = {
+                key,
+                input,
+                output: built.output,
+                nodes: built.nodes,
+                refs: 0,
+            };
+            this._sharedReverbs.set(key, entry);
+        }
+        entry.refs += 1;
+        return entry;
+    }
+
+    static _releaseSharedReverb(synth) {
+        const shared = synth && synth._sharedReverb;
+        if (!shared) return;
+        if (synth.output && shared.sendGain) {
+            try { synth.output.disconnect(shared.sendGain); } catch (e) {}
+        }
+        try { if (shared.sendGain) shared.sendGain.disconnect(); } catch (e) {}
+        try { if (shared.dryGain) shared.dryGain.disconnect(); } catch (e) {}
+        synth._sharedReverb = null;
+        const entry = this._sharedReverbs.get(shared.key);
+        if (!entry) return;
+        entry.refs -= 1;
+        if (entry.refs <= 0) {
+            try { if (entry.output) entry.output.disconnect(); } catch (e) {}
+            try {
+                if (this.helperGraph && entry.nodes) this.helperGraph.destroyEffects({ reverb: entry.nodes });
+            } catch (e) {}
+            this._sharedReverbs.delete(shared.key);
+        }
+    }
+
+    static _updateSharedReverbGains(synth, now, fadeMs = 0) {
+        const shared = synth && synth._sharedReverb;
+        if (!shared) return false;
+        const p = (synth.fxParams && synth.fxParams.reverb) || {};
+        const mix = Math.max(0, Math.min(1, p.mix ?? 0.15));
+        const volume = p.volume ?? 1;
+        const dry = (1 - mix) * volume;
+        const wet = mix * volume;
+        const t = Number.isFinite(now) ? now : (state.audioContext ? state.audioContext.currentTime : 0);
+        const apply = (param, value) => {
+            if (!param) return;
+            try {
+                param.cancelScheduledValues(t);
+                try { param.setValueAtTime(param.value, t); } catch (e) {}
+                if (fadeMs > 20) param.linearRampToValueAtTime(value, t + fadeMs / 1000);
+                else param.setValueAtTime(value, t);
+            } catch (e) {}
+        };
+        apply(shared.dryGain && shared.dryGain.gain, dry);
+        apply(shared.sendGain && shared.sendGain.gain, wet);
+        return true;
+    }
+
+    static rebuildAllFxChains() {
+        (this.instances || []).forEach(synth => {
+            if (synth && synth.fxInput) {
+                try { this.rebuildFxChain(synth.id); } catch (e) {}
+            }
+        });
+    }
+
+    static setSharedReverbEnabled(enabled) {
+        const next = !!enabled;
+        if (this.SHARE_REVERB === next) return;
+        this.SHARE_REVERB = next;
+        this.rebuildAllFxChains();
+    }
+
     static rebuildFxChain(id = -1, fadeInEffectName = null, mixTimeMs = 0) {
         const synth = (id >= 0) ? this.instances[id] : this.instances[0];
         if (!synth || !synth.fxInput || !state.audioContext) return;
         if (!this.helperGraph) this.helperGraph = new AudioGraph(new Loop(-1));
         this.helperGraph.loop.params = synth.fxParams;
 
-        // Cleanup
+        // Drop the previous shared send before rebuilding; this decrements the
+        // reference count and destroys the convolver when the last drone leaves.
+        this._releaseSharedReverb(synth);
+
+        // Cleanup old chain exits but keep effect internals for reuse, so
+        // toggling one drone effect does not destroy every delay/reverb tail.
         if (synth.fxChain.end) try { synth.fxChain.end.disconnect(); } catch(e){}
         if (synth.fxInput) try { synth.fxInput.disconnect(); } catch(e){}
-        if (this.helperGraph) this.helperGraph.destroyEffects(synth.fxChain.nodes);
+        const oldEffects = synth.fxChain.nodes || {};
+        if (this.helperGraph && typeof this.helperGraph.detachEffects === 'function') this.helperGraph.detachEffects(oldEffects);
         synth.fxChain.nodes = {};
+
+        const enabled = [];
+        for (const char of synth.signalChain) {
+            const fxName = this.helperGraph._getEffectByChar(char);
+            if (fxName && synth.fxState[fxName]) enabled.push(fxName);
+        }
+        // Only the last enabled effect can be shared: its wet output then goes
+        // straight to the bus, so summing it is mathematically identical to
+        // summing each drone's own wet output. Reverb is the expensive one.
+        const shareReverb = this.SHARE_REVERB &&
+            enabled.length > 0 &&
+            enabled[enabled.length - 1] === 'reverb' &&
+            typeof this.helperGraph._createReverb === 'function';
+        const limit = shareReverb ? enabled.length - 1 : enabled.length;
 
         let lastNode = synth.fxInput;
         
-        for (const char of synth.signalChain) {
-            const fxName = this.helperGraph._getEffectByChar(char);
-            if (fxName && synth.fxState[fxName]) {
-                const res = this.helperGraph._createEffectNode(fxName, lastNode);
+        for (let i = 0; i < limit; i++) {
+            const fxName = enabled[i];
+            const cached = oldEffects[fxName];
+            let res;
+            if (Array.isArray(cached) && cached.chainExit) {
+                const entry = cached.chainEntry;
+                if (entry) lastNode.connect(entry);
+                if (cached.chainDry) lastNode.connect(cached.chainDry);
+                res = { output: cached.chainExit, nodes: cached };
+                delete oldEffects[fxName];
+            } else {
+                res = this.helperGraph._createEffectNode(fxName, lastNode);
+            }
+            lastNode = res.output;
+            synth.fxChain.nodes[fxName] = res.nodes;
+            
+            if (fxName === fadeInEffectName && mixTimeMs > 20) {
+                EffectManager.applyMixInFade(res.nodes, fxName, mixTimeMs, synth.fxParams);
+            }
+        }
+
+        if (shareReverb) {
+            const shared = this._acquireSharedReverb(synth);
+            if (shared) {
+                const p = synth.fxParams.reverb || {};
+                const mix = Math.max(0, Math.min(1, p.mix ?? 0.15));
+                const volume = p.volume ?? 1;
+                const dryGain = state.audioContext.createGain();
+                const sendGain = state.audioContext.createGain();
+                const now = state.audioContext.currentTime;
+                if (fadeInEffectName === 'reverb' && mixTimeMs > 20) {
+                    try {
+                        dryGain.gain.setValueAtTime(1, now);
+                        sendGain.gain.setValueAtTime(0, now);
+                        dryGain.gain.linearRampToValueAtTime((1 - mix) * volume, now + mixTimeMs / 1000);
+                        sendGain.gain.linearRampToValueAtTime(mix * volume, now + mixTimeMs / 1000);
+                    } catch (e) {
+                        dryGain.gain.value = (1 - mix) * volume;
+                        sendGain.gain.value = mix * volume;
+                    }
+                } else {
+                    dryGain.gain.value = (1 - mix) * volume;
+                    sendGain.gain.value = mix * volume;
+                }
+                try { lastNode.connect(dryGain); } catch (e) {}
+                lastNode = dryGain;
+                synth._sharedReverb = { key: shared.key, input: shared.input, dryGain, sendGain };
+            } else {
+                // No context/bus: fall back to a private reverb instance.
+                const res = this.helperGraph._createEffectNode('reverb', lastNode);
                 lastNode = res.output;
-                synth.fxChain.nodes[fxName] = res.nodes;
-                
-                if (fxName === fadeInEffectName && mixTimeMs > 20) {
-                    EffectManager.applyMixInFade(res.nodes, fxName, mixTimeMs, synth.fxParams);
+                synth.fxChain.nodes.reverb = res.nodes;
+                if (fadeInEffectName === 'reverb' && mixTimeMs > 20) {
+                    EffectManager.applyMixInFade(res.nodes, 'reverb', mixTimeMs, synth.fxParams);
                 }
             }
         }
+
+        if (this.helperGraph) this.helperGraph.destroyEffects(oldEffects);
 
         if (!synth.output) {
             synth.output = state.audioContext.createGain();
@@ -1061,6 +1263,14 @@ class DroneSynth {
         if (this.bus) synth.output.connect(this.bus);
         if (synth.wetDestination) {
             try { synth.output.connect(synth.wetDestination); } catch(e) {}
+        }
+        synth.outputConnected = true;
+
+        // Shared reverb is fed post-volume so mute/solo and the channel fader
+        // apply to the send as well. Its output already lands on the drone bus.
+        if (synth._sharedReverb) {
+            try { synth.output.connect(synth._sharedReverb.sendGain); } catch (e) {}
+            try { synth._sharedReverb.sendGain.connect(synth._sharedReverb.input); } catch (e) {}
         }
     }
 
@@ -1164,6 +1374,33 @@ class DroneSynth {
         if(window.UIManager && UIManager.updateLiveDrone) UIManager.updateLiveDrone(id);
     }
 
+    // Wire a synth's post-volume output back into the bus/analyser/stem. Used
+    // when a stopped drone is restarted after its idle chain was released.
+    static _connectOutput(synth) {
+        if (!synth || !synth.output) return;
+        if (synth._idleDisconnectTimer) {
+            clearTimeout(synth._idleDisconnectTimer);
+            synth._idleDisconnectTimer = null;
+        }
+        if (synth.outputConnected === true) return;
+        try { synth.output.disconnect(); } catch(e) {}
+        try { if (synth.analyser) synth.output.connect(synth.analyser); } catch(e) {}
+        if (this.bus) { try { synth.output.connect(this.bus); } catch(e) {} }
+        if (synth.wetDestination) { try { synth.output.connect(synth.wetDestination); } catch(e) {} }
+        synth.outputConnected = true;
+    }
+
+    static _scheduleIdleDisconnect(synth) {
+        if (!synth || !synth.output) return;
+        if (synth._idleDisconnectTimer) clearTimeout(synth._idleDisconnectTimer);
+        synth._idleDisconnectTimer = setTimeout(() => {
+            synth._idleDisconnectTimer = null;
+            if (synth.state !== 'stopped' || !synth.output) return;
+            try { synth.output.disconnect(); } catch(e) {}
+            synth.outputConnected = false;
+        }, DroneSynth.IDLE_DISCONNECT_MS);
+    }
+
     static _startSynth(id, scheduledTime = 0) {
         const synth = this.instances[id];
         if (!synth || !state.audioContext) return;
@@ -1187,6 +1424,7 @@ class DroneSynth {
         }
         synth.state = targetTime > now + 0.001 ? 'armed' : 'playing';
         synth.lastFreq = null;
+        this._connectOutput(synth);
         if (state.audioContext.state === 'suspended') AudioEngine.resume();
 
         if (synth.state === 'armed') {
@@ -1237,6 +1475,7 @@ class DroneSynth {
         synth.lastVisualIndex = -1;
         Object.keys(synth.voices).forEach(voiceId => this.noteOff(id, voiceId, true));
         if (synth.isRecording) this.toggleRecord(id);
+        this._scheduleIdleDisconnect(synth);
         this.updateDroneUI(id);
     }
 
@@ -1268,10 +1507,84 @@ class DroneSynth {
         return Math.max(-maxDepth, Math.min(maxDepth, depth));
     }
 
+    // Route the oscillator mix around the drive waveshaper when it is not
+    // needed. A drive amount of 0 used the identity curve, but the node still
+    // ran -- with 2x oversampling -- for every voice. Bypassing it removes a
+    // whole render-time stage for the common case.
+    static _setDrivePath(v, active) {
+        if (!v || !v.drive || !v.filter) return;
+        if (v.driveActive === active) return;
+        const sources = [v.oscMix, v.subMix, v.noiseGain].filter(Boolean);
+        for (const source of sources) {
+            try { source.disconnect(v.drive); } catch(e) {}
+            try { source.disconnect(v.filter); } catch(e) {}
+        }
+        try { v.drive.disconnect(v.filter); } catch(e) {}
+        if (active) {
+            for (const source of sources) {
+                try { source.connect(v.drive); } catch(e) {}
+            }
+            try { v.drive.connect(v.filter); } catch(e) {}
+        } else {
+            for (const source of sources) {
+                try { source.connect(v.filter); } catch(e) {}
+            }
+        }
+        v.driveActive = active;
+    }
+
+    // Disconnect an auxiliary oscillator path when its mix is zero. Web Audio
+    // prunes nodes with no path to the destination, so an unused sub/unison/
+    // noise/FM layer costs nothing instead of rendering silence forever.
+    static _setAuxPath(v, kind, active) {
+        if (!v) return;
+        const flag = `${kind}Connected`;
+        if (v[flag] === undefined) v[flag] = true;
+        if (v[flag] === active) return;
+        try {
+            if (kind === 'uni') {
+                if (active) v.uni.connect(v.uniGain); else v.uni.disconnect(v.uniGain);
+            } else if (kind === 'sub') {
+                if (active) v.sub.connect(v.subMix); else v.sub.disconnect(v.subMix);
+            } else if (kind === 'noise') {
+                if (active) v.noiseSrc.connect(v.noiseGain); else v.noiseSrc.disconnect(v.noiseGain);
+            } else if (kind === 'fm') {
+                if (active) v.fmGain.connect(v.osc2.frequency); else v.fmGain.disconnect(v.osc2.frequency);
+            }
+            v[flag] = active;
+        } catch(e) {}
+    }
+
+    static _stealVoices(synth, incoming = 1) {
+        const cap = DroneSynth.MAX_VOICES_PER_SYNTH;
+        if (!cap || !synth) return;
+        const ids = Object.keys(synth.voices || {});
+        let need = ids.length + incoming - cap;
+        if (need <= 0) return;
+        // Releasing voices are nearly inaudible: steal those first, oldest
+        // first, then the oldest sustained voice if the cap is still exceeded.
+        const candidates = ids
+            .map(id => ({ id, voice: synth.voices[id] }))
+            .sort((a, b) => {
+                const ar = a.voice.releasing ? 0 : 1;
+                const br = b.voice.releasing ? 0 : 1;
+                if (ar !== br) return ar - br;
+                return (a.voice.startedAt || 0) - (b.voice.startedAt || 0);
+            });
+        for (const candidate of candidates) {
+            if (need <= 0) break;
+            try { DroneSynth.noteOff(synth.id, candidate.id, true); } catch(e) {}
+            delete synth.voices[candidate.id];
+            need -= 1;
+        }
+    }
+
     static triggerVoice(synth, freq, duration, time, accent = 1.0) {
         const ctx = state.audioContext;
         if (!ctx || ctx.state !== 'running') return;
+        this._stealVoices(synth, 1);
         const v = this.getVoiceFromPool(ctx);
+        v.startedAt = time;
         const now = Math.max(time, ctx.currentTime + 0.005);
         const rel = Math.max(0.005, synth.params.release || 0.5);
         
@@ -1363,6 +1676,9 @@ class DroneSynth {
         v.filter2.Q.value = synth.params.res * 0.4 * 1.15; // scaled to avoid stacked resonance blowup
         const baseCutoff = synth.params.cutoff;
         const peakCutoff = Math.min(22000, Math.max(20, baseCutoff + synth.params.envMod));
+        const filterSustain = Math.max(0, Math.min(1, synth.params.sustain ?? 0.8));
+        const filterDecay = Math.max(0.005, synth.params.decay || 0.2);
+        const settleCutoff = Math.min(22000, Math.max(15, baseCutoff + synth.params.envMod * filterSustain));
         const atkDur = synth.params.attack || 0.05;
         const atkEnd = now + startOffset + atkDur;
         const releaseTime = synth.params.release || 0.1;
@@ -1372,18 +1688,33 @@ class DroneSynth {
         v.filter.frequency.linearRampToValueAtTime(Math.max(15, baseCutoff), now + startOffset);
         if (Math.abs(peakCutoff - baseCutoff) > 0.1) {
             v.filter.frequency.exponentialRampToValueAtTime(Math.max(15, peakCutoff), atkEnd + 0.001);
+            if (Math.abs(settleCutoff - peakCutoff) > 0.1) {
+                v.filter.frequency.setTargetAtTime(Math.max(15, settleCutoff), atkEnd + 0.001, filterDecay / 3);
+            }
         }
         v.filter2.frequency.cancelScheduledValues(now);
         try { v.filter2.frequency.setValueAtTime(v.filter2.frequency.value, now); } catch(e){}
         v.filter2.frequency.linearRampToValueAtTime(Math.max(15, baseCutoff), now + startOffset);
         if (Math.abs(peakCutoff - baseCutoff) > 0.1) {
             v.filter2.frequency.exponentialRampToValueAtTime(Math.max(15, peakCutoff), atkEnd + 0.001);
+            if (Math.abs(settleCutoff - peakCutoff) > 0.1) {
+                v.filter2.frequency.setTargetAtTime(Math.max(15, settleCutoff), atkEnd + 0.001, filterDecay / 3);
+            }
         }
 
         // Drive, Vibrato & LFO
         const driveAmount = synth.params.drive || 0;
-        const newCurve = DroneSynth.getDriveCurve(driveAmount);
-        if (v.drive.curve !== newCurve) v.drive.curve = newCurve;
+        this._setDrivePath(v, driveAmount > 0);
+        v.drive.oversample = driveAmount > 0 ? '2x' : 'none';
+        v.shaper.oversample = driveAmount > 20 ? '2x' : 'none';
+        if (driveAmount > 0) {
+            const newCurve = DroneSynth.getDriveCurve(driveAmount);
+            if (v.drive.curve !== newCurve) v.drive.curve = newCurve;
+        }
+        this._setAuxPath(v, 'uni', (synth.params.unison || 0) > 0.001);
+        this._setAuxPath(v, 'sub', (synth.params.subMix || 0) > 0.001);
+        this._setAuxPath(v, 'noise', (synth.params.noiseMix || 0) > 0.001);
+        this._setAuxPath(v, 'fm', (synth.params.fmAmt || 0) > 0.001);
 
         v.vib.frequency.cancelScheduledValues(now);
         v.vib.frequency.setValueAtTime(synth.params.vibratoRate || 5, now + startOffset);
@@ -1434,12 +1765,7 @@ class DroneSynth {
         v.panner.connect(synth.fxInput);
         if (!synth.dryDestination) synth.dryDestination = ctx.createMediaStreamDestination();
         v.panner.connect(synth.dryDestination);
-        const noise = this.createNoise(ctx, synth.params.noiseType || 'white');
-        noise.connect(v.noiseGain);
-        const noiseOffset = Math.random() * noise.buffer.duration;
-        noise.start(now, noiseOffset);
-        noise.stop(now + duration + rel + 0.1);
-        v.nodes[7] = noise;
+        this.applyNoiseColor(v, ctx, synth.params.noiseType || 'white');
 
         // Tracking & Cleanup
         const uid = `seq_${Math.random()}`;
@@ -1486,6 +1812,17 @@ class DroneSynth {
     }
 
     static createNoise(ctx, type = 'white') {
+        const node = ctx.createBufferSource();
+        node.buffer = this.getNoiseBuffer(ctx, type);
+        node.loop = true;
+        return node;
+    }
+
+    // Cached noise buffer shared by every voice. Voices keep one looping
+    // BufferSource for their whole life instead of allocating a new source on
+    // every note: per-note allocations were a steady source of renderer GC
+    // while a dense song played.
+    static getNoiseBuffer(ctx, type = 'white') {
         // When the AudioContext changes, ALL noise buffers are stale (they belong
         // to the old context). Clear them all so every type is regenerated.
         if (this.noiseCtx && this.noiseCtx !== ctx) {
@@ -1521,10 +1858,16 @@ class DroneSynth {
             
             this.noiseBuffers[type] = buffer;
         }
-        const node = ctx.createBufferSource();
-        node.buffer = this.noiseBuffers[type];
-        node.loop = true;
-        return node;
+        return this.noiseBuffers[type];
+    }
+
+    // Point a voice's persistent noise loop at the requested noise colour.
+    static applyNoiseColor(v, ctx, type) {
+        if (!v || !v.noiseSrc) return;
+        const buffer = this.getNoiseBuffer(ctx, type || 'white');
+        if (v.noiseSrc.buffer !== buffer) {
+            try { v.noiseSrc.buffer = buffer; } catch (e) {}
+        }
     }
 
     // Slow random-walk buffer (< ~1.5Hz content) used as analog pitch drift.
@@ -1596,10 +1939,11 @@ class DroneSynth {
             v.lfoGain.gain.cancelScheduledValues(t);
             v.lfoGain.gain.setValueAtTime(0, t);
 
-            // Disconnect panner and noise source so reused voices don't accumulate
-            // duplicate parallel connections (each connect() adds a new signal path).
+            // Disconnect panner so reused voices don't accumulate duplicate
+            // parallel connections (each connect() adds a new signal path).
+            // The persistent noise source stays connected to noiseGain; it is
+            // muted by noiseGain=0 above, not stopped.
             try { v.panner.disconnect(); } catch(e) {}
-            try { if (v.nodes && v.nodes[7]) { v.nodes[7].stop(); v.nodes[7].disconnect(); } } catch(e) {}
 
             v.isPooled = false;
             return v;
@@ -1610,6 +1954,12 @@ class DroneSynth {
         const sub = ctx.createOscillator(); sub.type = 'triangle';
         const uni = ctx.createOscillator(); uni.type = 'sawtooth'; // Unison detune layer
         const noiseGain = ctx.createGain(); noiseGain.gain.value = 0;
+        // One looping noise source per voice. It runs for the voice's whole
+        // life and is gated by noiseGain, so a note start no longer allocates
+        // and starts a fresh BufferSource (GC churn during dense playback).
+        const noiseSrc = this.createNoise(ctx, 'white');
+        noiseSrc.connect(noiseGain);
+        noiseSrc.start(0, Math.random() * Math.max(0.01, noiseSrc.buffer.duration - 0.1));
         const fmGain = ctx.createGain(); fmGain.gain.value = 0; // FM Modulator Gain
 
         const oscMix = ctx.createGain(); oscMix.gain.value = 0.5; // headroom so osc+sub+noise don't hard-clip the drive stage
@@ -1709,8 +2059,13 @@ class DroneSynth {
         drive.curve = this.identityCurve;
 
         return {
-            nodes: [osc1, osc2, sub, oscMix, subMix, filter, vca, null, noiseGain, lfo, lfoGain, panner, shaper, fmGain, drive, vib, vibGain, uni, uniGain, filter2, driftGain],
-            osc1, osc2, sub, uni, oscMix, subMix, uniGain, filter, filter2, vca, noiseGain, lfo, lfoGain, panner, fmGain, drive, vib, vibGain, driftGain, driftSrc,
+            nodes: [osc1, osc2, sub, oscMix, subMix, filter, vca, noiseSrc, noiseGain, lfo, lfoGain, panner, shaper, fmGain, drive, vib, vibGain, uni, uniGain, filter2, driftGain],
+            osc1, osc2, sub, uni, oscMix, subMix, uniGain, filter, filter2, vca, noiseGain, noiseSrc, lfo, lfoGain, panner, fmGain, drive, shaper, vib, vibGain, driftGain, driftSrc,
+            driveActive: true,
+            uniConnected: true,
+            subConnected: true,
+            noiseConnected: true,
+            fmConnected: true,
             isPooled: false,
             _ctx: ctx
         };
@@ -1732,15 +2087,24 @@ class DroneSynth {
         } catch(e) {}
         if (this.voicePool.length < this.MAX_POOL_SIZE) {
             AudioEngine.scheduledFade(v.vca, 0, t, 10);
+            // The VCA is already at ~0 when a voice is returned (the envelope
+            // or release has finished), so it is safe to drop the last graph
+            // edges now. A disconnected voice is pruned by Web Audio and stops
+            // consuming render time; leaving pooled voices wired up meant every
+            // voice ever used kept four oscillators and a noise loop running,
+            // and long sessions eventually fell below real time.
+            try { v.panner.disconnect(); } catch(e) {}
             this.voicePool.push(v);
         } else {
             // Pool full, destroy
             const t = state.audioContext.currentTime;
             AudioEngine.scheduledFade(v.vca, 0, t, 10);
+            try { v.panner.disconnect(); } catch(e) {}
             setTimeout(() => {
                 try {
                     v.osc1.stop(); v.osc2.stop(); v.sub.stop();
                     v.uni.stop(); v.vib.stop(); v.lfo.stop();
+                    if (v.noiseSrc) v.noiseSrc.stop();
                     if (v.driftSrc) v.driftSrc.stop();
                 } catch(e){}
                 v.nodes.forEach(n => { try{ n.disconnect(); }catch(e){} });
@@ -1775,7 +2139,9 @@ class DroneSynth {
         synth.lastNote = note;
 
         // --- Voice Graph (Pooled) ---
+        this._stealVoices(synth, 1);
         const v = this.getVoiceFromPool(ctx);
+        v.startedAt = now;
         
         // 1. Configure Oscillators
         v.osc1.type = synth.params.osc1Type || 'sawtooth';
@@ -1837,12 +2203,9 @@ class DroneSynth {
         v.subMix.gain.cancelScheduledValues(now); v.subMix.gain.setValueAtTime(synth.params.subMix, now + startOffset);
         v.uniGain.gain.cancelScheduledValues(now); v.uniGain.gain.setValueAtTime((synth.params.unison || 0) * 0.4, now + startOffset);
 
-        // Noise: Create fresh source as buffer sources stop()
-        const noise = this.createNoise(ctx, synth.params.noiseType || 'white');
+        // Noise: the voice owns one looping source; only the colour changes.
+        this.applyNoiseColor(v, ctx, synth.params.noiseType || 'white');
         v.noiseGain.gain.cancelScheduledValues(now); v.noiseGain.gain.setValueAtTime(synth.params.noiseMix, now + startOffset);
-        noise.connect(v.noiseGain);
-        noise.start(now, Math.random() * 1.8); // Random phase, avoids identical hiss on every note
-        v.nodes[7] = noise; // Store for stop
 
         // FM Amount
         v.fmGain.gain.cancelScheduledValues(now); v.fmGain.gain.setValueAtTime(synth.params.fmAmt || 0, now + startOffset);
@@ -1855,8 +2218,17 @@ class DroneSynth {
 
         // Drive (Pre-Filter Saturation) - Use Cached Curve
         const driveAmount = synth.params.drive || 0;
-        const newCurve = DroneSynth.getDriveCurve(driveAmount);
-        if (v.drive.curve !== newCurve) v.drive.curve = newCurve;
+        this._setDrivePath(v, driveAmount > 0);
+        v.drive.oversample = driveAmount > 0 ? '2x' : 'none';
+        v.shaper.oversample = driveAmount > 20 ? '2x' : 'none';
+        if (driveAmount > 0) {
+            const newCurve = DroneSynth.getDriveCurve(driveAmount);
+            if (v.drive.curve !== newCurve) v.drive.curve = newCurve;
+        }
+        this._setAuxPath(v, 'uni', (synth.params.unison || 0) > 0.001);
+        this._setAuxPath(v, 'sub', (synth.params.subMix || 0) > 0.001);
+        this._setAuxPath(v, 'noise', (synth.params.noiseMix || 0) > 0.001);
+        this._setAuxPath(v, 'fm', (synth.params.fmAmt || 0) > 0.001);
 
         // Vibrato
         v.vib.frequency.cancelScheduledValues(now); v.vib.frequency.setValueAtTime(synth.params.vibratoRate || 5, now + startOffset);
@@ -1866,6 +2238,9 @@ class DroneSynth {
         const envAmt = synth.params.envMod;
         const baseFreq = Math.max(20, synth.params.cutoff);
         const peakFreq = Math.min(22000, Math.max(20, baseFreq + envAmt));
+        const filterSus = Math.max(0, Math.min(1, synth.params.sustain ?? 0.8));
+        const filterDec = Math.max(0.005, synth.params.decay || 0.2);
+        const settleFreq = Math.min(22000, Math.max(15, baseFreq + envAmt * filterSus));
 
         // Envelopes
         const atkDur = Math.max(0.002, synth.params.attack); // Faster min attack
@@ -1876,12 +2251,18 @@ class DroneSynth {
         v.filter.frequency.linearRampToValueAtTime(Math.max(15, baseFreq), now + startOffset);
         if (Math.abs(peakFreq - baseFreq) > 0.1) {
             v.filter.frequency.exponentialRampToValueAtTime(Math.max(15, peakFreq), atkEnd + 0.001);
+            if (Math.abs(settleFreq - peakFreq) > 0.1) {
+                v.filter.frequency.setTargetAtTime(Math.max(15, settleFreq), atkEnd + 0.001, filterDec / 3);
+            }
         }
         v.filter2.frequency.cancelScheduledValues(now);
         try { v.filter2.frequency.setValueAtTime(v.filter2.frequency.value, now); } catch(e){}
         v.filter2.frequency.linearRampToValueAtTime(Math.max(15, baseFreq), now + startOffset);
         if (Math.abs(peakFreq - baseFreq) > 0.1) {
             v.filter2.frequency.exponentialRampToValueAtTime(Math.max(15, peakFreq), atkEnd + 0.001);
+            if (Math.abs(settleFreq - peakFreq) > 0.1) {
+                v.filter2.frequency.setTargetAtTime(Math.max(15, settleFreq), atkEnd + 0.001, filterDec / 3);
+            }
         }
 
         // LFO
@@ -1960,9 +2341,8 @@ class DroneSynth {
         }
 
         const stopTime = releaseStart + (immediate ? 0.1 : (relTime + 0.2));
-        if (v.nodes[7]) {
-            try { v.nodes[7].stop(stopTime); } catch(e) {}
-        }
+        // The persistent noise loop is gated by the VCA/noiseGain and stays
+        // running with the voice so it can be reused without a new allocation.
 
         setTimeout(() => {
             DroneSynth.returnVoiceToPool(v);
@@ -2098,9 +2478,18 @@ class DroneSynth {
                  DroneSynth.smoothParamUpdate(v.nodes[1].detune, synth.params.detune + (v.drift2||0), now, 0.1);
                  if (v.uni) DroneSynth.smoothParamUpdate(v.uni.detune, -(synth.params.detune + (v.uniSpread||10)) + (v.drift3||0), now, 0.1);
              }
-             if(key === 'unison' && v.uniGain) DroneSynth.smoothParamUpdate(v.uniGain.gain, (synth.params.unison || 0) * 0.4, now, 0.1);
-             if(key === 'subMix') DroneSynth.smoothParamUpdate(v.nodes[4].gain, synth.params.subMix, now, 0.1);
-             if(key === 'noiseMix') DroneSynth.smoothParamUpdate(v.nodes[8].gain, synth.params.noiseMix, now, 0.1);
+             if(key === 'unison') {
+                 if ((synth.params.unison || 0) > 0.001 && v.uniGain) DroneSynth._setAuxPath(v, 'uni', true);
+                 if (v.uniGain) DroneSynth.smoothParamUpdate(v.uniGain.gain, (synth.params.unison || 0) * 0.4, now, 0.1);
+             }
+             if(key === 'subMix') {
+                 if ((synth.params.subMix || 0) > 0.001) DroneSynth._setAuxPath(v, 'sub', true);
+                 DroneSynth.smoothParamUpdate(v.nodes[4].gain, synth.params.subMix, now, 0.1);
+             }
+             if(key === 'noiseMix') {
+                 if ((synth.params.noiseMix || 0) > 0.001) DroneSynth._setAuxPath(v, 'noise', true);
+                 DroneSynth.smoothParamUpdate(v.nodes[8].gain, synth.params.noiseMix, now, 0.1);
+             }
              if(key === 'res') {
                  if (v.filter) DroneSynth.smoothParamUpdate(v.filter.Q, synth.params.res * 1.15, now, 0.05);
                  if (v.filter2) DroneSynth.smoothParamUpdate(v.filter2.Q, synth.params.res * 1.15 * 0.4, now, 0.05);
@@ -2112,7 +2501,10 @@ class DroneSynth {
                  DroneSynth.smoothParamUpdate(v.nodes[10].gain, DroneSynth.safeFilterLfoDepth(synth), now, 0.05);
              }
              if(key === 'drive' && v.drive) v.drive.curve = DroneSynth.getDriveCurve(synth.params.drive || 0);
-             if(key === 'fmAmt') DroneSynth.smoothParamUpdate(v.nodes[13].gain, synth.params.fmAmt, now, 0.05);
+             if(key === 'fmAmt') {
+                 if ((synth.params.fmAmt || 0) > 0.001) DroneSynth._setAuxPath(v, 'fm', true);
+                 DroneSynth.smoothParamUpdate(v.nodes[13].gain, synth.params.fmAmt, now, 0.05);
+             }
              if(key === 'lfoRate') DroneSynth.smoothParamUpdate(v.nodes[9].frequency, synth.params.lfoRate, now, 0.1);
              if(key === 'lfoDepth') DroneSynth.smoothParamUpdate(v.nodes[10].gain, DroneSynth.safeFilterLfoDepth(synth), now, 0.1);
              if(key === 'vibratoRate') DroneSynth.smoothParamUpdate(v.nodes[15].frequency, synth.params.vibratoRate, now, 0.1);
@@ -2339,6 +2731,7 @@ class DroneSynth {
         this.stopAll();
         this.voicePool = []; // Clear stale voices from old context/instances
         this.instances.forEach(i => {
+            this._releaseSharedReverb(i);
             if (i.output) { try{ i.output.disconnect(); } catch(e){} }
             if (i.fxInput) { try{ i.fxInput.disconnect(); } catch(e){} }
             if (i.dryDestination) { try{ i.dryDestination.disconnect(); } catch(e){} }

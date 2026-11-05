@@ -693,9 +693,18 @@ class App {
                 const nativeConfig = NativeAudio.getSelectedConfig();
                 if (nativeConfig && nativeConfig.hostId) {
                     if (driverInfo) driverInfo.textContent = `Starting ${nativeConfig.hostId.toUpperCase()} audio engine…`;
+                    if (window.DebugManager && DebugManager.enabled) {
+                        DebugManager._push('native', `[native] requested: host=${nativeConfig.hostId} out=${nativeConfig.outputDeviceId || '-'} in=${nativeConfig.inputDeviceId || '-'} rate=${nativeConfig.sampleRate || 'auto'} block=${nativeConfig.blockFrames} input=${nativeConfig.inputEnabled}`);
+                        DebugManager.snapshot('before native engine start');
+                    }
                     try {
                         const info = await NativeAudio.start(nativeConfig);
                         nativeRate = info.sampleRate;
+                        if (window.DebugManager && DebugManager.enabled) {
+                            DebugManager._nativeInfo = info;
+                            DebugManager._push('native', `[native] started: ${DebugManager._nativeInfoLine(info)}`);
+                            DebugManager.snapshot('after native engine start');
+                        }
                         if (driverInfo) {
                             const actualBlock = info.outputBufferFrames || info.blockFrames;
                             driverInfo.innerHTML =
@@ -920,6 +929,7 @@ class App {
             state.isFinishingRecording = false;
             state.loopRecordedChunks = [];
             state.masterRecording = false;
+            if (window.DroneSynth && typeof DroneSynth.setSharedReverbEnabled === 'function') DroneSynth.setSharedReverbEnabled(true);
 
             // Drop the idle dynamic pre-roll node before the context closes.
             if (window.LoopManager) {
@@ -1057,6 +1067,7 @@ class App {
         state.isRecording = false;
         state.isOverdubbing = false;
         state.masterRecording = false;
+            if (window.DroneSynth && typeof DroneSynth.setSharedReverbEnabled === 'function') DroneSynth.setSharedReverbEnabled(true);
         (state.stemRecorders || []).forEach(r => { try { r.stop(); } catch(e) {} });
         state.stemRecorders = [];
         if (window.LoopManager) {
@@ -1875,6 +1886,9 @@ class App {
             state.masterChunks = [];
             state.inputChunks = [];
             state.stemRecorders = [];
+            // Stem recorders capture each drone's post-FX output, so rebuild
+            // with a private reverb per drone before capture begins.
+            if (window.DroneSynth && typeof DroneSynth.setSharedReverbEnabled === 'function') DroneSynth.setSharedReverbEnabled(false);
 
             try {
             // Start Wet Stem Recorders
@@ -1929,6 +1943,7 @@ class App {
                     try { monitoredInputNode.disconnect(state.inputDestination); } catch(_) {}
                 }
                 state.masterRecording = false;
+            if (window.DroneSynth && typeof DroneSynth.setSharedReverbEnabled === 'function') DroneSynth.setSharedReverbEnabled(true);
                 UIManager.updateStatus();
                 return;
             }
@@ -1979,6 +1994,7 @@ class App {
             } finally {
                 // Always reset recording state even if stop promises reject
                 state.masterRecording = false;
+            if (window.DroneSynth && typeof DroneSynth.setSharedReverbEnabled === 'function') DroneSynth.setSharedReverbEnabled(true);
                 state.masterRecorder = null;
                 state.inputRecorder = null;
                 state.stemRecorders = [];
