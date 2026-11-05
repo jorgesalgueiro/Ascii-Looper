@@ -87,6 +87,11 @@ class TrackerManager {
             addRowButton.disabled = rowCount >= this.maxRows;
             addRowButton.title = `Maximum ${this.maxRows} rows per pattern`;
         }
+        const removeRowButton = document.getElementById('trackerRemoveRowBtn');
+        if (removeRowButton) {
+            removeRowButton.disabled = rowCount <= 1;
+            removeRowButton.title = 'Remove the last row of this pattern';
+        }
     }
 
     static pause() {
@@ -144,10 +149,15 @@ class TrackerManager {
             timeSig: state.timeSig
         };
         const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const name = (typeof customFilename === 'string') ? customFilename : `song_${Date.now()}.trk`;
+        if (typeof ProjectManager !== 'undefined' && ProjectManager.saveBlobToExport) {
+            ProjectManager.saveBlobToExport(blob, name);
+            return;
+        }
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
-        link.download = (typeof customFilename === 'string') ? customFilename : `song_${Date.now()}.trk`;
+        link.download = name;
         link.click();
         setTimeout(() => URL.revokeObjectURL(url), 100);
     }
@@ -432,7 +442,9 @@ class TrackerManager {
             const sId = loopId - MAX_LOOPS - droneCount;
             if (!state.samplers[sId]) return;
             if (cmd === 'ON' || cmd === 'LOP') {
-                if (state.samplers[sId].state === 'stopped' || state.samplers[sId].state === 'stopping' || state.samplers[sId].state === 'empty') SamplerManager.togglePlay(sId, time);
+                // ON is a hit, not a toggle: retrigger even while a previous
+                // one-shot or loop is still sounding.
+                SamplerManager.trigger(sId, time);
             }
             else if (cmd === 'OFF') {
                 if (state.samplers[sId].state === 'playing' || state.samplers[sId].state === 'armed') SamplerManager.togglePlay(sId, time);
@@ -637,8 +649,12 @@ class TrackerManager {
         const key = `${r}_${c}`;
         const curr = pat.data[key] || '---';
         
-        // Cycle: --- -> ON -> OFF -> MUT -> UNM -> LOP -> ---
-        const cycles = ['---', 'ON', 'OFF', 'MUT', 'UNM', 'LOP'];
+        // Commands are column-specific: MUT/UNM/LOP only make sense on loop
+        // columns. Drone and sampler cells use ON/OFF only.
+        const loopsEnd = MAX_LOOPS;
+        const cycles = c < loopsEnd
+            ? ['---', 'ON', 'OFF', 'MUT', 'UNM', 'LOP']
+            : ['---', 'ON', 'OFF'];
         let idx = cycles.indexOf(curr);
         idx = (idx + 1) % cycles.length;
         const next = cycles[idx];
@@ -730,6 +746,22 @@ class TrackerManager {
         this.renderGrid();
         this.updateControlUI();
     }
+
+    static removeRow() {
+        const pat = state.tracker.patterns[this.getPatternIndex(state.tracker.currentPatternIdx)];
+        if (!pat || pat.rows <= 1) return;
+        const removed = pat.rows - 1;
+        pat.rows -= 1;
+        // Drop the last row and pull no data forward: removing the last row can
+        // only discard cells on that row.
+        for (const key of Object.keys(pat.data)) {
+            const row = Number(key.split('_')[0]);
+            if (row >= removed) delete pat.data[key];
+        }
+        if (state.tracker.currentRow >= pat.rows) state.tracker.currentRow = 0;
+        this.renderGrid();
+        this.updateControlUI();
+    }
 }
 
 /**
@@ -750,6 +782,14 @@ class SampleLab {
     static previewRequest = 0;
     static recordingInput = null;
     static canvas = null;
+    // Selection/ratio/pitch edits invalidate an in-flight DSP job too, not just
+    // the result that is already on screen.
+    static _processGeneration = 0;
+    // Cached per-pixel min/max so dragging a selection does not rescan the
+    // whole take on every pointer move.
+    static _waveformCache = null;
+    static _undoBuffer = null;
+    static _recDisconnectTimer = null;
 
     static init() {
         this.canvas = document.getElementById('labCanvas');
@@ -765,6 +805,113 @@ class SampleLab {
         if (labEnd) labEnd.oninput = () => this.updateDisplays();
         this.initCanvasInteraction();
         this.renderLoopSelect();
+    }
+
+    /** Set both selection sliders at once (used when a new sample is adopted). */
+    static setSelection(start = 0, end = 1) {
+        const startEl = document.getElementById('labStart');
+        const endEl = document.getElementById('labEnd');
+        if (startEl) startEl.value = String(start);
+        if (endEl) endEl.value = String(end);
+    }
+
+    /**
+     * Adopt a freshly loaded/recorded/imported take: stop stale preview audio,
+     * clear the previous DSP result and undo slot, and show the whole sample.
+     */
+    static adoptBuffer(buffer, statusText = '') {
+        if (!buffer) return false;
+        this.stopPreview();
+        this.rawBuffer = buffer;
+        this.processedBuffer = null;
+        this._processGeneration++;
+        this._waveformCache = null;
+        this.clearUndo();
+        this.setSelection(0, 1);
+        this.updateDisplays();
+        const status = document.getElementById('labStatus');
+        if (status && statusText) status.textContent = statusText;
+        return true;
+    }
+
+    /** Drop a DSP result (and cancel a running one) after a parameter edit. */
+    static invalidateProcessed() {
+        this.processedBuffer = null;
+        this._processGeneration++;
+        const status = document.getElementById('labStatus');
+        if (status && this.rawBuffer && !this.isRecording && !this.isProcessing) {
+            status.textContent = 'READY.';
+        }
+    }
+
+    /**
+     * Detach and discard a recorder whose take is still in flight. Used when a
+     * load/import replaces the sample before the worklet reply arrives.
+     */
+    static cancelPendingCapture() {
+        this.recordRequest++;
+        this.isRecording = false;
+        const rec = this.recorder;
+        const input = this.recordingInput;
+        this.recorder = null;
+        this.recordingInput = null;
+        this.recChunks = [];
+        if (this._recDisconnectTimer) {
+            clearTimeout(this._recDisconnectTimer);
+            this._recDisconnectTimer = null;
+        }
+        if (rec) {
+            if (input) { try { input.disconnect(rec); } catch (e) {} }
+            rec.port.onmessage = null;
+            try { rec.port.postMessage({ command: 'stop' }); } catch (e) {}
+            try { rec.disconnect(); } catch (e) {}
+        }
+        const btn = document.getElementById('labRecBtn');
+        if (btn) {
+            btn.innerHTML = (typeof I18n !== 'undefined') ? I18n.t('REC_SAMPLER') : 'REC SAMPLER';
+            btn.classList.remove('blink-text');
+        }
+    }
+
+    /**
+     * Min/max peaks per CSS pixel for the waveform. Cached by buffer identity
+     * and width, with `valid` marking columns that contain samples.
+     */
+    static getWaveformPeaks(buffer, width) {
+        if (!buffer || !(width > 0)) return null;
+        if (this._waveformCache &&
+            this._waveformCache.buffer === buffer &&
+            this._waveformCache.width === width) {
+            return this._waveformCache;
+        }
+        const chans = [];
+        for (let c = 0; c < buffer.numberOfChannels; c++) chans.push(buffer.getChannelData(c));
+        const len = buffer.length;
+        const step = Math.max(1, Math.floor(len / width));
+        const mins = new Float32Array(width);
+        const maxs = new Float32Array(width);
+        const valid = new Uint8Array(width);
+        for (let i = 0; i < width; i++) {
+            const i0 = i * step;
+            if (i0 >= len) break;
+            const i1 = Math.min(len, i0 + step);
+            let min = 1.0;
+            let max = -1.0;
+            for (let c = 0; c < chans.length; c++) {
+                const data = chans[c];
+                for (let j = i0; j < i1; j++) {
+                    const datum = data[j];
+                    if (datum < min) min = datum;
+                    if (datum > max) max = datum;
+                }
+            }
+            mins[i] = min;
+            maxs[i] = max;
+            valid[i] = 1;
+        }
+        const cache = { buffer, width, step, mins, maxs, valid };
+        this._waveformCache = cache;
+        return cache;
     }
 
     // Drag-to-select on the waveform: grab a handle if near one, move the
@@ -864,6 +1011,25 @@ class SampleLab {
         return !!(el && el.checked);
     }
 
+    static gridEnabled() {
+        const el = document.getElementById('labGrid');
+        return !!(el && el.checked);
+    }
+
+    /** Ratios (0..1) of bar boundaries inside the buffer on the current grid. */
+    static getBarRatios(buffer = this.rawBuffer) {
+        if (!buffer || !Number.isFinite(buffer.duration) || buffer.duration <= 0) return [];
+        if (typeof state === 'undefined' || !Number.isFinite(state.bpm) || state.bpm <= 0) return [];
+        const beatsPerBar = Math.max(1, (state.timeSig && state.timeSig.num) || 4);
+        const barDur = (60 / state.bpm) * beatsPerBar;
+        if (!(barDur > 0)) return [];
+        const ratios = [];
+        for (let t = barDur; t < buffer.duration - 1e-9; t += barDur) {
+            ratios.push(t / buffer.duration);
+        }
+        return ratios;
+    }
+
     // Snap a ratio to the nearest zero crossing within ±5ms. Prefers the
     // nearest near-silent sample (true crossing); falls back to the window's
     // amplitude minimum so we never snap away from a usable edge.
@@ -937,6 +1103,9 @@ class SampleLab {
                 btn.classList.remove('blink-text');
             }
         } else {
+            // Never print a preview into the new take (and cancel a preview
+            // whose resume is still pending).
+            this.stopPreview();
             // Set recording flag BEFORE await to prevent re-entry race condition
             this.isRecording = true;
             const request = ++this.recordRequest;
@@ -964,7 +1133,7 @@ class SampleLab {
                     }
                 };
                 inputNode.connect(this.recorder);
-                this.recorder.connect(state.audioContext.destination);
+                this.recorder.connect(AudioEngine.outputNode || state.audioContext.destination);
                 this.recorder.port.postMessage({ command: 'start' });
                 if (btn) { btn.innerHTML = "STOP REC"; btn.classList.add('blink-text'); }
                 document.getElementById('labStatus').textContent = "RECORDING...";
@@ -1007,32 +1176,41 @@ class SampleLab {
         if (this._recDisconnectTimer) clearTimeout(this._recDisconnectTimer);
         this._recDisconnectTimer = null;
         this.isRecording = false;
-        let buffer = LoopManager.createBufferFromChunks(chunks, state.audioContext.sampleRate);
+        let buffer = null;
+        try {
+            buffer = LoopManager.createBufferFromChunks(chunks, state.audioContext.sampleRate);
+            if (buffer) buffer = AudioEngine.compensateLatency(buffer);
+        } catch (e) {
+            Log.error('SampleLab', 'Failed to build recorded buffer:', e);
+        }
         if (buffer) {
-            // Apply Latency Compensation for Lab recordings too
-            buffer = AudioEngine.compensateLatency(buffer);
-            this.rawBuffer = buffer;
-            this.clearUndo();
-            this.updateDisplays();
-            this.renderWaveform();
-            document.getElementById('labStatus').textContent = `CAPTURED: ${buffer.duration.toFixed(2)}s`;
+            this.adoptBuffer(buffer, `CAPTURED: ${buffer.duration.toFixed(2)}s`);
+        } else {
+            document.getElementById('labStatus').textContent = 'NO AUDIO CAPTURED.';
         }
     }
 
     static async load(e) {
         const file = e.target.files[0];
         if (!file) return;
+        if (this.isRecording) {
+            e.target.value = '';
+            return alert("Stop the Sample Lab recording before loading a file.");
+        }
 
         document.getElementById('labStatus').textContent = "DECODING...";
         try {
             const ab = await file.arrayBuffer();
             const buffer = await state.audioContext.decodeAudioData(ab);
-            this.rawBuffer = buffer;
-            this.processedBuffer = null;
-            this.clearUndo();
-            this.updateDisplays();
-            this.renderWaveform();
-            document.getElementById('labStatus').textContent = `LOADED: ${this.rawBuffer.duration.toFixed(2)}s`;
+            if (this.isRecording) {
+                // REC was started while the file decoded; do not replace the take.
+                return alert("Stop the Sample Lab recording before loading a file.");
+            }
+            if (!buffer) throw new Error('No audio decoded');
+            // A stopped recorder may still have a take in flight; the loaded
+            // file is the new source, so detach it instead of letting it land.
+            if (this.recorder) this.cancelPendingCapture();
+            this.adoptBuffer(buffer, `LOADED: ${buffer.duration.toFixed(2)}s`);
         } catch (error) {
             Log.error('SampleLab', 'Error loading sample:', error);
             document.getElementById('labStatus').textContent = "LOAD ERROR.";
@@ -1049,10 +1227,11 @@ class SampleLab {
         const dur = this.rawBuffer ? this.rawBuffer.duration : 0;
         
         this.processedBuffer = null; // Invalidate processing on slider change
-        
+        this._processGeneration++;   // and any DSP job that is still running
+        const lenSec = (dur > 0) ? Math.abs(end - start) * dur : 0;
         const sTime = (dur > 0) ? (start * dur).toFixed(2) : "0.00";
         const eTime = (dur > 0) ? (end * dur).toFixed(2) : "0.00";
-        const len = (dur > 0) ? (Math.abs(end - start) * dur).toFixed(2) : "0.00";
+        const len = lenSec.toFixed(2);
 
         document.getElementById('labStartDisplay').textContent = sTime + 's';
         document.getElementById('labEndDisplay').textContent = eTime + 's';
@@ -1060,7 +1239,13 @@ class SampleLab {
         this.updatePeakDisplay(start, end);
 
         if(!this.processedBuffer && !this.isRecording && this.rawBuffer) {
-             document.getElementById('labStatus').textContent = `SELECTION: ${len}s`;
+             let bars = '';
+             if (lenSec > 0 && typeof state !== 'undefined' && Number.isFinite(state.bpm) && state.bpm > 0) {
+                 const beatsPerBar = Math.max(1, (state.timeSig && state.timeSig.num) || 4);
+                 const barDur = (60 / state.bpm) * beatsPerBar;
+                 if (barDur > 0) bars = ` (${(lenSec / barDur).toFixed(2)} bars)`;
+             }
+             document.getElementById('labStatus').textContent = `SELECTION: ${len}s${bars}`;
         }
     }
 
@@ -1123,11 +1308,8 @@ class SampleLab {
             return;
         }
 
-        // Draw Waveform (merged min/max across all channels)
-        const chans = [];
-        for (let c = 0; c < buf.numberOfChannels; c++) chans.push(buf.getChannelData(c));
-        const len = buf.length;
-        const step = Math.max(1, Math.floor(len / w));
+        // Draw Waveform (merged min/max across all channels, cached per width)
+        const peaks = this.getWaveformPeaks(buf, w);
         const amp = h / 2;
 
         // Center axis
@@ -1138,27 +1320,33 @@ class SampleLab {
         ctx.lineTo(w, amp + 0.5);
         ctx.stroke();
 
-        ctx.beginPath();
-        ctx.strokeStyle = "#0f0";
-        for (let i = 0; i < w; i++) {
-            const i0 = i * step;
-            if (i0 >= len) break; // last column guard: no OOB reads
-            const i1 = Math.min(len, i0 + step);
-            let min = 1.0;
-            let max = -1.0;
-            for (let c = 0; c < chans.length; c++) {
-                const data = chans[c];
-                for (let j = i0; j < i1; j++) {
-                    const datum = data[j];
-                    if (datum < min) min = datum;
-                    if (datum > max) max = datum;
-                }
+        if (peaks) {
+            ctx.beginPath();
+            ctx.strokeStyle = "#0f0";
+            for (let i = 0; i < w; i++) {
+                if (!peaks.valid[i]) continue;
+                ctx.moveTo(i + 0.5, (1 + peaks.mins[i]) * amp);
+                ctx.lineTo(i + 0.5, (1 + peaks.maxs[i]) * amp);
             }
-            ctx.moveTo(i + 0.5, (1 + min) * amp);
-            ctx.lineTo(i + 0.5, (1 + max) * amp);
+            ctx.stroke();
         }
-        ctx.stroke();
         
+        // Musical bar lines for the current transport grid.
+        if (this.gridEnabled()) {
+            const ratios = this.getBarRatios(buf);
+            if (ratios.length) {
+                ctx.beginPath();
+                ctx.strokeStyle = "rgba(255,255,0,0.28)";
+                ctx.lineWidth = 1;
+                for (const ratio of ratios) {
+                    const x = ratio * w;
+                    ctx.moveTo(x + 0.5, 0);
+                    ctx.lineTo(x + 0.5, h);
+                }
+                ctx.stroke();
+            }
+        }
+
         // Draw Selection Overlay
         const startRatio = parseFloat(document.getElementById('labStart').value);
         const endRatio = parseFloat(document.getElementById('labEnd').value);
@@ -1191,7 +1379,11 @@ class SampleLab {
 
         // Ratio = Target / Source
         const ratio = targetDur / currentDur;
-        document.getElementById('labStretch').value = ratio.toFixed(4);
+        const stretch = document.getElementById('labStretch');
+        if (stretch) stretch.value = ratio.toFixed(4);
+        this.invalidateProcessed();
+        const status = document.getElementById('labStatus');
+        if (status) status.textContent = `SYNC RATIO: ${ratio.toFixed(4)} (${targetBars} bars)`;
     }
 
     static cloneBuffer(buffer) {
@@ -1201,6 +1393,7 @@ class SampleLab {
     static loadFromLoop() {
         const sel = document.getElementById('labLoopTarget');
         if (!sel) return;
+        if (this.isRecording) return alert("Stop the Sample Lab recording before importing.");
         const targetVal = sel.value;
         if (targetVal.startsWith('s')) {
             const sId = parseInt(targetVal.substring(1));
@@ -1210,12 +1403,8 @@ class SampleLab {
                 alert("Sampler " + (sId+1) + " is empty.");
                 return;
             }
-            this.rawBuffer = this.cloneBuffer(sampler.buffer);
-            this.processedBuffer = null;
-            this.clearUndo();
-            this.updateDisplays();
-            this.renderWaveform();
-            document.getElementById('labStatus').textContent = `IMPORTED SAMPLER ${sId+1}`;
+            if (this.recorder) this.cancelPendingCapture();
+            this.adoptBuffer(this.cloneBuffer(sampler.buffer), `IMPORTED SAMPLER ${sId+1}`);
         } else {
             const loopId = parseInt(targetVal);
             const loop = state.loops[loopId];
@@ -1223,18 +1412,15 @@ class SampleLab {
                 alert("Loop " + (loopId+1) + " is empty.");
                 return;
             }
-            this.rawBuffer = this.cloneBuffer(loop.audioBuffer);
-            this.processedBuffer = null;
-            this.clearUndo();
-            this.updateDisplays();
-            this.renderWaveform();
-            document.getElementById('labStatus').textContent = `IMPORTED LOOP ${loopId+1}`;
+            if (this.recorder) this.cancelPendingCapture();
+            this.adoptBuffer(this.cloneBuffer(loop.audioBuffer), `IMPORTED LOOP ${loopId+1}`);
         }
     }
 
     static sendToLoop() {
         const sel = document.getElementById('labLoopTarget');
         if (!sel) return;
+        if (this.isRecording) return alert("Stop the Sample Lab recording before sending.");
         const targetVal = sel.value;
         const bufferToSend = this.processedBuffer || this.rawBuffer;
         if (!bufferToSend) return alert("No sample data to send.");
@@ -1283,6 +1469,7 @@ class SampleLab {
     }
 
     static async preview() {
+        if (this.isRecording) return alert("Stop the Sample Lab recording before previewing.");
         if (this.previewSource) {
             this.stopPreview();
             return;
@@ -1350,6 +1537,7 @@ class SampleLab {
 
     static process() {
         if(!this.rawBuffer) return alert("Please load an audio file first.");
+        if (this.isRecording) return alert("Stop the Sample Lab recording before processing.");
         if (this.isProcessing) return; // a stretch is already running
 
         // Inputs are now 0.0-1.0 ratios from the sliders
@@ -1383,6 +1571,7 @@ class SampleLab {
         const selectedDur = dur * (tEnd - tStart);
         if (selectedDur * ratio > 60) return alert("Result too long (>60s).");
 
+        const token = ++this._processGeneration;
         this.processedBuffer = null; // invalidate up-front
         const srcRef = this.rawBuffer; // detect source swaps during async DSP
         const sliced = AudioEngine.sliceBuffer(srcRef, tStart, tEnd);
@@ -1390,6 +1579,9 @@ class SampleLab {
         // 2. Stretch
         // If ratio is 1.0, don't waste CPU cycles
         if (Math.abs(ratio - 1.0) < 0.01 && Math.abs(pitchSemi) < 0.1) {
+            // The preview loops by default, so give the processed edges the same
+            // short fade as a raw-selection preview to avoid a click every lap.
+            if (sliced !== srcRef) AudioEngine.applyFades(sliced, 0.005);
             this.processedBuffer = sliced;
             this.playBuf(this.processedBuffer);
             document.getElementById('labStatus').textContent = `DONE. DUR: ${sliced.duration.toFixed(2)}s`;
@@ -1402,13 +1594,14 @@ class SampleLab {
                 try {
                     if (typeof SoundTouch === 'undefined') throw new Error("SoundTouch lib missing");
                     const result = this.soundTouchTimeStretch(sliced, ratio, pitchSemi);
-                    if (this.rawBuffer !== srcRef) {
-                        // Source was replaced while crunching — don't apply stale audio
-                        statusEl.textContent = "STALE: source changed. Process again.";
+                    if (token !== this._processGeneration || this.rawBuffer !== srcRef) {
+                        // Source or parameters changed while crunching — don't apply stale audio
+                        statusEl.textContent = "STALE: sample or settings changed. Process again.";
                         return;
                     }
+                    AudioEngine.applyFades(result, 0.005);
                     this.processedBuffer = result;
-                    this.playBuf(result);
+                    if (!this.isRecording) this.playBuf(result);
                     statusEl.textContent = `DONE. NEW DUR: ${result.duration.toFixed(2)}s`;
                 } catch (e) {
                     Log.error('SampleLab', 'DSP error:', e);
@@ -1542,23 +1735,20 @@ class SampleLab {
 
     static undo() {
         if (!this._undoBuffer) return;
-        this.stopPreview();
-        this.rawBuffer = this._undoBuffer;
+        const restored = this._undoBuffer;
         this._undoBuffer = null;
-        this.processedBuffer = null;
-        document.getElementById('labStart').value = 0;
-        document.getElementById('labEnd').value = 1;
-        this.updateDisplays();
-        this.renderWaveform();
-        this.updateUndoBtn();
-        document.getElementById('labStatus').textContent = `UNDO. DUR: ${this.rawBuffer.duration.toFixed(2)}s`;
+        this.adoptBuffer(restored, `UNDO. DUR: ${restored.duration.toFixed(2)}s`);
     }
 
     static reverse() {
         if (!this.rawBuffer) return;
+        if (this.isRecording) return alert("Stop the Sample Lab recording before editing.");
+        this.stopPreview();
         this.pushUndo();
         this.rawBuffer = AudioEngine.getReversedBuffer(this.rawBuffer);
         this.processedBuffer = null;
+        this._processGeneration++;
+        this._waveformCache = null;
         this.updateDisplays();
         this.renderWaveform();
         document.getElementById('labStatus').textContent = "REVERSED.";
@@ -1566,6 +1756,8 @@ class SampleLab {
 
     static normalize() {
         if (!this.rawBuffer) return;
+        if (this.isRecording) return alert("Stop the Sample Lab recording before editing.");
+        this.stopPreview();
         // normalizeBuffer scales rawBuffer in place, so the snapshot has to be taken first.
         // It is only committed once the gain really landed, or an already-maxed take would
         // overwrite the undo slot left by the previous edit.
@@ -1574,6 +1766,8 @@ class SampleLab {
             this._undoBuffer = before;
             this.updateUndoBtn();
             this.processedBuffer = null;
+            this._processGeneration++;
+            this._waveformCache = null; // the buffer was mutated in place
             this.updateDisplays();
             this.renderWaveform();
             document.getElementById('labStatus').textContent = "NORMALIZED.";
@@ -1602,6 +1796,7 @@ class SampleLab {
         this.pushUndo();
         this.rawBuffer = AudioEngine.sliceBuffer(this.rawBuffer, tStart, tEnd);
         this.processedBuffer = null;
+        this._waveformCache = null;
         document.getElementById('labStart').value = 0;
         document.getElementById('labEnd').value = 1;
         this.updateDisplays();

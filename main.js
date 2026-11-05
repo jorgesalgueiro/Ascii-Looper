@@ -6,7 +6,7 @@
 // MODULE 1: CONSTANTS & GLOBALS
 // =============================================
 
-const VERSION = "v0.76.16"; // Version aligned with blueprint
+const VERSION = "v0.76.17"; // Version aligned with blueprint
 let MAX_LOOPS = 10;
 const SAMPLER_HOTKEYS = ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'ç']; // Specific to Sampler Tracks
 const AUDIO_FORMATS= {
@@ -206,7 +206,120 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     `;
     document.head.appendChild(style);
+
+    // Populate the native host/device selects when running inside Tauri.
+    // In the browser this hides the panel and changes nothing else.
+    if (window.NativeAudio) {
+        NativeAudio.populateUI().catch((error) => {
+            console.warn('Native audio UI unavailable:', error);
+        });
+    }
 });
+
+// Dev-only: automatic start for clean latency measurements without devtools.
+// `dev_flags` reads ASCII_LOOPER_AUTOSTART/HW_* from the environment; a normal
+// run never sets them. The invoke is retried because Tauri's IPC may not be
+// ready in the first DOMContentLoaded tick.
+async function tryDevAutostart() {
+    window.__autostartRan = 'started';
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+        try {
+            const api = window.__TAURI__;
+            if (!api || !api.core || typeof api.core.invoke !== 'function') {
+                await new Promise((resolve) => setTimeout(resolve, 250));
+                continue;
+            }
+            const flags = await api.core.invoke('dev_flags');
+            window.__autostartRan = flags && flags.autostart ? 'enabled' : 'disabled';
+            if (!flags || !flags.autostart) return;
+
+            const output = document.getElementById('nativeOutputSelect');
+            const input = document.getElementById('nativeInputSelect');
+            const buffer = document.getElementById('nativeBufferSelect');
+            const rate = document.getElementById('sampleRateSelect');
+            const host = document.getElementById('nativeHostSelect');
+            const set = (element, value) => {
+                if (element && value !== undefined && value !== null) element.value = value;
+            };
+            if (flags.host && host && host.value !== flags.host) {
+                host.value = flags.host;
+                await NativeAudio.loadDevices();
+            }
+            for (let wait = 0; wait < 60; wait += 1) {
+                const buffersReady = !flags.block || (buffer && buffer.options.length > 0);
+                if (output && output.options.length > 0 && buffersReady) break;
+                await new Promise((resolve) => setTimeout(resolve, 250));
+            }
+            set(output, flags.output);
+            set(input, flags.input === 'none' ? '' : flags.input);
+            set(buffer, flags.block);
+            set(rate, flags.rate);
+            window.__autostartRan = `selected:${output ? output.value : 'none'}`;
+            const button = document.getElementById('btn-start');
+            if (button) button.click();
+            if (flags.report) {
+                // Dev-only capability report: WebKitGTK's SAB/AudioWorklet
+                // support decides whether the native path can start at all.
+                setTimeout(async () => {
+                    try {
+                        let headers = null;
+                        try {
+                            headers = await Promise.race([
+                                fetch(new URL('index.html', location.href), { cache: 'no-store' })
+                                    .then((response) => [...response.headers.entries()]),
+                                new Promise((resolve) => setTimeout(() => resolve('timeout'), 2000))
+                            ]);
+                        } catch (error) {
+                            headers = String(error);
+                        }
+                        const capabilities = {
+                            phase: 'after-start',
+                            title: document.title,
+                            headers,
+                            isolated: (typeof crossOriginIsolated !== 'undefined') ? crossOriginIsolated : null,
+                            sharedArrayBuffer: typeof SharedArrayBuffer,
+                            audioWorklet: typeof AudioWorkletNode,
+                            nativeAvailable: window.NativeAudio ? NativeAudio.available : null,
+                            blockedReason: window.NativeAudio ? NativeAudio.blockedReason : null,
+                            autostart: window.__autostartRan,
+                            autostartError: window.__autostartError || null,
+                            host: host ? host.value : null,
+                            output: output ? output.value : null,
+                            outputOptions: output ? [...output.options].map((option) => option.value) : [],
+                            buffer: buffer ? buffer.value : null,
+                            bufferOptions: buffer ? [...buffer.options].map((option) => option.value) : [],
+                            nativeActive: window.NativeAudio ? NativeAudio.active : null,
+                            nativeInfo: window.NativeAudio ? NativeAudio.info : null,
+                            overlay: document.getElementById('startOverlay')
+                                ? document.getElementById('startOverlay').style.display
+                                : null,
+                            startupError: document.getElementById('startupError')
+                                ? document.getElementById('startupError').textContent
+                                : null,
+                            startupErrorVisible: document.getElementById('startupError')
+                                ? document.getElementById('startupError').style.display
+                                : null
+                        };
+                        window.__TAURI__.core.invoke('dev_report', { payload: capabilities });
+                    } catch (_) {}
+                }, 12000);
+            }
+            return;
+        } catch (error) {
+            window.__autostartError = String(error);
+            await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+    }
+}
+// Only schedule inside the Tauri page. WebView2 serves
+// http://tauri.localhost, while WebKitGTK uses the tauri:// scheme whose
+// hostname is just "localhost"; the global is the reliable signal for both.
+// The plain browser build and the test harness do not expose it.
+if (typeof window !== 'undefined' &&
+    ((window.__TAURI__ && window.__TAURI__.core) ||
+     (typeof location !== 'undefined' && /tauri/i.test(location.hostname || '')))) {
+    setTimeout(tryDevAutostart, 400);
+}
 
 
 
@@ -527,6 +640,13 @@ class App {
         const loadingText = document.getElementById('loadingText');
 		const driverInfo = document.getElementById('driverInfo');
 
+        // A previous failed attempt must not leave its message visible if this
+        // retry succeeds.
+        if (errorBox) {
+            errorBox.style.display = 'none';
+            errorBox.textContent = '';
+        }
+
         // Init I18n
         const langSelect = document.getElementById('langSelect');
         const lang = langSelect ? langSelect.value : 'en';
@@ -539,11 +659,14 @@ class App {
                 // Fallback: Verify if we can find soundfont/lib at root if web link failed
                 if (window.location.protocol !== 'file:') {
                     try {
-                        const module = await import('./soundtouch.min.js');
+                        // Vendored locally (the packaged CSP blocks the CDN).
+                        // The version query defeats WebView2's subresource cache
+                        // after an application update.
+                        const module = await import(`./soundtouch.min.js?v=${encodeURIComponent(VERSION)}`);
                         window.SoundTouch = module.SoundTouch;
                         window.SimpleFilter = module.SimpleFilter;
                     } catch(e) {
-                        Log.debug('AudioEngine', 'SoundTouchJS not loaded (CDN & Local failed). Time-stretch and pitch processing unavailable.');
+                        Log.debug('AudioEngine', 'SoundTouchJS not loaded (bundled file missing). Time-stretch and pitch processing unavailable.');
                         if (driverInfo) {
                             driverInfo.innerHTML += "<br><span style='color:#ff0'>[WARN] Time-stretch and pitch processing unavailable. Sample editing still works.</span>";
                         }
@@ -562,14 +685,50 @@ class App {
             const latHint = document.getElementById('latencySelect') ? document.getElementById('latencySelect').value : 'interactive';
             const sRate = Number(document.getElementById('sampleRateSelect')?.value);
 
-            const audioInitialized = await AudioEngine.initialize({ latencyHint: latHint, sampleRate: sRate });
+            // Native path: start the Rust engine before creating the
+            // AudioContext so the context can be created at the device rate.
+            // Browser builds skip this entirely.
+            let nativeRate = null;
+            if (window.NativeAudio) {
+                const nativeConfig = NativeAudio.getSelectedConfig();
+                if (nativeConfig && nativeConfig.hostId) {
+                    if (driverInfo) driverInfo.textContent = `Starting ${nativeConfig.hostId.toUpperCase()} audio engine…`;
+                    try {
+                        const info = await NativeAudio.start(nativeConfig);
+                        nativeRate = info.sampleRate;
+                        if (driverInfo) {
+                            const actualBlock = info.outputBufferFrames || info.blockFrames;
+                            driverInfo.innerHTML =
+                                `Native ${info.hostId.toUpperCase()}: ${info.outputDevice} · ${info.sampleRate} Hz · ` +
+                                `block ${actualBlock}${info.bufferFallback ? ' (requested size rejected, using backend default)' : ''}` +
+                                `<br><span style="color:#888">Input: ${info.inputDevice || 'disabled'} · bridge :${info.bridgePort}</span>`;
+                        }
+                    } catch (error) {
+                        throw new Error(
+                            `Native audio start failed: ${error && error.message ? error.message : error}\n\n` +
+                            'Select "Browser (Web Audio)" as the host to start without the native engine.'
+                        );
+                    }
+                } else if (NativeAudio.active) {
+                    // The user switched back to the browser device: release the
+                    // previous native engine before building a new context.
+                    await NativeAudio.stop();
+                }
+            }
+
+            const contextRate = nativeRate || (Number.isFinite(sRate) ? sRate : undefined);
+            const audioInitialized = await AudioEngine.initialize({ latencyHint: latHint, sampleRate: contextRate });
             if (!audioInitialized) {
                 throw new Error(`Audio Engine failed to initialize.`);
             }
 
             // Capture user gesture immediately to unlock audio, even if still silent
-            if (state.audioContext && state.audioContext.state !== 'running') {
-                await state.audioContext.resume();
+            // The context can already be running (autoplay flag / native build),
+            // in which case the old conditional skipped resume() and left
+            // masterStartTime at zero. Always call resume(): it is a no-op when
+            // running, but initializes the shared transport clock.
+            if (state.audioContext) {
+                await AudioEngine.resume();
             }
             
             LoopManager.initialize();
@@ -599,6 +758,10 @@ class App {
                 resumeAttempts++;             
             }
 
+            // The context can flip to running after the last resume() check.
+            // Initialize the master origin before any scheduler reads it.
+            AudioEngine.ensureMasterClock();
+
             // Arm debug click detectors if verbose debug is on (no-op otherwise)
             if (window.DebugManager) DebugManager.attachClickDetectors();
 
@@ -616,6 +779,7 @@ class App {
                     const resumeOnClick = async () => {
                         if (state.audioContext && state.audioContext.state === 'suspended') {
                             await state.audioContext.resume();
+                            AudioEngine.ensureMasterClock();
                             statusEl.textContent = originalText;
                             statusEl.style.color = '';
                         }
@@ -647,6 +811,11 @@ class App {
 
         } catch (error) {
             Log.error('App', 'Startup Error:', error);
+            if (window.NativeAudio && NativeAudio.active) {
+                // Await the release so an immediate retry cannot hit a still
+                // loaded ASIO driver.
+                try { await NativeAudio.stop(); } catch (_) {}
+            }
             
             // Show error to user and allow retry
             if (loadingText) loadingText.style.display = 'none';
@@ -658,6 +827,186 @@ class App {
             }
             // Allow retry
             if (btn) { btn.disabled = false; btn.textContent = "[ START ASCII LOOPER ]"; }
+        }
+    }
+
+    /**
+     * Stops audio and returns to the initial device setup overlay. Recorded
+     * loops, samplers and project state stay in memory; the next START rebuilds
+     * the graph on the newly selected host/device.
+     */
+    static async backToSetup() {
+        const overlay = document.getElementById('startOverlay');
+        if (!overlay || overlay.style.display !== 'none' || this._returningToSetup) return;
+
+        const hasSession =
+            (state.loops || []).some((loop) => loop.audioBuffer) ||
+            (state.samplers || []).some((sampler) => sampler.buffer) ||
+            state.isRecording || state.masterRecording;
+        const message = hasSession
+            ? 'Return to the audio setup screen?\n\nAudio stops. Recorded loops and samplers stay in memory and are restored when you press START. A recording in progress is finalized before stopping.'
+            : 'Return to the audio setup screen?';
+        try {
+            if (typeof confirm === 'function' && !confirm(message)) return;
+        } catch (_) {
+            // No dialog available (tests); proceed.
+        }
+
+        this._returningToSetup = true;
+        const btn = document.getElementById('btnBackToSetup');
+        const btnText = btn ? btn.textContent : '';
+        if (btn) { btn.disabled = true; btn.textContent = 'STOPPING...'; }
+
+        try {
+            try { if (window.SampleLab && SampleLab.stopPreview) SampleLab.stopPreview(); } catch (_) {}
+            try { if (window.TrackerManager) TrackerManager.stop(); } catch (_) {}
+            if (window.MetronomeScheduler && state.metronome && state.metronome.enabled) {
+                try { await MetronomeScheduler.toggle(); } catch (_) {}
+            }
+            try { if (window.DroneSynth) DroneSynth.stopAll(); } catch (_) {}
+            if (window.SamplerManager) {
+                try {
+                    state.samplers.forEach((sampler) => SamplerManager._stopSampler(sampler.id));
+                } catch (_) {}
+            }
+            try { if (window.LoopManager) LoopManager.stopAll(); } catch (_) {}
+
+            // Browser input streams keep the microphone open even after the
+            // AudioContext is released. Stop them before teardown; the next
+            // START re-acquires the selected device.
+            if (window.InputManager) {
+                try {
+                    (state.inputs || []).forEach((input) => {
+                        if (typeof InputManager.stopChannelDetect === 'function') {
+                            InputManager.stopChannelDetect(input);
+                        }
+                        if (input.stream) {
+                            try {
+                                input.stream.getTracks().forEach((track) => track.stop());
+                            } catch (_) {}
+                        }
+                        input.stream = null;
+                        input.source = null;
+                    });
+                } catch (_) {}
+            }
+
+            if (state.masterRecording) {
+                try { await App.toggleMasterRecording(); } catch (_) {}
+            }
+            if (window.LoopManager && state.isRecording) {
+                // Finalize the take with the still-open AudioContext; closing it
+                // first would make decodeAudioData fail and lose the recording.
+                try {
+                    await LoopManager.finalizeRecording();
+                } catch (_) {}
+            }
+            if ((state.isRecording || state.isFinishingRecording) && state.loopRecorder) {
+                // Timed out or the recorder was already gone: drop the node so
+                // the old context can be closed cleanly.
+                try {
+                    state.loopRecorder.port.postMessage({ command: 'stop' });
+                    state.loopRecorder.disconnect();
+                } catch (_) {}
+                state.loopRecorder = null;
+            }
+            if (state.recordingTimeout) { clearTimeout(state.recordingTimeout); state.recordingTimeout = null; }
+            if (state.recordingStartTimeout) { clearTimeout(state.recordingStartTimeout); state.recordingStartTimeout = null; }
+            (state.stemRecorders || []).forEach((recorder) => { try { recorder.stop(); } catch (_) {} });
+            state.stemRecorders = [];
+            state.isRecording = false;
+            state.isOverdubbing = false;
+            state.recordingLoopId = -1;
+            state.isFinishingRecording = false;
+            state.loopRecordedChunks = [];
+            state.masterRecording = false;
+
+            // Drop the idle dynamic pre-roll node before the context closes.
+            if (window.LoopManager) {
+                try { LoopManager.releaseDynamicPreBuffer(); } catch (_) {}
+            }
+
+            if (window.NativeAudio && NativeAudio.active) {
+                try { await NativeAudio.stop(); } catch (error) {
+                    Log.warn('App', 'Native engine stop failed:', error);
+                }
+            }
+            if (state.audioContext) {
+                try { await state.audioContext.close(); } catch (_) {}
+            }
+
+            // Drop every node that belonged to the closed context. The module
+            // init functions rebuild them on the next START.
+            state.audioContext = null;
+            state.outputNode = null;
+            state.masterGain = null;
+            state.masterMixer = null;
+            state.masterMeter = null;
+            state.masterMeterData = null;
+            state.masterEQ = null;
+            state.masterComp = null;
+            state.masterCompGain = null;
+            state.masterLimiter = null;
+            state.masterSoftClip = null;
+            state.masterDestination = null;
+            state.loopDestination = null;
+            state.inputDestination = null;
+            state.nativeKeepAlive = null;
+            state.nativeKeepAliveGain = null;
+            state.masterStartTime = 0;
+            state.playingSources = {};
+
+            if (window.InputManager) {
+                InputManager.inputBus = null;
+                InputManager.masterGain = null;
+                InputManager.recordTap = null;
+                InputManager.masterAnalyser = null;
+                InputManager.helperGraph = null;
+            }
+
+            (state.loops || []).forEach((loop) => {
+                loop.graph = null;
+                loop.state = loop.audioBuffer ? 'stopped' : 'empty';
+            });
+            (state.samplers || []).forEach((sampler) => {
+                sampler.source = null;
+                sampler.gain = null;
+                sampler.panNode = null;
+                sampler.analyser = null;
+                sampler.state = sampler.buffer ? 'stopped' : 'empty';
+            });
+
+            // Restore the overlay without changing the last selected devices.
+            const errorBox = document.getElementById('startupError');
+            if (errorBox) { errorBox.style.display = 'none'; errorBox.textContent = ''; }
+            const loadingText = document.getElementById('loadingText');
+            if (loadingText) loadingText.style.display = 'none';
+            const driverSelection = document.getElementById('driverSelection');
+            if (driverSelection) driverSelection.style.display = '';
+            const driverInfo = document.getElementById('driverInfo');
+            if (driverInfo) {
+                driverInfo.style.display = 'block';
+                driverInfo.textContent = 'Choose the audio host and device, then press START. Loaded loops and samplers are kept.';
+            }
+            const startBtn = document.getElementById('btn-start');
+            if (startBtn) {
+                startBtn.disabled = false;
+                startBtn.textContent = '[ START ASCII LOOPER ]';
+            }
+
+            try {
+                UIManager.renderLoops();
+                UIManager.updateStatus();
+                if (window.MasterMixManager) MasterMixManager.render();
+            } catch (_) {}
+
+            overlay.style.display = '';
+            if (window.NativeAudio && NativeAudio._updateStatus) NativeAudio._updateStatus();
+        } catch (error) {
+            Log.error('App', 'Return to setup failed:', error);
+        } finally {
+            this._returningToSetup = false;
+            if (btn) { btn.disabled = false; btn.textContent = btnText; }
         }
     }
 
@@ -710,6 +1059,9 @@ class App {
         state.masterRecording = false;
         (state.stemRecorders || []).forEach(r => { try { r.stop(); } catch(e) {} });
         state.stemRecorders = [];
+        if (window.LoopManager) {
+            try { LoopManager.releaseDynamicPreBuffer(); } catch (_) {}
+        }
 
         // 3. Soft Reboot (Resume Hardware)
         if (state.panicTimeout) clearTimeout(state.panicTimeout);
@@ -717,6 +1069,7 @@ class App {
             state.panicTimeout = null;
             try {
                 if (state.audioContext) await state.audioContext.resume();
+                if (window.LoopManager) LoopManager.ensureDynamicPreBuffer();
                 UIManager.renderLoops();
                 UIManager.updateStatus();
             } catch (e) {
@@ -737,7 +1090,10 @@ class App {
         }
         try {
             if (!navigator.requestMIDIAccess) {
-                midiStatus.textContent = "Web MIDI not supported";
+                midiStatus.textContent = window.NativeAudio && NativeAudio.isNative
+                    ? "Web MIDI unavailable — using native MIDI bridge"
+                    : "Web MIDI not supported";
+                if (window.NativeAudio) NativeAudio.initMidiFallback();
                 return;
             }
             
@@ -750,6 +1106,7 @@ class App {
         } catch (error) {
             console.warn("MIDI access denied:", error);
             midiStatus.textContent = 'MIDI access denied';
+            if (window.NativeAudio) NativeAudio.initMidiFallback();
             // Do not re-throw, allow app to continue without MIDI
         }
     }
@@ -1031,7 +1388,9 @@ class App {
         };
         bindClick('[onclick*="stopAll"]', () => LoopManager.stopAll());
         bindClick('[onclick*="clearAll"]', () => LoopManager.clearAll());
-        bindClick('[onclick*="saveProject"]', () => ProjectManager.save());
+        bindClick('[onclick*="saveProject"]', (event) => ProjectManager.save(!!(event && event.shiftKey)));
+        const saveProjectBtn = document.getElementById('btnSaveProj');
+        if (saveProjectBtn) saveProjectBtn.title = 'Save project (Shift-click: Save As)';
         bindClick('[onclick*="toggleMasterRecording"]', () => App.toggleMasterRecording());
         bindClick('[onclick*="exportAllTracks"]', () => ProjectManager.exportAllTracks());
         bindClick('[onclick*="panic"]', () => App.panic());
@@ -1248,7 +1607,7 @@ class App {
             const samplerIdx = SAMPLER_HOTKEYS.indexOf(event.key.toLowerCase());
             if (samplerIdx !== -1) {
                 event.preventDefault();
-                if (!event.repeat) SamplerManager.togglePlay(samplerIdx);
+                if (!event.repeat) SamplerManager.pad(samplerIdx);
                 return;
             }
         }
@@ -1350,6 +1709,8 @@ class App {
      * Handles keyboard key release for long-press logic.
      */
     static handleKeyboardRelease(event) {
+        const overlay = document.getElementById('startOverlay');
+        if (overlay && overlay.style.display !== 'none') return;
         const tag = event.target.tagName.toUpperCase();
         if (tag === 'TEXTAREA' || tag === 'SELECT') return;
         if (tag === 'INPUT' && !['CHECKBOX', 'RADIO', 'RANGE', 'BUTTON', 'FILE', 'SUBMIT', 'RESET'].includes(event.target.type.toUpperCase())) return;
@@ -1387,6 +1748,8 @@ class App {
      * Central handler for when a loop input is pressed.
      */
     static handleInputPress(loopId, sourceKey) {
+        const overlay = document.getElementById('startOverlay');
+        if (overlay && overlay.style.display !== 'none') return;
         // Guard against stale entries left behind when a release event is missed
         // (window blur, alt-tab, etc.). A 10-second ceiling is far beyond any real
         // long-press but short enough to never mask a genuine stuck key.
@@ -1466,6 +1829,8 @@ class App {
     }
 
     static handleInputRelease(loopId, sourceKey) {
+        const overlay = document.getElementById('startOverlay');
+        if (overlay && overlay.style.display !== 'none') return;
         const pressData = state.inputPressTimers[sourceKey];
         if (pressData) {
             clearTimeout(pressData.timer);
@@ -2104,7 +2469,10 @@ class InputChannel {
         
         this.volume = 1.0;
         this.pan = 5;
-        this.monitor = false; // Default OFF to prevent feedback loops on startup
+        // Bus send: added inputs feed the input bus by default. The input bus
+        // fader is the monitor level (recording taps the bus pre-fader), so a
+        // new input can be recorded without being audible until that fader is raised.
+        this.monitor = true;
         this.deviceId = 'default';
         this.channelMode = 'stereo'; // Default to Stereo, user chooses L/R if mono source
         this.channelModeUserSet = false; // true once the user picks L/R/ST manually (blocks auto-detect)
@@ -2124,7 +2492,8 @@ class InputManager {
         fuzz: false, overdrive: false, compressor: false, dusk: false, arpDelay: false, eq: false, zigZ: false, griz: false, harmony: false
     }; // Toggles
     static inputBus = null; // Node where all inputs sum BEFORE effects
-    static masterVolume = 1.0;
+    static recordTap = null; // Post-FX, pre-monitor-fader tap used by recorders
+    static masterVolume = 0.0; // Input bus monitor level (recording is pre-fader)
     static masterAnalyser = null;
     static masterAnalyserData = null;
     static masterPeak = {};
@@ -2141,6 +2510,7 @@ class InputManager {
         // Reset audio nodes to support App restarts/driver changes
         this.inputBus = null;
         this.masterGain = null;
+        this.recordTap = null;
         this.masterAnalyser = null;
         this.masterChain = { nodes: {}, end: null };
         this.masterAnalyserData = new Float32Array(2048);
@@ -2150,7 +2520,11 @@ class InputManager {
 
         if(state.inputs.length === 0) {
             this.setupMasterBus();
-            this.addInputTrack();
+            // Native engines can run output-only (no input device); adding a
+            // track then would fail immediately, so leave the mixer empty.
+            const nativeWithoutInput = window.NativeAudio && NativeAudio.active &&
+                !(NativeAudio.info && NativeAudio.info.inputChannels);
+            if (!nativeWithoutInput) this.addInputTrack();
         } else {
             this.setupMasterBus();
             // Re-init existing inputs for new context
@@ -2168,6 +2542,15 @@ class InputManager {
     }
 
     static async addInputTrack(deviceId = null, type = 'mic') {
+        if (type === 'system' && window.NativeAudio && NativeAudio.active) {
+            // APP/SYS uses getDisplayMedia; the native build hides the button.
+            return;
+        }
+        // New tracks pick an unused device/pair automatically, so adding several
+        // inputs gives distinct sources instead of stacking the default one.
+        if (!deviceId && type !== 'system' && state.inputs.length > 0) {
+            try { deviceId = await this.pickDefaultDevice(); } catch (e) {}
+        }
         const id = state.inputs.length;
         const input = new InputChannel(id, type);
         state.inputs.push(input);
@@ -2183,7 +2566,91 @@ class InputManager {
         }
         EffectManager.refreshPresetDropdowns();
         this.renderUI();
+        this.refreshInputPicker(true);
         if(window.MasterMixManager) MasterMixManager.render();
+    }
+
+    /**
+     * Available input sources for the picker/add flow. Native mode exposes the
+     * channel pairs of the single ASIO device; browser mode lists audio inputs.
+     */
+    static async getInputSources() {
+        const used = new Set(state.inputs.map(i => i.deviceId).filter(Boolean));
+        if (window.NativeAudio && NativeAudio.active) {
+            const nativeSelect = document.getElementById('nativeInputSelect');
+            const deviceLabel = nativeSelect && nativeSelect.selectedOptions[0]
+                ? nativeSelect.selectedOptions[0].textContent
+                : 'Native input';
+            const channels = Math.max(1, (NativeAudio.info && NativeAudio.info.inputChannels) || 2);
+            const pairs = [];
+            if (channels <= 2) {
+                pairs.push({ left: 0, right: channels > 1 ? 1 : 0, label: channels > 1 ? 'Ch 1-2 (stereo)' : 'Ch 1 (mono)' });
+            } else {
+                for (let ch = 0; ch < channels; ch++) {
+                    pairs.push({ left: ch, right: ch, label: `Ch ${ch + 1} (mono)` });
+                }
+                for (let ch = 0; ch + 1 < channels; ch += 2) {
+                    pairs.push({ left: ch, right: ch + 1, label: `Ch ${ch + 1}-${ch + 2} (stereo)` });
+                }
+            }
+            return pairs.map(pair => {
+                const value = `native:${pair.left}-${pair.right}`;
+                return { value, label: `${deviceLabel} · ${pair.label}`, used: used.has(value), stereo: pair.right !== pair.left };
+            });
+        }
+        try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            return devices.filter(d => d.kind === 'audioinput').map((d, index) => ({
+                value: d.deviceId,
+                label: d.label || `Input ${index + 1}`,
+                used: used.has(d.deviceId),
+                stereo: true
+            }));
+        } catch (e) {
+            Log.warn('InputManager', 'Failed to enumerate audio devices:', e);
+            return [];
+        }
+    }
+
+    /** Pick an unused source for a new track; null means the system default. */
+    static async pickDefaultDevice() {
+        const sources = await this.getInputSources();
+        if (!sources.length) return null;
+        const unused = sources.filter(s => !s.used);
+        if (!unused.length) return null;
+        // Prefer a stereo pair on multi-channel native interfaces.
+        return (unused.find(s => s.stereo) || unused[0]).value;
+    }
+
+    static async refreshInputPicker(force = false) {
+        const sel = document.getElementById('newInputDevice');
+        if (!sel) return;
+        const now = Date.now();
+        if (!force && this._pickerAt && now - this._pickerAt < 1500) return;
+        const request = (this._pickerRequest || 0) + 1;
+        this._pickerRequest = request;
+        const sources = await this.getInputSources();
+        if (request !== this._pickerRequest) return;
+        this._pickerAt = Date.now();
+        const previous = sel.value;
+        sel.innerHTML = '';
+        const addOption = (value, label) => {
+            const opt = document.createElement('option');
+            opt.value = value;
+            opt.textContent = label;
+            sel.appendChild(opt);
+        };
+        addOption('', 'Default input');
+        sources.forEach(source => addOption(source.value, `${source.label}${source.used ? ' (in use)' : ''}`));
+        const values = Array.from(sel.options).map(opt => opt.value);
+        if (values.includes(previous)) sel.value = previous;
+        else sel.selectedIndex = 0;
+    }
+
+    static async addSelectedInput(type = 'mic') {
+        const sel = document.getElementById('newInputDevice');
+        const deviceId = (sel && sel.value) ? sel.value : null;
+        await this.addInputTrack(deviceId, type);
     }
 
     static async changeDevice(id, deviceId) {
@@ -2210,12 +2677,17 @@ class InputManager {
         state.inputs.splice(id, 1);
         state.inputs.forEach((remaining, index) => { remaining.id = index; });
         this.renderUI();
+        this.refreshInputPicker(true);
         if (window.MasterMixManager) MasterMixManager.render();
     }
 
     static setupMasterBus() {
         if (this.inputBus) return;
         this.inputBus = state.audioContext.createGain(); // Summing point
+        // Post-FX, pre-monitor-fader record tap. Loop/master recorders and the
+        // dynamic pre-buffer attach here so the monitor fader cannot change the
+        // recorded level.
+        this.recordTap = state.audioContext.createGain();
         // Init Master Gain synchronously
         this.masterGain = state.audioContext.createGain(); 
         this.masterAnalyser = state.audioContext.createAnalyser();
@@ -2223,6 +2695,25 @@ class InputManager {
         this.masterAnalyserData = new Float32Array(2048);
         
         this.rebuildMasterChain();
+    }
+
+    /**
+     * Decodes a native input selection (`native:<left>-<right>`) into device
+     * channel indices. A non-native or stale selection falls back to the first
+     * stereo pair (or channel 0 for mono devices).
+     */
+    static parseNativePair(deviceId, channels) {
+        const count = Math.max(1, channels || 1);
+        let left = 0;
+        let right = count > 1 ? 1 : 0;
+        if (typeof deviceId === 'string') {
+            const match = /^native:(\d+)-(\d+)$/.exec(deviceId);
+            if (match) {
+                left = Math.min(count - 1, parseInt(match[1], 10));
+                right = Math.min(count - 1, parseInt(match[2], 10));
+            }
+        }
+        return { left, right };
     }
 
     static async initInputAudio(id, deviceId = null) {
@@ -2236,9 +2727,38 @@ class InputManager {
         let stream = null;
         this.stopChannelDetect(input);
         if (input.stream) input.stream.getTracks().forEach(t => t.stop());
-        if (input.source) input.source.disconnect();
+        if (input.source) {
+            if (window.NativeAudio) NativeAudio.releaseSource(input.source);
+            input.source.disconnect();
+        }
 
         try {
+            // Native branch: the Rust engine already owns every device channel.
+            // Each track selects a mono/stereo pair and gets its own SAB-backed
+            // source worklet. getUserMedia/getDisplayMedia are never used.
+            if (window.NativeAudio && NativeAudio.active) {
+                if (input.type === 'system') {
+                    throw new Error('APP/SYS capture is not available in the native build.');
+                }
+                const channels = Math.max(0, (NativeAudio.info && NativeAudio.info.inputChannels) || 0);
+                if (channels < 1) {
+                    throw new Error('The native engine was started without an input device. Choose an input device and restart.');
+                }
+                const pair = this.parseNativePair(deviceId, channels);
+                input.stream = null;
+                input.deviceId = `native:${pair.left}-${pair.right}`;
+                input.source = NativeAudio.createSource(ctx, pair);
+                if (!current()) {
+                    NativeAudio.releaseSource(input.source);
+                    input.source = null;
+                    return null;
+                }
+                this.rebuildInputGraph(input.id);
+                this.detectActiveChannel(input);
+                this.lastInputError = null;
+                return true;
+            }
+
             if (input.type === 'system') {
                 stream = await navigator.mediaDevices.getDisplayMedia({
                     video: { width: 1, height: 1 },
@@ -2375,30 +2895,41 @@ class InputManager {
             }
         }
 
-        // Ensure Master Gain exists
+        // Ensure the monitor gain and the pre-fader record tap exist
         if (!this.masterGain) {
             this.masterGain = state.audioContext.createGain();
         }
+        if (!this.recordTap) {
+            this.recordTap = state.audioContext.createGain();
+        }
 
-        // Re-verify connections
+        // Post-FX signal feeds the record tap first, then the monitor fader.
+        // Recorders tap `recordTap`, so moving the INPUT BUS fader changes
+        // monitoring only, never the recorded level.
+        try { this.recordTap.disconnect(); } catch(e){}
+        this.recordTap.connect(this.masterGain);
+        this.recordTap.connect(this.masterAnalyser);
+
         try { this.masterGain.disconnect(); } catch(e){}
-        this.masterGain.connect(this.masterAnalyser);
         AudioEngine.connectToMaster(this.masterGain);
 
-        // Restore Recorder Connection if active
+        // Restore Recorder Connection if active (pre-fader)
         if (state.isRecording && state.loopRecorder) {
-            try { this.masterGain.connect(state.loopRecorder); } catch(e){}
+            try { this.recordTap.connect(state.loopRecorder); } catch(e){}
+        } else if (window.LoopManager) {
+            // The idle dynamic pre-buffer also taps the record bus.
+            LoopManager.reattachDynamicPreBuffer();
         }
 
-        // Restore Master Recording Connection
+        // Restore Master Recording Connection (pre-fader)
         if (state.masterRecording && state.inputDestination) {
-            try { this.masterGain.connect(state.inputDestination); } catch(e){}
+            try { this.recordTap.connect(state.inputDestination); } catch(e){}
         }
 
-        try { this.inputBus.disconnect(this.masterGain); } catch(e){}
+        try { this.inputBus.disconnect(this.recordTap); } catch(e){}
 
-        lastNode.connect(this.masterGain);
-        this.masterChain.end = this.masterGain;
+        lastNode.connect(this.recordTap);
+        this.masterChain.end = this.recordTap;
 
         // 4. Schedule fade-in to start when fade-out completes
         const fadeInStart = now + FADE_MS / 1000;
@@ -2501,6 +3032,11 @@ class InputManager {
         }
         const d = document.getElementById('in-master-vol-val');
         if(d) d.textContent = `Vol ${this.masterVolume.toFixed(2)}`;
+        const hint = document.getElementById('in-monitor-hint');
+        if (hint) {
+            const muted = this.masterVolume <= 0.0001 && state.inputs.some(i => i.monitor);
+            hint.style.display = muted ? '' : 'none';
+        }
         const normSlider = document.getElementById('in-master-vol-slider');
         if (normSlider && document.activeElement !== normSlider) normSlider.value = this.masterVolume;
     }
@@ -2617,7 +3153,9 @@ class InputManager {
     }
 
     static getRecordingNode() {
-        return this.masterGain;
+        // Post-FX, pre-monitor-fader bus tap. Falls back to masterGain for old
+        // test harnesses that build a partial InputManager.
+        return this.recordTap || this.masterGain;
     }
     
     static isAnyMonitored() {
@@ -2626,7 +3164,44 @@ class InputManager {
 
     static async populateDeviceSelect(id) {
         const sel = document.getElementById(`in-dev-${id}`);
-        if (!sel || !state.inputs[id] || state.inputs[id].type === 'system') return; // Skip for system tracks or missing input
+        const input = state.inputs[id];
+        if (!sel || !input || input.type === 'system') return; // Skip for system tracks or missing input
+
+        // Native mode: enumerate mono/stereo pairs of the input device that the
+        // Rust engine opened. ASIO exposes one driver at a time, so every track
+        // shares that device and only the channel pair differs.
+        if (window.NativeAudio && NativeAudio.active) {
+            const nativeSelect = document.getElementById('nativeInputSelect');
+            const deviceLabel = nativeSelect && nativeSelect.selectedOptions[0]
+                ? nativeSelect.selectedOptions[0].textContent
+                : 'Native input';
+            const channels = Math.max(1, (NativeAudio.info && NativeAudio.info.inputChannels) || 2);
+            sel.innerHTML = '';
+            const pairs = [];
+            if (channels <= 2) {
+                pairs.push({
+                    left: 0,
+                    right: channels > 1 ? 1 : 0,
+                    label: channels > 1 ? 'Ch 1-2 (stereo)' : 'Ch 1 (mono)',
+                });
+            } else {
+                for (let ch = 0; ch < channels; ch++) {
+                    pairs.push({ left: ch, right: ch, label: `Ch ${ch + 1} (mono)` });
+                }
+                for (let ch = 0; ch + 1 < channels; ch += 2) {
+                    pairs.push({ left: ch, right: ch + 1, label: `Ch ${ch + 1}-${ch + 2} (stereo)` });
+                }
+            }
+            const current = input.deviceId || 'native:0-1';
+            for (const pair of pairs) {
+                const opt = document.createElement('option');
+                opt.value = `native:${pair.left}-${pair.right}`;
+                opt.textContent = `${deviceLabel} · ${pair.label}`;
+                if (current === opt.value) opt.selected = true;
+                sel.appendChild(opt);
+            }
+            return;
+        }
         
         try {
              const devices = await navigator.mediaDevices.enumerateDevices();
@@ -2726,7 +3301,7 @@ class InputManager {
                 <input type="range" class="mixer-slider" min="0" max="10" step="1" value="${inp.pan}" oninput="InputManager.setPan(${inp.id}, this.value)" data-i18n-title="TIP_IN_PAN" style="width:30px;" aria-label="Input Pan">
                 <span id="in-pan-val-${inp.id}" style="font-size:9px; width:15px; text-align:right;">${inp.pan}</span>
                 
-                <button class="small ${inp.monitor?'btn-green':''}" onclick="InputManager.toggleMonitor(${inp.id})" aria-pressed="${inp.monitor}" title="Route this input to the input bus and master output" style="padding:0 4px; font-size:9px; width:54px; color:${inp.monitor?'#0f0':'#f00'}; border-color:${inp.monitor?'#0f0':'#444'}; font-weight:${inp.monitor?'bold':'normal'}">${inp.monitor ? 'MON ON' : 'MON OFF'}</button>
+                <button class="small ${inp.monitor?'btn-green':''}" onclick="InputManager.toggleMonitor(${inp.id})" aria-pressed="${inp.monitor}" title="Include this input in the input bus. Recording taps the bus pre-fader; the INPUT BUS fader controls monitoring." style="padding:0 4px; font-size:9px; width:54px; color:${inp.monitor?'#0f0':'#f00'}; border-color:${inp.monitor?'#0f0':'#444'}; font-weight:${inp.monitor?'bold':'normal'}">${inp.monitor ? 'BUS ON' : 'BUS OFF'}</button>
                 <button class="small input-remove-btn" onclick="InputManager.removeInputTrack(${inp.id})" title="Remove this input source" aria-label="Remove input ${inp.id + 1}" style="padding:0 3px; font-size:9px;">DEL</button>
             </div>
             `;
@@ -2734,16 +3309,24 @@ class InputManager {
             this.populateDeviceSelect(inp.id);
         });
 
-        // 2. Add Source Buttons (Below inputs)
+        // 2. Add Source Picker + Buttons (Below inputs)
+        const addRow = document.createElement('div');
+        addRow.style.cssText = 'display:flex; gap:4px; margin-top:5px; align-items:center;';
+        const nativeMode = !!(window.NativeAudio && NativeAudio.active);
+        addRow.innerHTML = `
+            <select id="newInputDevice" style="flex:1; min-width:0; height:24px; font-size:9px;" aria-label="New input source"></select>
+            <button onclick="InputManager.addSelectedInput('mic')" class="std-btn small btn-cyan" style="flex:0 0 auto;">+ ADD INPUT</button>
+            ${nativeMode ? '' : `<button onclick="InputManager.addInputTrack(null, 'system')" class="std-btn small btn-purple" style="flex:0 0 auto;">+ APP/SYS</button>`}
+        `;
+        container.appendChild(addRow);
+
         const btnGrid = document.createElement('div');
         btnGrid.className = "std-btn-grid";
         btnGrid.style.marginTop = "5px";
-        const anyMonitored = state.inputs.some(i => i.monitor);
-        const allMonitored = state.inputs.length > 0 && state.inputs.every(i => i.monitor);
+        const anyBus = state.inputs.some(i => i.monitor);
+        const allBus = state.inputs.length > 0 && state.inputs.every(i => i.monitor);
         btnGrid.innerHTML = `
-            <button onclick="InputManager.addInputTrack(null, 'mic')" class="std-btn small btn-cyan">+ MIC/LINE</button>
-            <button onclick="InputManager.addInputTrack(null, 'system')" class="std-btn small btn-purple">+ APP/SYS</button>
-            <button onclick="InputManager.toggleMonitorAll()" class="std-btn small" style="border-color:${anyMonitored ? '#0f0' : '#444'}; color:${anyMonitored ? '#0f0' : '#888'};">MON ALL: ${allMonitored ? 'ON' : 'OFF'}</button>
+            <button onclick="InputManager.toggleMonitorAll()" class="std-btn small" style="border-color:${anyBus ? '#0f0' : '#444'}; color:${anyBus ? '#0f0' : '#888'};">BUS ALL: ${allBus ? 'ON' : 'OFF'}</button>
             <button onclick="InputManager.toggleDroneRec()" class="std-btn small ${this.droneRecord ? 'btn-red' : ''}" style="border-color:${this.droneRecord ? '#f00' : '#444'}; color:${this.droneRecord ? '#f00' : '#888'};">DRONE REC: ${this.droneRecord ? 'ON' : 'OFF'}</button>
         `;
         container.appendChild(btnGrid);
@@ -2827,7 +3410,8 @@ class InputManager {
                 <div class="mixer-label" style="font-weight:bold; color:#0ff; white-space:nowrap; font-size:12px;">${I18n.t('INPUT_BUS')}</div>
                 <span id="in-master-level" class="mixer-level" style="color:#0ff;">-∞ dBFS</span>
                 <div id="in-master-vu" class="mixer-vu ascii-vu-meter" role="meter" aria-label="Input bus level" style="flex:1;"></div>
-                <input type="range" id="in-master-vol-slider" class="mixer-slider" min="0" max="2" step="0.01" value="${this.masterVolume}" oninput="InputManager.setMasterVolume(this.value); EffectManager.setActiveTab('input-bus');" style="width:100px; height: 14px;" aria-label="Master Input Volume">
+                <span id="in-monitor-hint" style="color:#ff0; font-size:8px; white-space:nowrap; display:${(anyBus && this.masterVolume <= 0.0001) ? '' : 'none'};" title="Inputs are on the bus and will be recorded, but monitoring is muted.">MONITOR MUTED</span>
+                <input type="range" id="in-master-vol-slider" class="mixer-slider" min="0" max="2" step="0.01" value="${this.masterVolume}" oninput="InputManager.setMasterVolume(this.value); EffectManager.setActiveTab('input-bus');" style="width:100px; height: 14px;" title="Input bus monitor level. Recording is pre-fader." aria-label="Input Bus Monitor Level">
                 <span id="in-master-vol-val" style="font-size:10px; width:40px; text-align:right; color:#0ff;">Vol ${this.masterVolume.toFixed(2)}</span>
             </div>
             ${fxHtml}
@@ -2836,6 +3420,7 @@ class InputManager {
 
         // Ensure FX Tabs are updated
         if(window.UIManager && UIManager.renderEffectsTabs) UIManager.renderEffectsTabs();
+        this.refreshInputPicker();
    }
 }
 

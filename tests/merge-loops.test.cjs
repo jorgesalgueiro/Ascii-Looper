@@ -84,3 +84,31 @@ test('merge leaves the destination untouched outside the source span', async () 
 
     assert.equal(loops[0].audioBuffer.getChannelData(0)[2500], 0.5);
 });
+
+test('merging into a playing destination retriggers it so the new audio is audible', async () => {
+    const { manager, loops } = createHarness();
+    loops[0].audioBuffer = buffer(4, 0.5);
+    loops[1].audioBuffer = buffer(2, 0.25);
+    loops[0].state = 'playing';
+    let restarts = 0;
+    loops[0].restart = () => { restarts += 1; };
+
+    await manager.mergeLoops(0, '1');
+
+    assert.equal(restarts, 1, 'the source node must be replaced after the buffer changed');
+    assert.equal(loops[0].audioBuffer.getChannelData(0)[1000], 0.75);
+});
+
+test('normalizing a loop is undoable and refreshes its waveform', () => {
+    const { loops, context } = createHarness();
+    const loop = loops[0];
+    loop.audioBuffer = buffer(1, 0.25);
+    loop.duration = 1;
+
+    loop.normalize();
+
+    assert.equal(loop.audioBuffer.getChannelData(0)[0], 1, 'normalize reaches 0 dB');
+    assert.ok(context.state.undoStack.includes(0), 'the edit is in the global undo stack');
+    assert.equal(loop.undoStack.length, 1, 'the loop keeps its pre-normalize snapshot');
+    assert.ok(loop.wavePeaks, 'waveform peaks are refreshed');
+});

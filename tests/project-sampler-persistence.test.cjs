@@ -31,6 +31,10 @@ function pad(id, overrides = {}) {
 
 // Stands in for AudioEngine.bufferToWAV's bytes: the tag travels through the project file
 // and comes back out of decodeAudioData, so a test can prove the audio really round-trips.
+function encodeTag(tag) {
+    return Buffer.from(String(tag), 'utf8').toString('base64');
+}
+
 function take(tag) {
     const data = new Float32Array([0.25, 0.5, 0.75, 1]);
     return {
@@ -64,7 +68,7 @@ function createHarness(pads) {
         AudioEngine: {
             get currentTime() { return 10; },
             resume: async () => {},
-            bufferToWAV: buffer => buffer.tag,
+            bufferToWAV: buffer => encodeTag(buffer.tag),
             updateMasterEQ: noop, updateMasterComp: noop
         },
         MasterMixManager: { setMasterMixVolume: noop, render: () => renders.push('mixer') },
@@ -118,7 +122,13 @@ function createHarness(pads) {
                 state: 'running',
                 sampleRate: 44100,
                 // Receives what the file carried, so a wrong or missing payload shows up here.
-                decodeAudioData: async tag => (tag ? take(tag) : null)
+                decodeAudioData: async (data) => {
+                if (!data) return null;
+                const tag = (typeof data === 'object' && typeof data.byteLength === 'number')
+                    ? Buffer.from(new Uint8Array(data)).toString('utf8')
+                    : String(data);
+                return take(tag);
+            }
             },
             loops: [], inputs: [], samplers: pads,
             customEffects: {}, fxPresets: {}, globalPresets: {}, tracker: {},
@@ -163,7 +173,7 @@ test('a saved project carries the audio and settings of every pad', async () => 
     assert.ok(Array.isArray(data.samplers), 'the project file must describe every sampler pad');
     assert.equal(data.samplers.length, 3);
     const [vox, empty, tom] = data.samplers;
-    assert.equal(vox.audioWavBase64, 'vox-4s', 'a loaded pad must carry its take');
+    assert.equal(vox.audioWavBase64, encodeTag('vox-4s'), 'a loaded pad must carry its take');
     assert.equal(vox.name, 'VOX');
     assert.equal(vox.speed, 0.5);
     assert.equal(vox.volume, 0.6);
@@ -171,7 +181,7 @@ test('a saved project carries the audio and settings of every pad', async () => 
     assert.equal(vox.muted, true);
     assert.equal(vox.isLooping, false);
     assert.equal(empty.audioWavBase64, null, 'an empty pad must still be listed');
-    assert.equal(tom.audioWavBase64, 'tom-1s');
+    assert.equal(tom.audioWavBase64, encodeTag('tom-1s'));
     assert.equal(tom.volume, 1.4);
 });
 
@@ -181,8 +191,8 @@ test('loading a project puts its one-shots back into the pads', async () => {
     await load({
         projectName: 'Live Set',
         samplers: [
-            savedPad(0, { name: 'CLAP', speed: 1.5, volume: 0.42, pan: 2, muted: true, isLooping: false, audioWavBase64: 'clap-1s' }),
-            savedPad(1, { audioWavBase64: 'kick-1s', volume: 1.75 })
+            savedPad(0, { name: 'CLAP', speed: 1.5, volume: 0.42, pan: 2, muted: true, isLooping: false, audioWavBase64: encodeTag('clap-1s') }),
+            savedPad(1, { audioWavBase64: encodeTag('kick-1s'), volume: 1.75 })
         ]
     });
 

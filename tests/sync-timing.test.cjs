@@ -99,7 +99,7 @@ function createHarness() {
                 fades.push({ node, target, start, durationMs });
             }
         },
-        EffectManager: { updateFxMixTimeUI() {} },
+        EffectManager: { activeTab: null, setActiveTab(tab) { this.activeTab = tab; }, updateFxMixTimeUI() {} },
         InputManager: { masterChain: null },
         document: {
             head: element(), body: element(), activeElement: null,
@@ -482,4 +482,241 @@ test('suspended drone context does not consume steps before audio can run', () =
     h.state.audioContext.state = 'running';
     h.context.DroneSynth.scheduleSynth(synth);
     assert.deepEqual(h.steps, [{ id: synth.id, index: 0, time: 10 }]);
+});
+
+test('a tempo change re-anchors playing loops at their audible position', () => {
+    const h = createHarness();
+    const loop = h.addLoop();
+    loop.originalBpm = 120;
+    loop.state = 'playing';
+    loop.graph = new h.context.AudioGraph(loop, 10);
+    assert.equal(loop.graph.build(), true);
+    // origin=1, duration=4, started at 10 -> source is at 1s at start.
+    assert.equal(loop.graph.startOffset, 1);
+
+    h.setTime(12);
+    h.elements.get('bpmInput').value = '60';
+    h.context.SyncManager.updateSettings();
+
+    // Old rate 1 reached 3s of the buffer; the new rate (0.5) starts there.
+    assert.equal(loop.graph.startTime, 12);
+    closeTo(loop.graph.startOffset, 3, 'phase after tempo change');
+    const rateEvents = loop.graph.source.playbackRate.events
+        .filter(event => event[0] === 'set');
+    assert.deepEqual(rateEvents.at(-1), ['set', 0.5, 12], 'new rate applied at the re-anchor time');
+    assert.equal(h.state.loopLength, 8);
+});
+
+test('dynamic takes follow a tempo change without losing their bar alignment', () => {
+    const h = createHarness();
+    const loop = h.addLoop();
+    Object.assign(loop, { originalBpm: 120, dynamicRecorded: true, playbackRate: 1 });
+    assert.equal(loop.effectivePlaybackRate, 1);
+
+    h.elements.get('bpmInput').value = '60';
+    h.context.SyncManager.updateSettings();
+
+    assert.equal(loop.effectivePlaybackRate, 0.5, 'four seconds must stretch to two 60 BPM bars');
+});
+
+test('a queued loop is re-queued on the new grid after a tempo change', () => {
+    const h = createHarness();
+    const loop = h.addLoop();
+    loop.state = 'queued';
+    loop.queueTimeout = h.context.setTimeout(() => {}, 99999);
+    const oldTimer = loop.queueTimeout;
+    const playedAt = [];
+    loop.play = (time) => { playedAt.push(time); loop.state = 'playing'; };
+
+    h.elements.get('bpmInput').value = '60';
+    h.context.SyncManager.updateSettings();
+
+    assert.equal(h.timers.has(oldTimer), false, 'the stale queue timer must be cancelled');
+    assert.ok(loop.queueTimeout, 'the loop must be queued again');
+    h.runNextTimer();
+    assert.deepEqual(playedAt, [16], 'the new grid boundary is now 16s');
+});
+
+test('a live phase-shift slider re-phases the audio at the next grid boundary', () => {
+    const h = createHarness();
+    const loop = h.addLoop();
+    loop.state = 'playing';
+    loop.graph = new h.context.AudioGraph(loop, 10);
+    assert.equal(loop.graph.build(), true);
+    assert.equal(loop.graph.startOffset, 1);
+
+    h.context.UIManager.setLoopStartDelay(0, 0.25);
+    assert.equal(loop.startDelay, 0.25, 'the visual phase updates immediately');
+    h.runNextTimer(); // debounce -> restart(SyncManager.getNextGridTime())
+
+    assert.equal(loop.graph.startTime, 13, 'audio re-phases on the grid, not mid-bar');
+    closeTo(loop.graph.startOffset, 3, '25% of a 4s loop');
+    assert.deepEqual(loop.graph.source.starts.at(-1), [13, 3]);
+});
+
+test('grid realignment restarts playing loops at the next shared boundary', () => {
+    const h = createHarness();
+    const loop = h.addLoop();
+    loop.state = 'playing';
+    loop.graph = new h.context.AudioGraph(loop, 10);
+    assert.equal(loop.graph.build(), true);
+
+    h.context.SyncManager.scheduleGridRealign(0);
+    h.runNextTimer();
+
+    assert.equal(loop.graph.startTime, 13);
+    closeTo(loop.graph.startOffset, phaseAt(loop, h.state.masterStartTime, 13), 'realigned phase');
+    assert.deepEqual(loop.graph.source.starts.at(-1), [13, loop.graph.startOffset]);
+});
+
+test('a bars change schedules a grid realign for playing loops', () => {
+    const h = createHarness();
+    const loop = h.addLoop();
+    loop.state = 'playing';
+    loop.graph = new h.context.AudioGraph(loop, 10);
+    assert.equal(loop.graph.build(), true);
+
+    h.elements.get('numBars').value = '4';
+    h.context.SyncManager.updateSettings();
+    h.runNextTimer();
+
+    assert.equal(h.state.loopLength, 8);
+    assert.equal(loop.graph.startTime, 17, 'the new 8s grid boundary');
+});
+
+test('enabling sync schedules a grid realign for playing loops', () => {
+    const h = createHarness();
+    const loop = h.addLoop();
+    loop.state = 'playing';
+    loop.graph = new h.context.AudioGraph(loop, 10);
+    assert.equal(loop.graph.build(), true);
+    h.state.syncEnabled = false;
+    h.elements.get('syncLoops').checked = true;
+
+    h.context.SyncManager.updateSettings();
+    h.runNextTimer();
+
+    assert.equal(h.state.syncEnabled, true);
+    assert.equal(loop.graph.startTime, 13, 'the loop snaps to the next shared grid');
+});
+
+test('realignTrackerToBarGrid snaps a running tracker to the next bar', () => {
+    const h = createHarness();
+    h.state.tracker.isPlaying = true;
+    h.state.tracker.nextRowTime = 10.4;
+    h.setTime(10);
+
+    assert.equal(h.context.SyncManager.realignTrackerToBarGrid(10), true);
+    // origin 1s, 2s bars: boundaries 1,3,5,7,9,11.
+    assert.equal(h.state.tracker.nextRowTime, 11);
+});
+
+test('a time-signature change re-anchors a running tracker without a tempo change', () => {
+    const h = createHarness();
+    h.state.tracker.isPlaying = true;
+    h.state.tracker.nextRowTime = 10.4;
+    h.setTime(10);
+
+    h.elements.get('timeSigNum').value = '3';
+    h.context.SyncManager.updateSettings();
+
+    // 120 BPM, 3/4 -> 1.5s bars from origin 1s: next boundary after 10s is 11.5s.
+    assert.equal(h.state.bpm, 120, 'tempo is unchanged');
+    assert.equal(h.state.tracker.nextRowTime, 11.5);
+});
+
+test('enabling sync re-anchors a running tracker to the bar grid', () => {
+    const h = createHarness();
+    h.state.syncEnabled = false;
+    h.state.tracker.isPlaying = true;
+    h.state.tracker.nextRowTime = 10.2;
+    h.setTime(10);
+
+    h.elements.get('syncLoops').checked = true;
+    h.context.SyncManager.updateSettings();
+
+    assert.equal(h.state.syncEnabled, true);
+    assert.equal(h.state.tracker.nextRowTime, 11, 'the tracker snaps to the next shared bar');
+});
+
+test('changing a drone step rate re-anchors its step grid', () => {
+    const h = createHarness();
+    const synth = h.addSynth();
+    synth.state = 'playing';
+    synth.startTime = 5;
+    synth.nextStepTime = 10.25; // an old 1/8-grid timestamp
+    synth.stepIndex = 3;
+    h.setTime(10);
+
+    h.context.DroneSynth.setParam(synth.id, 'rate', 16);
+    assert.equal(synth.params.rate, 16);
+    assert.equal(synth.nextStepTime, 0, 'the stale subdivision timestamp is discarded');
+
+    h.steps.length = 0;
+    h.context.DroneSynth.scheduleSynth(synth);
+    const stepDur = (60 / 120) * (4 / 16);
+    assert.ok(h.steps.length >= 2, 'the synth keeps scheduling after the change');
+    for (const step of h.steps) {
+        const beats = (step.time - h.state.masterStartTime) / stepDur;
+        assert.ok(Math.abs(beats - Math.round(beats)) < 1e-9, 'every step lands on the new 1/16 grid');
+    }
+});
+
+test('a tempo change requeues a loop already built for a future boundary', () => {
+    const h = createHarness();
+    const loop = h.addLoop();
+    loop.state = 'playing';
+    loop.graph = new h.context.AudioGraph(loop, 14);
+    assert.equal(loop.graph.build(), true);
+    assert.equal(loop.graph.startTime, 14);
+
+    h.elements.get('bpmInput').value = '90';
+    h.context.SyncManager.updateSettings();
+
+    assert.equal(loop.state, 'queued', 'the old future graph must not start off-grid');
+    assert.equal(loop.graph, null);
+
+    h.runNextTimer();
+    assert.equal(loop.state, 'playing');
+    const grid = h.state.loopLength;
+    const phase = ((loop.graph.startTime - h.state.masterStartTime) % grid + grid) % grid;
+    assert.ok(phase < 1e-9 || Math.abs(phase - grid) < 1e-9, 'the requeued start lands on the new grid');
+});
+
+test('sampler trigger restarts a playing pad instead of toggling it off', () => {
+    const h = createHarness();
+    const sampler = h.addSampler();
+    sampler.buffer = { duration: 4 };
+    sampler.state = 'playing';
+    sampler.startTime = 10;
+    const oldSource = { stop() {}, connect() {}, disconnect() {}, onended: null };
+    sampler.source = oldSource;
+    sampler.activeSources.add(oldSource);
+
+    h.context.SamplerManager.trigger(sampler.id, 12);
+
+    assert.equal(sampler.state, 'armed', 'a future row retrigger is queued');
+    assert.equal(sampler.startTime, 12);
+    assert.notEqual(sampler.source, oldSource, 'a fresh source carries the retrigger');
+    assert.equal(h.sources.at(-1).starts.length, 1);
+    assert.equal(h.sources.at(-1).starts[0][0], 12);
+});
+
+test('sampler pad retriggers a one-shot but still toggles a looping pad', () => {
+    const h = createHarness();
+    const sampler = h.addSampler();
+    sampler.buffer = { duration: 4 };
+    sampler.startTime = 10;
+
+    sampler.isLooping = false;
+    sampler.state = 'playing';
+    h.context.SamplerManager.pad(sampler.id, 12);
+    assert.equal(sampler.state, 'armed', 'a one-shot hit retriggers from the top');
+    assert.equal(sampler.startTime, 12);
+
+    sampler.state = 'playing';
+    sampler.startTime = 10;
+    sampler.isLooping = true;
+    h.context.SamplerManager.pad(sampler.id);
+    assert.equal(sampler.state, 'stopping', 'a looping pad still toggles off on the next grid');
 });

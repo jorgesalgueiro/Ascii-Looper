@@ -37,6 +37,8 @@ function createHarness() {
         AudioEngine: {
             currentTime: 10, resume: async () => true, scheduledFade() {}, seamlessLoopCrossfade() {},
             compensateLatency: buffer => buffer,
+            getSystemLatencySeconds: () => 0,
+            getInputLatencySeconds: () => 0,
             cloneBuffer(buffer) {
                 const clone = createBuffer(buffer.numberOfChannels, buffer.length, buffer.sampleRate);
                 for (let c = 0; c < buffer.numberOfChannels; c++) clone.getChannelData(c).set(buffer.getChannelData(c));
@@ -52,7 +54,22 @@ function createHarness() {
                 }
             }
         },
-        SyncManager: { getQuantizeOffset: () => 2, getLoopLength: () => 1, updateSettings() {} },
+        SyncManager: {
+            getQuantizeOffset: () => 2,
+            getLoopLength: () => 1,
+            updateSettings() {},
+            getDynamicStopPlan(now, snapWindow) {
+                const window = Math.max(0.02, Math.min(0.5, snapWindow || 0.1));
+                const toNext = this.getTimeToNextBar ? this.getTimeToNextBar(now) : 1;
+                const sincePrevious = this.getTimeSinceLastBar
+                    ? this.getTimeSinceLastBar(now)
+                    : window + 1;
+                if (toNext <= window || sincePrevious <= window) {
+                    return { wait: false, stopTime: now };
+                }
+                return { wait: true, stopTime: now + toNext };
+            }
+        },
         setTimeout: (callback, delay) => { timers.set(++timerId, { callback, delay }); return timerId; },
         clearTimeout: id => timers.delete(id), alert: message => alerts.push(message),
         DebugManager: { enabled: false },
@@ -498,4 +515,136 @@ test('failed overdub initialization releases the recorder lock', async () => {
     assert.equal(harness.state.isRecording, false);
     assert.equal(harness.state.recordingLoopId, -1);
     assert.equal(loop.state, 'playing');
+});
+
+test('STOP ALL silences loops even while the tracker is playing', () => {
+    const harness = createHarness();
+    const { manager, state, context, timers } = harness;
+    const loop = state.loops[0];
+    loop.audioBuffer = createBuffer(1, 256, 1000);
+    loop.duration = loop.audioBuffer.duration;
+    loop.state = 'playing';
+    loop.graph = {
+        startTime: 10,
+        nodes: { volume: {}, source: { stop() {} } },
+        cleanup() { this.cleaned = true; }
+    };
+    const tracker = {
+        isPlaying: true,
+        stop() {
+            tracker.isPlaying = false;
+            state.tracker.isPlaying = false;
+            // Mirrors TrackerManager.stop(), which calls LoopManager.stopAll().
+            manager.stopAll();
+        }
+    };
+    context.TrackerManager = tracker;
+    state.tracker = { isPlaying: true };
+
+    manager.stopAll();
+
+    assert.equal(state.tracker.isPlaying, false, 'the tracker must stop');
+    assert.notEqual(loop.state, 'playing', 'the loop must stop too');
+    if (loop.stopTimeout) timers.get(loop.stopTimeout)?.callback();
+    assert.equal(loop.state, 'stopped');
+    assert.equal(loop.graph, null);
+});
+
+test('clear resets stale timing, tempo and capture fields', () => {
+    const { state } = createHarness();
+    const loop = state.loops[0];
+    loop.audioBuffer = createBuffer(1, 256, 1000);
+    loop.duration = 0.256;
+    loop.originalBpm = 100;
+    loop.dynamicRecorded = true;
+    loop._recordingTargetStartTime = 5;
+    loop.stemChunks = [new Float32Array(8)];
+    loop._driftStrikes = 4;
+    loop._phaseRestartPending = true;
+
+    loop.clear();
+
+    assert.equal(loop.audioBuffer, null);
+    assert.equal(loop.duration, 0, 'stale duration must not survive a clear');
+    assert.equal(loop.originalBpm, null, 'a reused loop must not inherit the old tempo basis');
+    assert.equal(loop.dynamicRecorded, false);
+    assert.equal(loop._recordingTargetStartTime, 0);
+    assert.equal(loop.stemChunks.length, 0);
+    assert.equal(loop._driftStrikes, 0);
+    assert.equal(loop._phaseRestartPending, false);
+    assert.equal(loop.state, 'empty');
+});
+
+test('a scheduled mute waits for the tracker row time instead of fading now', async () => {
+    const h = createHarness();
+    const { manager, state, context } = h;
+    const loop = state.loops[0];
+    loop.audioBuffer = createBuffer(1, 256, 1000);
+    await loop.play();
+    const fades = [];
+    context.AudioEngine.scheduledFade = (node, target, start, duration) => {
+        fades.push({ target, start, duration });
+    };
+
+    manager.toggleMute(0, 12.5);
+
+    const fade = fades.at(-1);
+    assert.equal(loop.muted, true);
+    assert.equal(fade.target, 0);
+    assert.ok(Math.abs(fade.start - 12.485) < 1e-9, `fade must start on the row (got ${fade.start})`);
+    assert.ok(fade.duration > 0);
+});
+
+test('multiply recorder setup failure releases the global record lock', async () => {
+    const h = createHarness();
+    const { manager, state, context } = h;
+    const loop = state.loops[0];
+    loop.audioBuffer = createBuffer(1, 256, 1000);
+    loop.duration = loop.audioBuffer.duration;
+    await loop.play();
+    context.AudioWorkletNode = class { constructor() { throw new Error('no worklet'); } };
+
+    await manager.startMultiply(0);
+
+    assert.equal(state.isRecording, false);
+    assert.equal(state.recordingLoopId, -1);
+    assert.equal(state.loopRecorder, null);
+    assert.equal(state.isFinishingRecording, false);
+    assert.equal(loop.state, 'playing', 'the original take keeps playing');
+});
+
+test('clearing during multiply release cannot leave the finishing lock set', async () => {
+    const h = createHarness();
+    const { manager, state } = h;
+    const { loop } = await startCapture(h, 'multiplying');
+    state.isFinishingRecording = true;
+    loop.audioBuffer = null;
+    state.isRecording = true;
+    state.recordingLoopId = 0;
+
+    await manager.processMultiplyData([[new Float32Array(256)]], 0);
+
+    assert.equal(state.isRecording, false);
+    assert.equal(state.isFinishingRecording, false, 'the record lock must be released');
+    assert.equal(state.recordingLoopId, -1);
+    assert.equal(state.loopRecorder, null);
+    assert.equal(state.recordingActualStartTime, 0);
+});
+
+test('clear cancels a pending phase-shift restart so a new take cannot inherit it', async () => {
+    const { context, state, timers } = createHarness();
+    const loop = state.loops[0];
+    loop.audioBuffer = createBuffer(1, 256, 1000);
+    loop.duration = 0.256;
+    await loop.play();
+
+    context.UIManager.setLoopStartDelay(0, 0.5, true);
+    assert.ok(loop._phaseRestartTimer, 'the debounce timer must be armed');
+    assert.equal(loop._phaseRestartPending, true);
+
+    loop.clear();
+
+    assert.equal(loop._phaseRestartTimer, null);
+    assert.equal(loop._phaseRestartPending, false);
+    assert.equal(timers.size, 0, 'no stale restart may fire after the clear');
 });

@@ -263,3 +263,85 @@ test('dynamic stop delays when far from bar end', () => {
     const shouldStopImmediately = timeToNextBar <= snapThreshold;
     assert.equal(shouldStopImmediately, false);
 });
+
+test('dynamic stop snaps immediately just after a bar line', () => {
+    const { state, SyncManager } = createHarness({ masterStartTime: 1.0 });
+    state.bpm = 120;
+    state.timeSig = { num: 4, den: 4 };
+    const plan = SyncManager.getDynamicStopPlan(5.02, 0.1);
+    assert.equal(plan.wait, false);
+    assert.equal(plan.stopTime, 5.02);
+});
+
+test('dynamic stop snaps immediately just before a bar line', () => {
+    const { state, SyncManager } = createHarness({ masterStartTime: 1.0 });
+    state.bpm = 120;
+    state.timeSig = { num: 4, den: 4 };
+    const plan = SyncManager.getDynamicStopPlan(4.95, 0.1);
+    assert.equal(plan.wait, false);
+});
+
+test('dynamic stop waits for the next bar mid-bar', () => {
+    const { state, SyncManager } = createHarness({ masterStartTime: 1.0 });
+    state.bpm = 120;
+    state.timeSig = { num: 4, den: 4 };
+    const plan = SyncManager.getDynamicStopPlan(5.7, 0.1);
+    assert.equal(plan.wait, true);
+    assert.equal(plan.stopTime, 7);
+});
+
+test('dynamic stop snaps at the exact bar boundary instead of adding a bar', () => {
+    const { state, SyncManager } = createHarness({ masterStartTime: 1.0 });
+    state.bpm = 120;
+    state.timeSig = { num: 4, den: 4 };
+    const plan = SyncManager.getDynamicStopPlan(5, 0.1);
+    assert.equal(plan.wait, false);
+});
+
+test('dynamic record start quantizes to the next bar only when requested', () => {
+    const { state, setTime, SyncManager } = createHarness({ masterStartTime: 1.0 });
+    state.bpm = 120;
+    state.timeSig = { num: 4, den: 4 };
+    setTime(10.1);
+    assert.equal(SyncManager.getDynamicRecordStart(10.1, true), 11, 'next bar at 11s');
+    assert.equal(SyncManager.getDynamicRecordStart(10.1, false), 10.1, 'tap time is kept when not quantized');
+    state.syncEnabled = false;
+    assert.equal(SyncManager.getDynamicRecordStart(10.1, true), 10.1, 'no grid when sync is off');
+});
+
+test('dynamic plan reaches back to the previous bar when pre-roll covers it', () => {
+    const { state, SyncManager } = createHarness({ masterStartTime: 1.0 });
+    state.bpm = 120;
+    state.timeSig = { num: 4, den: 4 };
+    // Bars at 1, 3, 5, 7. Tap 50 ms after the bar: SNAP can recover it.
+    const plan = SyncManager.getDynamicRecordPlan(5.05, true, true, 0.1);
+    assert.equal(plan.startTime, 5);
+    assert.equal(plan.usePreRoll, true);
+});
+
+test('dynamic plan waits for the next bar when the tap is outside SNAP', () => {
+    const { state, SyncManager } = createHarness({ masterStartTime: 1.0 });
+    state.bpm = 120;
+    state.timeSig = { num: 4, den: 4 };
+    const plan = SyncManager.getDynamicRecordPlan(5.3, true, true, 0.1);
+    assert.equal(plan.startTime, 7);
+    assert.equal(plan.usePreRoll, false);
+});
+
+test('dynamic plan never reaches back without a live pre-roll', () => {
+    const { state, SyncManager } = createHarness({ masterStartTime: 1.0 });
+    state.bpm = 120;
+    state.timeSig = { num: 4, den: 4 };
+    const plan = SyncManager.getDynamicRecordPlan(5.05, true, false, 0.1);
+    assert.equal(plan.startTime, 7);
+    assert.equal(plan.usePreRoll, false);
+});
+
+test('dynamic plan keeps the tap moment when REC TIME is on', () => {
+    const { state, SyncManager } = createHarness({ masterStartTime: 1.0 });
+    state.bpm = 120;
+    state.timeSig = { num: 4, den: 4 };
+    const plan = SyncManager.getDynamicRecordPlan(5.05, false, true, 0.1);
+    assert.equal(plan.startTime, 5.05);
+    assert.equal(plan.usePreRoll, false);
+});

@@ -104,6 +104,28 @@ registerProcessor('metronome-processor', MetronomeProcessor);
 // =============================================
 
 class SyncManager {
+    static _realignTimer = null;
+
+    /**
+     * Restart every playing loop at the next shared grid boundary. Used when
+     * the grid itself changes (bars, time signature, sync enabled) and the
+     * existing phase relationship is no longer valid. BPM-only changes are
+     * handled by phase-preserving re-anchoring and do not need a restart.
+     */
+    static scheduleGridRealign(delayMs = 120) {
+        if (this._realignTimer) clearTimeout(this._realignTimer);
+        this._realignTimer = setTimeout(() => {
+            this._realignTimer = null;
+            if (!state.syncEnabled) return;
+            const boundary = this.getNextGridTime();
+            state.loops.forEach((loop) => {
+                if (loop.state === 'playing' && loop.graph && !loop.graph.immediate) {
+                    loop.restart(boundary);
+                }
+            });
+        }, delayMs);
+    }
+
     /**
      * Update sync settings from UI controls and recalculate loop length.
      */
@@ -124,7 +146,16 @@ class SyncManager {
         const fxMixTimeSel = document.getElementById('fxMixTimeSel');
 
         const oldBpm = state.bpm; // Save previous BPM for phase-alignment
+        const oldLoopLength = state.loopLength;
+        const oldTimeSigNum = (state.timeSig && state.timeSig.num) || 4;
+        const oldBeatsPerGrid = (state.bars || 2) * ((state.timeSig && state.timeSig.num) || 4);
+        const oldSyncSource = syncSourceEl ? syncSourceEl.value : null;
         const wasSynced = state.syncEnabled;
+        // Capture each loop's rate before the grid changes. The graph anchor
+        // describes the old rate; re-anchoring at the change keeps the audible
+        // phase exactly where it was.
+        const previousRates = state.loops.map((loop) => loop.effectivePlaybackRate);
+        const now = AudioEngine.currentTime;
 
         // Read sync mode from radio group (new UI) or derive from legacy checkbox
         if (syncRadios.length > 0) {
@@ -200,32 +231,26 @@ class SyncManager {
 
         // Continuous Phase Alignment for Live Tempo Changes
         if (state.bpm !== oldBpm && state.masterStartTime !== 0 && state.audioContext) {
-            const now = AudioEngine.currentTime;
             // Calculate how many beats have elapsed on the master grid
             const currentBeats = (now - state.masterStartTime) * (oldBpm / 60.0);
             // Shift the master start time so that current beats remains identical under the new BPM
-            state.masterStartTime = now - (currentBeats * 60.0 / state.bpm);
-            
-            // Realign Tracker seamlessly
-            if (window.TrackerManager && state.tracker.isPlaying) {
-                const secondsPerBar = Math.max(0.1, (60 / state.bpm) * state.timeSig.num);
-                const elapsed = now - state.masterStartTime;
-                const rowsElapsed = Math.floor(elapsed / secondsPerBar);
-                state.tracker.nextRowTime = state.masterStartTime + ((rowsElapsed + 1) * secondsPerBar);
-            }
+            // (0 is the "unset" sentinel, so keep a mathematically-zero origin non-zero).
+            state.masterStartTime = (now - (currentBeats * 60.0 / state.bpm)) || 1e-9;
         }
 
-        // Update Sync UI
-        const loopLengthEl = document.getElementById('loopLength');
-        if (loopLengthEl) {
-            loopLengthEl.textContent = state.loopLength.toFixed(2) + 's';
+        // The tracker schedules one row per bar. A tempo change, a new time
+        // signature (bar length) or enabling sync moves that bar grid, so the
+        // next row must be re-anchored or it stays off-grid forever.
+        const barGridChanged = state.bpm !== oldBpm ||
+            ((state.timeSig && state.timeSig.num) || 4) !== oldTimeSigNum ||
+            (!wasSynced && state.syncEnabled);
+        if (barGridChanged) {
+            this.realignTrackerToBarGrid(now);
         }
-        
-        this.updateLatencyDisplay();
 
-        this.renderTimelineMarkers();
-        if (window.MetronomeScheduler) window.MetronomeScheduler.updateSettings();
-        
+        // Apply the new tempo/rate anchors before touching the DOM: the audio
+        // timestamp `now` above must remain the same for the master origin and
+        // every loop phase anchor.
         const updateTimeBasedFX = (chainNodes, params) => {
             if (!chainNodes || !params) return;
             if (chainNodes.arpDelay) try { chainNodes.arpDelay[0].parameters.get('bpm').setValueAtTime(state.bpm, AudioEngine.currentTime); } catch(e){}
@@ -239,15 +264,84 @@ class SyncManager {
             }
         };
 
-        state.loops.forEach(l => {
-            if (l.graph && l.graph.nodes.effects) updateTimeBasedFX(l.graph.nodes.effects, l.params);
-            if (l.state === 'playing' && l.graph && l.graph.nodes.source) {
-                const activeRate = l.effectivePlaybackRate;
-                if (Number.isFinite(activeRate) && activeRate > 0) {
-                    l.graph.nodes.source.playbackRate.setTargetAtTime(Math.max(0.001, activeRate), AudioEngine.currentTime, 0.05);
-                }
+        state.loops.forEach((loop, index) => {
+            if (loop.graph && loop.graph.nodes.effects) updateTimeBasedFX(loop.graph.nodes.effects, loop.params);
+            if (loop.state !== 'playing' || !loop.graph || !loop.graph.nodes || !loop.graph.nodes.source) return;
+
+            const previousRate = previousRates[index];
+            const nextRate = loop.effectivePlaybackRate;
+            if (!Number.isFinite(nextRate) || nextRate <= 0) return;
+
+            // The graph's startOffset/startTime describe the source position at
+            // the previous rate. Move the anchor to the position the source has
+            // actually reached before switching playbackRate, otherwise every
+            // phase consumer (playhead, drift watchdog, restarts) extrapolates
+            // the old speed into the new one.
+            if (Number.isFinite(previousRate) && previousRate > 0 &&
+                nextRate !== previousRate &&
+                Number.isFinite(loop.graph.startTime) && loop.graph.startTime <= now &&
+                loop.duration > 0) {
+                let position = ((loop.graph.startOffset || 0) +
+                    (now - loop.graph.startTime) * previousRate) % loop.duration;
+                if (position < 0) position += loop.duration;
+                loop.graph.startOffset = position;
+                loop.graph.startTime = now;
             }
+            loop.graph.nodes.source.playbackRate.setValueAtTime(Math.max(0.001, nextRate), now);
         });
+
+        // A start queued for the old grid would land off-beat after a tempo or
+        // bar-length change. Re-queue it on the new shared grid. This includes
+        // graphs that were built for a future boundary but are not audible yet:
+        // their source offset was phased against the old grid and cannot be
+        // changed after start(), so rebuild them as queued starts.
+        const gridChanged = state.loopLength !== oldLoopLength ||
+            state.bpm !== oldBpm || state.syncEnabled !== wasSynced;
+        if (gridChanged && state.syncEnabled) {
+            state.loops.forEach((loop) => {
+                if (loop.state !== 'playing' || !loop.graph) return;
+                if (!Number.isFinite(loop.graph.startTime) || loop.graph.startTime <= now + 0.001) return;
+                if (loop.graph.immediate) return;
+                if (loop.queueTimeout) { clearTimeout(loop.queueTimeout); loop.queueTimeout = null; }
+                try { loop.graph.cleanup(); } catch (e) {}
+                loop.graph = null;
+                loop.state = 'queued';
+            });
+
+            const gridTime = this.getNextGridTime();
+            state.loops.forEach((loop) => {
+                if (loop.state !== 'queued') return;
+                if (loop.queueTimeout) clearTimeout(loop.queueTimeout);
+                const delay = Math.max(0, (gridTime - AudioEngine.currentTime) * 1000 - 100);
+                loop.queueTimeout = setTimeout(() => {
+                    loop.queueTimeout = null;
+                    if (loop.state === 'queued') loop.play(gridTime);
+                }, delay);
+            });
+        }
+
+        // A different bar/time-signature grid (or enabling sync) changes the
+        // phase relationship itself; re-phase playing loops on the new grid.
+        const beatsPerGrid = (state.bars || 2) * ((state.timeSig && state.timeSig.num) || 4);
+        const syncSourceChanged = syncSourceEl && oldSyncSource !== syncSourceEl.value;
+        if (state.syncEnabled && (
+            beatsPerGrid !== oldBeatsPerGrid ||
+            (!wasSynced && state.syncEnabled) ||
+            syncSourceChanged
+        )) {
+            this.scheduleGridRealign();
+        }
+        
+        // UI reflects the new grid after the audio anchors are updated.
+        const loopLengthEl = document.getElementById('loopLength');
+        if (loopLengthEl) {
+            loopLengthEl.textContent = state.loopLength.toFixed(2) + 's';
+        }
+        
+        this.updateLatencyDisplay();
+
+        this.renderTimelineMarkers();
+        if (window.MetronomeScheduler) window.MetronomeScheduler.updateSettings();
         
         if (InputManager.masterChain && InputManager.masterChain.nodes) {
             updateTimeBasedFX(InputManager.masterChain.nodes, InputManager.masterParams);
@@ -258,6 +352,22 @@ class SyncManager {
                 if (state.bpm !== oldBpm || state.syncEnabled !== wasSynced) d.nextStepTime = 0;
                 if (d.fxChain && d.fxChain.nodes) updateTimeBasedFX(d.fxChain.nodes, d.fxParams);
             });
+        }
+
+        // Keep the dynamic pre-roll recorder in step with the sync mode. It
+        // must exist before the user taps REC so quantized takes can include
+        // the audio played just before the tap.
+        if (window.LoopManager) {
+            if (state.syncMode === 'dynamic' && !state.isRecording) {
+                LoopManager.ensureDynamicPreBuffer();
+            } else if (state.syncMode !== 'dynamic') {
+                LoopManager.releaseDynamicPreBuffer();
+            }
+        }
+
+        // The Sample Lab bar overlay follows BPM/time-signature changes.
+        if (window.SampleLab && SampleLab.renderWaveform) {
+            try { SampleLab.renderWaveform(); } catch (e) {}
         }
     }
 
@@ -320,9 +430,50 @@ class SyncManager {
     }
 
     /**
+     * First sample time for a dynamic take. With `quantize` off the take keeps
+     * the tap moment; with it on the take starts on the next bar so it lines up
+     * with drones, tracker rows and loop boundaries.
+     */
+    static getDynamicRecordStart(now = AudioEngine.currentTime, quantize = false) {
+        if (!state.syncEnabled || !quantize) return now;
+        return this.getNextBarTime(now);
+    }
+
+    /**
+     * Decides where a dynamic take begins.
+     * - REC TIME off (`quantize` false): keep the tap time.
+     * - REC TIME on and the tap landed within SNAP after the previous bar,
+     *   with a live pre-buffer: use that bar and let the pre-roll supply the
+     *   audio between the bar line and the tap.
+     * - Otherwise: the next bar.
+     * Returns `{ startTime, usePreRoll }`.
+     */
+    static getDynamicRecordPlan(now = AudioEngine.currentTime, quantize = false, preRollReady = false, snapWindow = 0.1) {
+        if (!state.syncEnabled || !quantize) {
+            return { startTime: now, usePreRoll: false };
+        }
+        const barDur = this.getBarDuration();
+        if (!(barDur > 0)) {
+            return { startTime: now, usePreRoll: false };
+        }
+        if (preRollReady) {
+            const previousBar = this.getPreviousBarTime(now);
+            const intoBar = Math.max(0, now - previousBar);
+            const window = Math.max(0, Math.min(0.5, Number.isFinite(snapWindow) ? snapWindow : 0.1));
+            if (intoBar <= window) {
+                return { startTime: previousBar, usePreRoll: true };
+            }
+        }
+        return { startTime: this.getNextBarTime(now), usePreRoll: false };
+    }
+
+    /**
      * Gets one shared future audio-time boundary on the master transport grid.
      */
     static getNextGridTime(gridLength = state.loopLength, minimumLead = 0.03) {
+        if (state.masterStartTime === 0 && typeof AudioEngine !== 'undefined' && AudioEngine.ensureMasterClock) {
+            AudioEngine.ensureMasterClock();
+        }
         const now = AudioEngine.currentTime;
         if (!state.syncEnabled || !Number.isFinite(gridLength) || gridLength <= 0 || !Number.isFinite(now)) {
             return now;
@@ -349,7 +500,9 @@ class SyncManager {
      */
     static getLoopPosition() {
         if (!state.syncEnabled || state.loopLength <= 0.0001) return 0; // Guard against NaN
-        
+        if (state.masterStartTime === 0 && typeof AudioEngine !== 'undefined' && AudioEngine.ensureMasterClock) {
+            AudioEngine.ensureMasterClock();
+        }
         const now = AudioEngine.currentTime;
         if (now === 0) return 0;
 
@@ -377,6 +530,9 @@ class SyncManager {
      * Bar boundaries are relative to state.masterStartTime.
      */
     static getPreviousBarTime(now) {
+        if (state.masterStartTime === 0 && typeof AudioEngine !== 'undefined' && AudioEngine.ensureMasterClock) {
+            AudioEngine.ensureMasterClock();
+        }
         const barDur = this.getBarDuration();
         if (barDur <= 0) return now;
         const origin = (Number.isFinite(state.masterStartTime) && state.masterStartTime !== 0)
@@ -392,6 +548,9 @@ class SyncManager {
      * Returns the audio time of the next bar boundary strictly after `now`.
      */
     static getNextBarTime(now) {
+        if (state.masterStartTime === 0 && typeof AudioEngine !== 'undefined' && AudioEngine.ensureMasterClock) {
+            AudioEngine.ensureMasterClock();
+        }
         const barDur = this.getBarDuration();
         if (barDur <= 0) return now;
         const origin = (Number.isFinite(state.masterStartTime) && state.masterStartTime !== 0)
@@ -417,6 +576,42 @@ class SyncManager {
     static getTimeSinceLastBar(now) {
         const t = now !== undefined ? now : AudioEngine.currentTime;
         return Math.max(0, t - this.getPreviousBarTime(t));
+    }
+
+    /**
+     * Decides when a dynamic take should end. SNAP is a symmetric window
+     * around a bar line: tapping within it stops at the nearest bar (audio
+     * past the line is trimmed later), otherwise the stop waits for the next
+     * bar so the take stays a whole number of bars.
+     * Returns `{ wait, stopTime }`.
+     */
+    static getDynamicStopPlan(now = AudioEngine.currentTime, snapWindow = 0.1) {
+        const barDur = this.getBarDuration();
+        if (!(barDur > 0)) return { wait: false, stopTime: now };
+        const window = Math.max(0.02, Math.min(0.5, Number.isFinite(snapWindow) ? snapWindow : 0.1));
+        const timeToNext = this.getTimeToNextBar(now);
+        const sincePrevious = this.getTimeSinceLastBar(now);
+        if (timeToNext <= window || sincePrevious <= window) {
+            return { wait: false, stopTime: now };
+        }
+        return { wait: true, stopTime: this.getNextBarTime(now) };
+    }
+
+    /**
+     * Snaps a running tracker to the next bar boundary on the current grid.
+     * Used whenever the bar length or master phase changes (BPM, time
+     * signature, or enabling sync) so rows never stay off-grid.
+     */
+    static realignTrackerToBarGrid(now = AudioEngine.currentTime) {
+        if (!window.TrackerManager || !state.tracker || !state.tracker.isPlaying) return false;
+        if (!state.syncEnabled) return false;
+        if (!Number.isFinite(state.masterStartTime) || state.masterStartTime === 0) return false;
+        const barDur = this.getBarDuration();
+        if (!(barDur > 0) || !Number.isFinite(now)) return false;
+        const elapsed = Math.max(0, now - state.masterStartTime);
+        const nextBarIndex = Math.floor(elapsed / barDur) + 1;
+        state.tracker.nextRowTime = state.masterStartTime + (nextBarIndex * barDur);
+        return true;
     }
 
     static updateLatencyDisplay() {
@@ -544,7 +739,7 @@ class SyncManager {
             recorder = new AudioWorkletNode(ctx, 'recorder-processor');
             inputSource = input.source;
             inputSource.connect(recorder); // Raw input, independent of monitor and FX.
-            recorder.connect(ctx.destination); // Recorder emits silence; keeps capture active.
+            recorder.connect(AudioEngine.outputNode || ctx.destination); // Recorder emits silence; keeps capture active.
             // Break microphone feedback while keeping raw capture connected.
             for (const channel of state.inputs) {
                 if (channel.monitor && channel.panNode && InputManager.inputBus) {
@@ -563,7 +758,7 @@ class SyncManager {
                     const source = ctx.createBufferSource();
                     sources.push(source);
                     source.buffer = probe;
-                    source.connect(state.masterSoftClip || ctx.destination);
+                    source.connect(state.masterSoftClip || AudioEngine.outputNode || ctx.destination);
                     source.start(time);
                 }
                 stopTimer = setTimeout(() => {
@@ -585,7 +780,7 @@ class SyncManager {
             state.latencyCalibration = { ...result, context: ctx, inputSource };
             this.updateLatencyDisplay();
             log('Calibration measured', result);
-            const reported = (ctx.baseLatency || 0) + (ctx.outputLatency || 0);
+            const reported = AudioEngine.getSystemLatencySeconds() + AudioEngine.getInputLatencySeconds();
             const correction = Math.round(result.latencyMs - reported * 1000);
             const slider = document.getElementById('latencyCorrection');
             const min = slider && slider.min !== '' ? Number(slider.min) : -200;
@@ -644,7 +839,7 @@ class MetronomeScheduler {
         if (state.audioContext) {
             try {
                 this.node = new AudioWorkletNode(state.audioContext, 'metronome-processor', { outputChannelCount: [2] });
-                this.node.connect(state.audioContext.destination);
+                this.node.connect(AudioEngine.outputNode || state.audioContext.destination);
                 this.updateSettings();
             } catch (e) {
                 console.warn("Metronome worklet creation failed:", e);

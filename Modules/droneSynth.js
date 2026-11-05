@@ -2047,6 +2047,12 @@ class DroneSynth {
             return;
         }
         synth.params[key] = parsed;
+        // The step grid is derived from `rate`; re-anchor so the next step
+        // lands on the new subdivision boundary instead of keeping a timestamp
+        // from the old subdivision.
+        if (key === 'rate' && (synth.state === 'playing' || synth.state === 'armed')) {
+            synth.nextStepTime = 0;
+        }
         if (key === 'filterType') {
             Object.values(synth.voices).forEach(v => {
                 if(v && v.filter) v.filter.type = val;

@@ -196,7 +196,7 @@ registerProcessor('dropout-detector-processor', DropoutDetectorProcessor);
                 const det = new Ctor(ctx, 'click-detector-processor', { parameterData: { threshold: d.th } });
                 d.node.connect(det); // tap (fan-out), does not disturb the existing chain
                 const mute = ctx.createGain(); mute.gain.value = 0;
-                det.connect(mute); mute.connect(ctx.destination); // keep the worklet processing, silently
+                det.connect(mute); mute.connect(AudioEngine.outputNode || ctx.destination); // keep the worklet processing, silently
                 det.port.addEventListener('message', (e) => {
                     if (!DebugManager.enabled) return;
                     const m = e.data;
@@ -224,7 +224,7 @@ registerProcessor('dropout-detector-processor', DropoutDetectorProcessor);
                 const dd = new Ctor(ctx, 'dropout-detector-processor');
                 tap.connect(dd);
                 const mute = ctx.createGain(); mute.gain.value = 0;
-                dd.connect(mute); mute.connect(ctx.destination);
+                dd.connect(mute); mute.connect(AudioEngine.outputNode || ctx.destination);
                 dd.port.addEventListener('message', (e) => {
                     if (!DebugManager.enabled) return;
                     const m = e.data;
@@ -371,7 +371,16 @@ registerProcessor('dropout-detector-processor', DropoutDetectorProcessor);
         L.push('=== AUDIO SNAPSHOT ===');
         if (ctx) {
             L.push(`AudioContext : state=${ctx.state} sr=${ctx.sampleRate}Hz t=${ctx.currentTime.toFixed(3)}s`);
-            L.push(`Latency      : base=${((ctx.baseLatency || 0) * 1000).toFixed(1)}ms output=${((ctx.outputLatency || 0) * 1000).toFixed(1)}ms`);
+            const outMs = AudioEngine.getSystemLatencySeconds() * 1000;
+            const inMs = AudioEngine.getInputLatencySeconds() * 1000;
+            L.push(`Latency      : out=${outMs.toFixed(1)}ms in=${inMs.toFixed(1)}ms base=${((ctx.baseLatency || 0) * 1000).toFixed(1)}ms ctxOut=${((ctx.outputLatency || 0) * 1000).toFixed(1)}ms`);
+            if (window.NativeAudio && NativeAudio.active) {
+                const b = NativeAudio.latencyBreakdown(ctx);
+                if (b) {
+                    L.push(`Native       : ${NativeAudio.info.hostId} ${b.sampleRate}Hz quantum=${b.jsQuantumMs.toFixed(2)}ms transport=${b.transportMs.toFixed(1)}ms driverOut=${b.driverOutputMs.toFixed(1)}ms driverIn=${b.driverInputMs.toFixed(1)}ms rustOut=${b.rustOutputMs.toFixed(1)}ms rustIn=${b.rustInputMs.toFixed(1)}ms`);
+                    L.push(`Native stats : xruns=${b.xruns} underruns=${b.underruns} overruns=${b.overruns}`);
+                }
+            }
         } else {
             L.push('AudioContext : not created (app not started)');
         }

@@ -1,0 +1,12 @@
+# Tauri / native build artefacts
+/src-tauri/target/
+/src-tauri/gen/
+/dist/
+/node_modules/
+
+# Local toolchain configuration (contains machine-specific ASIO paths)
+/src-tauri/.cargo/config.toml
+
+# Generated installers
+/packages/
+

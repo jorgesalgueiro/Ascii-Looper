@@ -38,6 +38,7 @@ test('importing a wider song allocates tracks and routes loop, drone and sampler
     const triggers = [];
     ctx.DroneSynth = { instances: [{ state: 'stopped' }], stopAll() {}, togglePlay: () => triggers.push('drone') };
     ctx.state.samplers = [{ state: 'stopped' }];
+    ctx.SamplerManager.trigger = () => triggers.push('sampler');
     ctx.SamplerManager.togglePlay = () => triggers.push('sampler');
     const song = { type: 'ascii_tracker_song', loopColumns: 20, playlist: [0],
         patterns: [{ rows: 16, data: { '0_15': 'ON', '0_20': 'ON', '0_21': 'ON' } }] };

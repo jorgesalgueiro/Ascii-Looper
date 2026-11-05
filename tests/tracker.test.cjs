@@ -319,3 +319,63 @@ test('valid commands and the supported row boundaries survive song import', asyn
         assert.deepEqual(alerts, ['Song loaded!']);
     }
 });
+
+test('tracker ON retriggers a sampler that is already playing', () => {
+    const { context, tracker, state } = createHarness();
+    state.samplers = [{ id: 0, state: 'playing' }];
+    const calls = [];
+    context.SamplerManager = {
+        trigger(id, time) { calls.push(['trigger', id, time]); },
+        togglePlay(id, time) { calls.push(['toggle', id, time]); }
+    };
+
+    tracker.triggerCommand(1, 'ON', 12.5);
+    tracker.triggerCommand(1, 'OFF', 13.0);
+
+    assert.deepEqual(calls, [['trigger', 0, 12.5], ['toggle', 0, 13.0]]);
+});
+
+test('sampler cells cycle only through ON/OFF while loop cells keep MUT/UNM/LOP', () => {
+    const { tracker, state } = createHarness();
+    tracker.draw = () => {};
+    state.samplers = [{ id: 0 }];
+    const pat = state.tracker.patterns[0];
+
+    tracker.cellClick(0, 1);
+    assert.equal(pat.data['0_1'], 'ON');
+    tracker.cellClick(0, 1);
+    assert.equal(pat.data['0_1'], 'OFF');
+    tracker.cellClick(0, 1);
+    assert.equal(pat.data['0_1'], undefined, 'sampler cells must not offer MUT/UNM/LOP');
+
+    tracker.cellClick(0, 0);
+    assert.equal(pat.data['0_0'], 'ON');
+    tracker.cellClick(0, 0);
+    assert.equal(pat.data['0_0'], 'OFF');
+    tracker.cellClick(0, 0);
+    assert.equal(pat.data['0_0'], 'MUT');
+    tracker.cellClick(0, 0);
+    assert.equal(pat.data['0_0'], 'UNM');
+    tracker.cellClick(0, 0);
+    assert.equal(pat.data['0_0'], 'LOP');
+    tracker.cellClick(0, 0);
+    assert.equal(pat.data['0_0'], undefined);
+});
+
+test('removeRow drops the last row data and refuses to delete the final row', () => {
+    const { tracker, state } = createHarness();
+    const pat = state.tracker.patterns[0];
+    pat.rows = 3;
+    pat.data['1_0'] = 'OFF';
+    pat.data['2_0'] = 'ON';
+
+    tracker.removeRow();
+
+    assert.equal(pat.rows, 2);
+    assert.equal(pat.data['1_0'], 'OFF', 'earlier rows survive');
+    assert.equal(pat.data['2_0'], undefined, 'the removed row is discarded');
+
+    tracker.removeRow();
+    tracker.removeRow();
+    assert.equal(pat.rows, 1, 'a pattern always keeps at least one row');
+});

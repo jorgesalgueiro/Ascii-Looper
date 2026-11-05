@@ -45,7 +45,8 @@ for (const dynamicRecorded of [true, false]) {
         Object.assign(loop, { audioBuffer: take, duration: 6, originalBpm: 120, dynamicRecorded });
         ctx.state.loops = [loop];
         const rate = loop.effectivePlaybackRate;
-        assert.equal(rate, dynamicRecorded ? 1 : 0.75);
+        // 6s is 1.5 grids at this state; the natural-ratio fit is 2 grids.
+        assert.equal(rate, 0.75);
         await ctx.ProjectManager.save();
         const saved = JSON.parse(ctx.saved);
         assert.equal(saved.loops[0].dynamicRecorded, dynamicRecorded);
@@ -56,6 +57,13 @@ for (const dynamicRecorded of [true, false]) {
         assert.equal(restored.effectivePlaybackRate, rate);
     });
 }
+
+test('a bar-aligned dynamic take runs at unity at its recording tempo', () => {
+    const { context: ctx, take } = harness();
+    const loop = new ctx.Loop(0);
+    Object.assign(loop, { audioBuffer: take, duration: 4, originalBpm: 120, dynamicRecorded: true });
+    assert.equal(loop.effectivePlaybackRate, 1);
+});
 
 test('legacy projects retain static grid-ratio playback when the flag is absent', async () => {
     const { context: ctx } = harness();

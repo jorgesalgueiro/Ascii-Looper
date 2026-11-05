@@ -114,7 +114,7 @@ function session({ accept = true, timeout = false, startFails = false, emptyCapt
         document: { createElement: () => ({}), head: { appendChild: noop }, getElementById: id => ({ pingTestBtn: button, latencyCorrection: slider, latencyDisplay: display }[id] || null) },
         setTimeout: (fn, delay) => { timers.set(++timerId, { fn, delay }); return timerId; }, clearTimeout: id => timers.delete(id),
         DebugManager: { logLatency: (event, result) => logs.push({ event, result }) },
-        InputManager: { inputBus: bus }, AudioEngine: { resume: async () => false },
+        InputManager: { inputBus: bus }, AudioEngine: { resume: async () => false, getSystemLatencySeconds: () => 0.010, getInputLatencySeconds: () => 0 },
         alert: text => alerts.push(text),
         confirm: () => { assert.ok(pan.connections.has(bus), 'monitoring restored before confirmation'); return accept; },
         AudioWorkletNode: class {

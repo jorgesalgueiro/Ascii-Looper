@@ -1,0 +1,11 @@
+# Keep the Tauri asset walker out of build inputs and test fixtures.
+src-tauri/
+tests/
+.git/
+target/
+node_modules/
+docs/
+scripts/
+.github/
+.taurignore
+*.md

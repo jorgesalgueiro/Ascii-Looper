@@ -120,8 +120,9 @@ for (const [latencyHint, expected] of [
 }
 
 // Execute the actual startup configuration slice without running unrelated application/timing setup.
+// The native engine start may sit between the selector reads and initialize().
 const startupConfig = mainSource.slice(mainSource.indexOf('static async startApp('))
-    .match(/const latHint =[^\n]+;\s*const sRate =[^\n]+;\s*const audioInitialized = await AudioEngine\.initialize\([^\n]+;/);
+    .match(/const latHint =[^\n]+;\s*const sRate =[^\n]+;[\s\S]*?const audioInitialized = await AudioEngine\.initialize\([^\n]+;/);
 assert.ok(startupConfig, 'startup must read audio selectors and initialize the engine');
 for (const value of ['auto', undefined, '48000invalid', ...explicitRates.map(String)]) {
     test(`startup selector ${String(value)} reaches real initialize without a forced fallback`, async () => {

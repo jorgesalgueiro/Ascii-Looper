@@ -1,0 +1,70 @@
+[package]
+name = "ascii-looper-native"
+version = "0.76.17"
+description = "Native ASIO / PipeWire / JACK / ALSA sink and source for ASCII Looper"
+authors = ["ASCII Looper contributors"]
+edition = "2021"
+rust-version = "1.85"
+license = "GPL-3.0-only"
+publish = false
+
+[lib]
+name = "ascii_looper_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "ascii-looper-native"
+path = "src/main.rs"
+
+# Headless Phase 0 / CI helper: plays a sine through a chosen host + device.
+[[bin]]
+name = "sine-out"
+path = "src/bin/sine_out.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+cpal = { version = "0.18.2", default-features = false }
+ringbuf = "0.4"
+bytes = "1"
+crossbeam-channel = "0.5"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
+tokio-tungstenite = "0.30"
+futures-util = "0.3"
+uuid = { version = "1", features = ["v4"] }
+midir = { version = "0.11", optional = true }
+
+# Linux: enable the native PipeWire and JACK hosts by default. These features
+# only apply to the Linux target, so a Windows build does not pull them in.
+[target.'cfg(target_os = "linux")'.dependencies]
+cpal = { version = "0.18.2", default-features = false, features = ["pipewire", "jack", "realtime"] }
+
+[features]
+default = ["midi"]
+# Windows only. Requires CPAL_ASIO_DIR and LIBCLANG_PATH (see .cargo/config.toml.example).
+asio = ["cpal/asio"]
+# Kept as an explicit feature so packaging can opt into the native Linux hosts
+# even if the target-specific dependency above is removed by a downstream fork.
+pipewire = ["cpal/pipewire"]
+jack = ["cpal/jack"]
+midi = ["dep:midir"]
+# Reserved: cpal 0.18.2's WASAPI backend is shared-mode only. The engine
+# advertises exclusive=false and the Phase 0 decision tree documents the
+# native WASAPI fallback work. Do not silently pretend exclusive is active.
+wasapi-exclusive = []
+
+# Tauri dev builds are large; keep debug symbols off the hot path is not needed,
+# but line-tables-only keeps backtraces useful without multi-GB artefacts.
+[profile.dev]
+debug = 1
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

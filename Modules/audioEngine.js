@@ -51,6 +51,12 @@ class SVF {
     document.head.appendChild(el);
 })();
 
+// `window` is absent in the Node test harness and in a worker-ish realm; never
+// touch it unguarded from the latency helpers.
+function hasNativeAudio() {
+    return typeof window !== 'undefined' && !!window.NativeAudio;
+}
+
 // from main.js:
 
 class AudioEngine {
@@ -73,6 +79,25 @@ class AudioEngine {
             
             state.audioContext = new (window.AudioContext || window.webkitAudioContext)(options);
             state.latencyCalibration = null;
+
+            // Native output path: NativeAudio.start() ran before this context
+            // so the hardware rate is known. Keep the Web Audio graph at that
+            // exact rate; a mismatch would make the Rust resampler fight the
+            // context clock permanently.
+            if (window.NativeAudio && NativeAudio.active) {
+                await NativeAudio.prepare();
+                if (!NativeAudio.rateCompatible(state.audioContext)) {
+                    const actual = state.audioContext.sampleRate;
+                    const wanted = NativeAudio.info ? NativeAudio.info.sampleRate : actual;
+                    throw new Error(`AudioContext rate ${actual} Hz does not match native device rate ${wanted} Hz.`);
+                }
+                await NativeAudio.silenceContext(state.audioContext);
+                // The sink node is created after audioWorklet.addModule(): a
+                // node name that has not been registered yet throws.
+                state.outputNode = null;
+            } else {
+                state.outputNode = state.audioContext.destination;
+            }
 
             // This is the main mix bus. All audio sources (loops, mic)
             // must be connected here *before* the masterGain.
@@ -104,7 +129,11 @@ class AudioEngine {
             // --- Master Soft Clipper (Safety Saturation) ---
             // Gently saturates peaks before they hit the limiter to prevent hard digital breaking
             state.masterSoftClip = state.audioContext.createWaveShaper();
-            state.masterSoftClip.oversample = '4x'; // Prevent aliasing from the saturation curve on the master bus
+            // 4x oversampling is the most expensive node in the live path.
+            // The native monitor path keeps CPU headroom for the render thread;
+            // the browser build keeps the original quality.
+            const nativeMonitor = !!(window.NativeAudio && NativeAudio.active);
+            state.masterSoftClip.oversample = nativeMonitor ? 'none' : '4x';
             const softClipCurve = new Float32Array(4097);
             const threshold = 0.875;
             // Unity below the knee, with symmetric, zero-slope endpoints at +/-0.9375.
@@ -171,6 +200,30 @@ class AudioEngine {
                 throw new Error("AudioWorklets failed to initialize. Your browser may be blocking them, or you are not on HTTPS/localhost.");
             }
 
+            // Native sink must be created only after audioWorklet.addModule():
+            // the processor name is registered at that point.
+            if (window.NativeAudio && NativeAudio.active) {
+                state.outputNode = NativeAudio.createSink(state.audioContext);
+                // Chromium idles a graph whose output is silent: the sink then
+                // produces ~2-3 % fewer frames than the device clock, which the
+                // bridge cannot absorb. A -80 dB 220 Hz tone keeps the worklet
+                // scheduled (a DC ConstantSource was still treated as silence).
+                // It is connected to the sink only, so the master chain and
+                // recordings stay clean.
+                try {
+                    state.nativeKeepAlive = state.audioContext.createOscillator();
+                    state.nativeKeepAlive.frequency.value = 220;
+                    state.nativeKeepAliveGain = state.audioContext.createGain();
+                    state.nativeKeepAliveGain.gain.value = 1.0e-4;
+                    state.nativeKeepAlive.connect(state.nativeKeepAliveGain);
+                    state.nativeKeepAliveGain.connect(state.outputNode);
+                    state.nativeKeepAlive.start();
+                } catch (_) {
+                    state.nativeKeepAlive = null;
+                    state.nativeKeepAliveGain = null;
+                }
+            }
+
             // --- Initialize Master Bus FX (EQ -> Comp) ---
             // Master EQ
             try {
@@ -210,7 +263,12 @@ class AudioEngine {
                 lastNode.connect(state.masterSoftClip);
                 lastNode = state.masterSoftClip;
             }
-            lastNode.connect(state.audioContext.destination);
+            lastNode.connect(state.outputNode || state.audioContext.destination);
+            if (state.outputNode && state.outputNode !== state.audioContext.destination) {
+                // The native sink emits silence; connecting it keeps the graph
+                // pulled without doubling audio on the default device.
+                state.outputNode.connect(state.audioContext.destination);
+            }
             lastNode.connect(state.masterMeter);
             // Record the same master level, then apply the recording-only finish.
             if (state.masterEQ) { lastNode.connect(state.masterEQ); lastNode = state.masterEQ; }
@@ -231,7 +289,10 @@ class AudioEngine {
                 state.audioContext.close().catch(() => {});
                 state.audioContext = null;
             }
-            alert("Failed to initialize audio engine. Your browser might not be supported.");
+            if (window.NativeAudio && NativeAudio.active) {
+                NativeAudio.stop().catch(() => {});
+            }
+            alert(`Failed to initialize audio engine. ${error && error.message ? error.message : 'Your browser might not be supported.'}`);
             return false;
         }
     }
@@ -240,15 +301,22 @@ class AudioEngine {
      * Resumes the AudioContext if it's suspended.
      * This is CRITICAL and must be called by a user action (e.g., button click).
      */
+    static ensureMasterClock() {
+        const ctx = state.audioContext;
+        if (!ctx || ctx.state !== 'running') return false;
+        if (!Number.isFinite(state.masterStartTime) || state.masterStartTime === 0) {
+            state.masterStartTime = ctx.currentTime || 1e-9;
+            if (window.MetronomeScheduler) window.MetronomeScheduler.updateSettings();
+        }
+        return true;
+    }
+
     static async resume() {
         if (!state.audioContext) return false;
         if (state.audioContext.state === 'closed') return false;
         
         if (state.audioContext.state === 'running') {
-            if (state.masterStartTime === 0) {
-                state.masterStartTime = state.audioContext.currentTime;
-                if (window.MetronomeScheduler) window.MetronomeScheduler.updateSettings();
-            }
+            this.ensureMasterClock();
             return true;
         }
 
@@ -256,10 +324,7 @@ class AudioEngine {
             // Resume context (handles suspended or interrupted states common on iOS/macOS)
             if (state.audioContext.state !== 'running') await state.audioContext.resume();
             if (state.audioContext.state === 'running') {
-                if (state.masterStartTime === 0) {
-                    state.masterStartTime = state.audioContext.currentTime;
-                    if (window.MetronomeScheduler) window.MetronomeScheduler.updateSettings();
-                }
+                this.ensureMasterClock();
                 return true;
             }
         } catch (e) {
@@ -307,6 +372,45 @@ class AudioEngine {
         return state.audioContext ? state.audioContext.currentTime : 0;
     }
 
+    /**
+     * Master output endpoint: ctx.destination in the browser, the native sink
+     * AudioWorkletNode in Tauri. Metronome, count-in and keep-alive nodes use
+     * this instead of ctx.destination so they reach the native device.
+     */
+    static get outputNode() {
+        if (state.outputNode) return state.outputNode;
+        return state.audioContext ? state.audioContext.destination : null;
+    }
+
+    /**
+     * Output-path latency from the render quantum to the DAC. Replaces the old
+     * `baseLatency + outputLatency` expression everywhere. In native mode the
+     * Rust driver timestamp and ring depth are included.
+     */
+    static getSystemLatencySeconds() {
+        const ctx = state.audioContext;
+        if (!ctx) return 0;
+        if (hasNativeAudio() && NativeAudio.active) {
+            return NativeAudio.getSystemLatencySeconds(ctx);
+        }
+        const value = (ctx.baseLatency || 0) + (ctx.outputLatency || 0);
+        return Number.isFinite(value) ? Math.max(0, value) : 0;
+    }
+
+    /**
+     * Input-path latency from the ADC to the source worklet. Zero in the
+     * browser, where the old code had no separate input estimate. Recording
+     * alignment adds this to getSystemLatencySeconds().
+     */
+    static getInputLatencySeconds() {
+        const ctx = state.audioContext;
+        if (!ctx) return 0;
+        if (hasNativeAudio() && NativeAudio.active) {
+            return NativeAudio.getInputLatencySeconds(ctx);
+        }
+        return 0;
+    }
+
     /** Estimated audible context time, for visuals only; scheduling uses currentTime. */
     static get playbackTime() {
         const ctx = state.audioContext;
@@ -325,8 +429,7 @@ class AudioEngine {
                 }
             }
         } catch (e) { /* Unsupported or temporarily unavailable output timestamp. */ }
-        const latency = value => Number.isFinite(value) ? Math.max(0, value) : 0;
-        return Math.max(0, now - latency(ctx.baseLatency) - latency(ctx.outputLatency));
+        return Math.max(0, now - this.getSystemLatencySeconds());
     }
 
     // Capture meters pass playbackTime = now; output meters wait for audible samples.
@@ -579,8 +682,8 @@ class AudioEngine {
         const ctx = state.audioContext;
         if (!ctx || !buffer) return buffer;
 
-        // Calculate total latency: System (Input+Output) + Manual Correction
-        const sysLat = (ctx.baseLatency || 0) + (ctx.outputLatency || 0);
+        // Calculate total latency: output path + input path + manual correction
+        const sysLat = this.getSystemLatencySeconds() + this.getInputLatencySeconds();
         const manualLat = (state.inputLatencyMs || 0) / 1000.0;
         const lat = Math.max(0, sysLat + manualLat); // Prevent negative latency
         

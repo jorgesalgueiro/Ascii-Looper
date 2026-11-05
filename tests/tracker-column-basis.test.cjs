@@ -74,6 +74,7 @@ function createHarness({ loopColumns }) {
         LoopManager: { stopAll: noop, addTracks: noop, toggleMute: noop },
         SamplerManager: {
             stop: noop, renderUI: noop, updateTrackUI: noop,
+            trigger: id => triggers.push(`sampler ${id}`),
             togglePlay: id => triggers.push(`sampler ${id}`)
         },
         MetronomeScheduler: { updateVolume: noop },

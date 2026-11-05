@@ -1,0 +1,16 @@
+# Copy this file to .cargo/config.toml and fix the paths for your machine.
+# Do not commit machine-specific absolute paths.
+#
+# Windows + ASIO:
+#   CPAL_ASIO_DIR -> ASIO SDK 2.3.4 root (contains asio/, common/, host/).
+#                   Use the GPLv3 build: https://www.steinberg.net/asiosdk
+#   LIBCLANG_PATH -> directory containing libclang.dll
+#
+# The SDK 2.3.4 is dual-licensed (GPLv3 or the Steinberg ASIO licence). This
+# project uses the GPLv3 option; SDK 2.3.3 and older are proprietary-only.
+#
+# Linux does not need these entries.
+
+[env]
+CPAL_ASIO_DIR = { value = "C:/asio-sdk", relative = false }
+LIBCLANG_PATH = { value = "C:/Program Files/LLVM/bin", relative = false }

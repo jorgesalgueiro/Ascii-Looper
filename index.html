@@ -8,7 +8,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#291a0a">
     <meta name="description" content="ASCII Looper - Browser-based 10-track loop station with effects and sequencing.">
-    <title>ASCII Looper v0.76.16</title>
+    <title>ASCII Looper v0.76.17</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="styles.css">
     <link rel="dns-prefetch" href="//www.google.com">
@@ -16,11 +16,9 @@
     <!-- ============================================= -->
     <!-- MODULE IMPORTS                                -->
     <!-- ============================================= -->
-    <script type="module">
-        import {SoundTouch, SimpleFilter} from "https://cdn.jsdelivr.net/npm/soundtouchjs@0.1.30/dist/soundtouch.min.js";
-        window.SoundTouch = SoundTouch;
-        window.SimpleFilter = SimpleFilter;
-    </script>
+    <!-- SoundTouchJS is vendored as soundtouch.min.js: the packaged app's CSP
+         blocks the previous CDN import, and the browser build should keep
+         working offline too. main.js imports it during startup. -->
 
 
     <style>
@@ -80,8 +78,10 @@
                         </label>
                         <div class="project-file-actions">
                             <button onclick="saveProject()" class="std-btn btn-blue" data-i18n="SAVE_PROJ" data-i18n-title="TIP_SAVE_PROJ" id="btnSaveProj">SAVE PROJ</button>
-                            <button onclick="document.getElementById('loadFile').click()" class="std-btn btn-orange" data-i18n="LOAD_PROJ" data-i18n-title="TIP_LOAD_PROJ" id="btnLoadProj">LOAD PROJ</button>
-                            <input type="file" id="loadFile" accept=".json,.alp" style="display:none;" onchange="ProjectManager.load(event)">
+                            <button onclick="ProjectManager.loadDialog()" class="std-btn btn-orange" data-i18n="LOAD_PROJ" data-i18n-title="TIP_LOAD_PROJ" id="btnLoadProj">LOAD PROJ</button>
+                            <button onclick="ProjectManager.loadFileDialog()" class="std-btn btn-orange" id="btnOpenProjectFile" title="Open an old single-file .alp or .json project">OPEN FILE</button>
+                            <input type="file" id="loadFile" accept=".json,.alp" style="display:none;">
+                            <span id="projectStatus" style="font-size:9px;color:#0f0;margin-left:6px;overflow-wrap:anywhere;"></span>
                         </div>
                     </section>
                     <section class="project-menu-section" aria-labelledby="session-controls-heading">
@@ -91,6 +91,7 @@
                         <div class="project-session-actions">
                             <button onclick="stopAll()" class="std-btn btn-yellow" data-i18n="STOP_ALL" data-i18n-title="TIP_STOP_ALL">STOP ALL</button>
                             <button onclick="clearAll()" class="std-btn btn-red" data-i18n="CLEAR_ALL" data-i18n-title="TIP_CLEAR_ALL">DEL ALL</button>
+                            <button onclick="App.backToSetup()" class="std-btn btn-cyan" id="btnBackToSetup" title="Stop audio and return to the device setup screen">AUDIO SETUP</button>
                             <button onclick="globalUndo()" class="std-btn btn-blue" id="btnGlobalUndo" disabled title="Undo Last Action">UNDO</button>
                             <button onclick="globalRedo()" class="std-btn btn-purple" id="btnGlobalRedo" disabled title="Redo Last Action">REDO</button>
                         </div>
@@ -129,7 +130,7 @@
                         <div class="sync-dynamic-options" id="dynamicOptionsPanel" style="display:none;">
                             <div class="sync-inline-controls">
                                 <span class="sync-ctrl-label">SNAP</span>
-                                <input type="range" id="dynamicSnapWindow" min="0.02" max="0.5" step="0.01" value="0.1" oninput="document.getElementById('dynamicSnapWindowVal').textContent = Math.round(parseFloat(this.value)*1000)+'ms'; SyncManager.updateSettings()" aria-label="Snap Window">
+                                <input type="range" id="dynamicSnapWindow" min="0.02" max="0.5" step="0.01" value="0.1" oninput="document.getElementById('dynamicSnapWindowVal').textContent = Math.round(parseFloat(this.value)*1000)+'ms'; SyncManager.updateSettings()" aria-label="Snap Window" title="Symmetric window around the bar: start pre-roll and stop snapping">
                                 <output id="dynamicSnapWindowVal" for="dynamicSnapWindow">100ms</output>
                                 <span class="sync-ctrl-sep"></span>
                                 <label class="sync-ctrl-check" title="Start loop at the moment recording began (not quantized to bar)">
@@ -204,6 +205,9 @@
                         <label style="display:flex; align-items:center; gap:3px; cursor:pointer; color:#aaa;" title="Snap slice points to the nearest zero crossing (clickless edits)">
                             <input type="checkbox" id="labZC" style="margin:0;" aria-label="Zero-crossing snap"> ZC SNAP
                         </label>
+                        <label style="display:flex; align-items:center; gap:3px; cursor:pointer; color:#aaa;" title="Show bar lines for the current BPM and time signature">
+                            <input type="checkbox" id="labGrid" style="margin:0;" onchange="SampleLab.renderWaveform()" aria-label="Musical bar grid"> BAR GRID
+                        </label>
                         <span id="labPeak" style="color:#888;">PEAK: --</span>
                         <span style="flex:1;"></span>
                         <button onclick="SampleLab.crop()" class="std-btn btn-yellow" style="padding:1px 8px; font-size:9px;" title="Destructively trim the sample to the current selection" aria-label="Crop sample to selection">CROP</button>
@@ -221,11 +225,11 @@
                     </div>
                     <div style="display:flex; gap:10px; align-items:center; margin-bottom:5px; flex-wrap:wrap;">
                          <label style="font-size:10px;" for="labStretch">Ratio:</label>
-                         <input type="number" id="labStretch" value="1.0" step="0.1" style="width:50px" ondblclick="this.value=1.0" aria-label="Time Stretch Ratio">
-                         <input type="number" id="labTargetBars" value="1" min="0.25" step="0.25" style="width:35px" title="Target Bars for Sync" aria-label="Target Bars for Sync">
+                         <input type="number" id="labStretch" value="1.0" step="0.1" style="width:50px" oninput="SampleLab.invalidateProcessed()" ondblclick="this.value=1.0; SampleLab.invalidateProcessed()" aria-label="Time Stretch Ratio">
+                         <input type="number" id="labTargetBars" value="1" min="0.25" step="0.25" style="width:35px" onchange="SampleLab.calcSyncRatio()" title="Target Bars for Sync" aria-label="Target Bars for Sync">
                          <button onclick="SampleLab.calcSyncRatio()" class="small btn-yellow" title="Calc Ratio to match Target Bars" aria-label="Calculate sync ratio">SyncR</button>
                          <label style="font-size:10px;" for="labPitch">Pitch:</label>
-                         <input type="range" id="labPitch" min="-12" max="12" step="1" value="0" style="flex:1" oninput="document.getElementById('labPitchDisp').textContent=(this.value>0?'+':'')+this.value" ondblclick="this.value=0; document.getElementById('labPitchDisp').textContent='0'" aria-label="Pitch Shift">
+                         <input type="range" id="labPitch" min="-12" max="12" step="1" value="0" style="flex:1" oninput="document.getElementById('labPitchDisp').textContent=(this.value>0?'+':'')+this.value; SampleLab.invalidateProcessed()" ondblclick="this.value=0; document.getElementById('labPitchDisp').textContent='0'; SampleLab.invalidateProcessed()" aria-label="Pitch Shift">
                          <span id="labPitchDisp" style="font-size:10px; width:25px; text-align:right;">0</span>
                     </div>
                     <div class="std-btn-grid">
@@ -327,8 +331,9 @@
                         <canvas id="trackerCanvas"></canvas>
                     </div>
                     <div class="tracker-grid-footer">
-                        <span>CLICK A CELL: --- → ON → OFF → MUT → UNM → LOP</span>
+                        <span>CLICK A CELL: LOOPS --- ON OFF MUT UNM LOP | DRONE/SAMPLER --- ON OFF</span>
                         <button type="button" id="trackerAddRowBtn" onclick="TrackerManager.addRow()" class="std-btn small btn-cyan">[+] ADD ROW</button>
+                        <button type="button" id="trackerRemoveRowBtn" onclick="TrackerManager.removeRow()" class="std-btn small btn-red">[-] REMOVE ROW</button>
                     </div>
                 </div>
             </div>
@@ -1367,6 +1372,34 @@
             </details>
         </div>
 
+        <!-- Native (Tauri) audio panel. Hidden in the browser build by
+             NativeAudio.populateUI(); the Rust engine is only available when
+             window.__TAURI__ exists. -->
+        <div id="nativePanel" style="display:none; margin:10px 0; width:100%; max-width:520px; font-size:10px; text-align:left;">
+            <div style="color:#0ff; font-weight:bold; margin-bottom:4px;">NATIVE AUDIO — ASIO / PIPEWIRE / JACK / ALSA / WASAPI</div>
+            <div class="ov-grid" style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
+                <label class="ov-label">HOST
+                    <select id="nativeHostSelect" aria-label="Native audio host"></select>
+                </label>
+                <label class="ov-label">BUFFER
+                    <select id="nativeBufferSelect" aria-label="Native buffer size"></select>
+                </label>
+                <label class="ov-label">OUTPUT DEVICE
+                    <select id="nativeOutputSelect" aria-label="Native output device"></select>
+                </label>
+                <label class="ov-label">INPUT DEVICE
+                    <select id="nativeInputSelect" aria-label="Native input device"></select>
+                </label>
+            </div>
+            <div style="display:flex; gap:6px; align-items:center; margin-top:6px;">
+                <button type="button" class="std-btn small" onclick="NativeAudio.openDriverPanel()">DRIVER PANEL</button>
+                <span id="nativeStatus" style="color:#0f0; font-size:9px; overflow-wrap:anywhere;"></span>
+            </div>
+            <div style="color:#888; font-size:9px; margin-top:4px;">
+                ASIO exposes one driver at a time. Per-track input pairs are chosen in the input mixer.
+            </div>
+        </div>
+
         <select id="langSelect" onchange="I18n.lang = this.value; I18n.init();" aria-label="Language Selection">
             <option value="en">English</option>
             <option value="es">Español</option>
@@ -1394,6 +1427,7 @@
 <script src="./Modules/effects.js" defer></script>
 <script src="./Modules/scales.js" defer></script>
 <script src="./Modules/droneSynth.js" defer></script>
+<script src="./Modules/native-audio.js" defer></script>
 <script src="./Modules/audioEngine.js" defer></script>
 <script src="./Modules/loopTracks.js" defer></script>
 <script src="./Modules/tracker.js" defer></script>

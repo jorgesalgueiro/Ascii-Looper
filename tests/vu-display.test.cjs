@@ -175,11 +175,11 @@ test('sampler playhead is absent until its output-clock start', () => {
     assert.deepEqual(rects, [[0, 0, 45, 24], [45, 0, 2, 24]]);
 });
 
-test('runtime version and page title both identify v0.76.16', () => {
+test('runtime version and page title both identify v0.76.17', () => {
     const main = fs.readFileSync(path.resolve(__dirname, '../main.js'), 'utf8');
     const html = fs.readFileSync(path.resolve(__dirname, '../index.html'), 'utf8');
-    assert.match(main, /const VERSION = "v0\.76\.16"/);
-    assert.match(html, /<title>ASCII Looper v0\.76\.16<\/title>/);
+    assert.match(main, /const VERSION = "v0\.76\.17"/);
+    assert.match(html, /<title>ASCII Looper v0\.76\.17<\/title>/);
 });
 
 function appHarness() {

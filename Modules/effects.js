@@ -2876,12 +2876,17 @@ class EffectManager {
 
         const data = JSON.stringify(bundle, null, 2);
             const blob = new Blob([data], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = `ascii_looper_bundle_${Date.now()}.afx`;
-            link.click();
-            setTimeout(() => URL.revokeObjectURL(url), 100);
+            const bundleName = `ascii_looper_bundle_${Date.now()}.afx`;
+            if (typeof ProjectManager !== 'undefined' && ProjectManager.saveBlobToExport) {
+                ProjectManager.saveBlobToExport(blob, bundleName);
+            } else {
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = bundleName;
+                link.click();
+                setTimeout(() => URL.revokeObjectURL(url), 100);
+            }
             
             document.body.removeChild(modal);
         };
@@ -3999,10 +4004,15 @@ class EffectManager {
     static savePresetsOnly() {
         const data = JSON.stringify(state.fxPresets, null, 2);
         const blob = new Blob([data], { type: 'application/json' });
+        const name = `fx_chain_presets_${Date.now()}.acp`;
+        if (typeof ProjectManager !== 'undefined' && ProjectManager.saveBlobToExport) {
+            ProjectManager.saveBlobToExport(blob, name);
+            return;
+        }
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
-        link.download = `fx_chain_presets_${Date.now()}.acp`;
+        link.download = name;
         link.click();
         setTimeout(() => URL.revokeObjectURL(url), 100);
     }
@@ -4044,10 +4054,15 @@ class EffectManager {
 
         const data = JSON.stringify(presets, null, 2);
         const blob = new Blob([data], { type: 'application/json' });
+        const name = `global_presets_${Date.now()}.agp`;
+        if (typeof ProjectManager !== 'undefined' && ProjectManager.saveBlobToExport) {
+            ProjectManager.saveBlobToExport(blob, name);
+            return;
+        }
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
-        link.download = `global_presets_${Date.now()}.agp`;
+        link.download = name;
         link.click();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
     }

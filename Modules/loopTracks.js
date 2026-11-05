@@ -23,6 +23,9 @@ class RecorderProcessor extends AudioWorkletProcessor {
         this._ringCapacity = 0;     // in samples
         this._ringChannels = 0;
         this._ringWritten = 0;      // total samples written (capped at capacity)
+        this._pendingPromote = false;
+        this._pendingTargetTime = 0;
+        this._pendingSnapSamples = 0;
         this.port.onmessage = this.handleMessage.bind(this);
     }
     process(inputs, outputs) {
@@ -30,6 +33,36 @@ class RecorderProcessor extends AudioWorkletProcessor {
         const output = outputs[0];
         // Pass-through removed to prevent double monitoring.
         // The recorder node connects to destination only to keep the Worklet active.
+
+        // Promote runs here (not in the message handler) so the pre-roll can be
+        // measured against currentFrame and start on the exact target sample.
+        if (this._pendingPromote) {
+            this._pendingPromote = false;
+            let snapSamples = this._pendingSnapSamples;
+            if (Number.isFinite(this._pendingTargetTime) && this._pendingTargetTime > 0) {
+                const targetSample = Math.round(this._pendingTargetTime * sampleRate);
+                snapSamples = Math.max(0, currentFrame - targetSample);
+            }
+            this._chunks = [];
+            this._startFrame = -1;
+            if (this._preBuffering && this._ringBuf && snapSamples > 0) {
+                const take = Math.min(snapSamples, this._ringWritten, this._ringCapacity);
+                if (take > 0) {
+                    const startRead = ((this._ringWritePos - take) + this._ringCapacity) % this._ringCapacity;
+                    const chunkChannels = [];
+                    for (let c = 0; c < this._ringChannels; c++) {
+                        const slice = new Float32Array(take);
+                        for (let i = 0; i < take; i++) {
+                            const srcIdx = (startRead + i) % this._ringCapacity;
+                            slice[i] = this._ringBuf[c][srcIdx];
+                        }
+                        chunkChannels.push(slice);
+                    }
+                    this._chunks.push(chunkChannels);
+                }
+            }
+            this._recording = true;
+        }
 
         // Pre-buffer: continuously write to ring buffer (circular overwrite)
         if (this._preBuffering && this._ringBuf && input && input[0] && input[0].length > 0) {
@@ -67,52 +100,45 @@ class RecorderProcessor extends AudioWorkletProcessor {
             this._recording = true;
             this._chunks = [];
             this._startFrame = -1;
+            this._pendingPromote = false;
         } else if (cmd === 'stop') {
             this._recording = false;
+            this._pendingPromote = false;
             this.port.postMessage({ event: 'recorded', chunks: this._chunks, startFrame: this._startFrame });
             this._chunks = [];
         } else if (cmd === 'startPreBuffer') {
-            // Allocate ring buffer for pre-buffering (bounded memory)
+            // Allocate (or keep) ring buffer for pre-buffering. Reusing the
+            // existing allocation avoids a multi-megabyte allocation on the
+            // audio thread every time a dynamic take is re-armed.
             const seconds = event.data.seconds || 2.0;
             const sr = sampleRate;
-            this._ringCapacity = Math.ceil(seconds * sr);
-            this._ringChannels = event.data.channels || 2;
-            this._ringBuf = [];
-            for (let c = 0; c < this._ringChannels; c++) {
-                this._ringBuf.push(new Float32Array(this._ringCapacity));
+            const capacity = Math.ceil(seconds * sr);
+            const channels = event.data.channels || 2;
+            if (!this._ringBuf || this._ringChannels !== channels || this._ringCapacity < capacity) {
+                this._ringCapacity = capacity;
+                this._ringChannels = channels;
+                this._ringBuf = [];
+                for (let c = 0; c < this._ringChannels; c++) {
+                    this._ringBuf.push(new Float32Array(this._ringCapacity));
+                }
             }
             this._ringWritePos = 0;
             this._ringWritten = 0;
             this._preBuffering = true;
+            this._pendingPromote = false;
         } else if (cmd === 'promoteToRecording') {
-            // Extract pre-buffer tail and prepend to recording chunks.
-            // snapSamples: how many samples from the ring buffer tail to extract
-            //   (0 = no pre-buffer data, just start recording from now)
-            const snapSamples = event.data.snapSamples || 0;
-            this._chunks = [];
-            this._startFrame = -1;
-
-            if (this._preBuffering && this._ringBuf && snapSamples > 0) {
-                const take = Math.min(snapSamples, this._ringWritten, this._ringCapacity);
-                if (take > 0) {
-                    // Read the last 'take' samples from the ring buffer in order
-                    const startRead = ((this._ringWritePos - take) + this._ringCapacity) % this._ringCapacity;
-                    const chunkChannels = [];
-                    for (let c = 0; c < this._ringChannels; c++) {
-                        const slice = new Float32Array(take);
-                        for (let i = 0; i < take; i++) {
-                            const srcIdx = (startRead + i) % this._ringCapacity;
-                            slice[i] = this._ringBuf[c][srcIdx];
-                        }
-                        chunkChannels.push(slice);
-                    }
-                    this._chunks.push(chunkChannels);
-                }
-            }
-            // Now start normal recording
-            this._recording = true;
+            // Defer the ring extraction to process() so it can use currentFrame.
+            // targetStartTime (optional): absolute audio time the take must
+            // begin at; when absent, snapSamples is used verbatim.
+            const targetStartTime = event.data.targetStartTime;
+            this._pendingPromote = true;
+            this._pendingTargetTime = event.data.snapToTarget && Number.isFinite(targetStartTime)
+                ? targetStartTime
+                : 0;
+            this._pendingSnapSamples = event.data.snapSamples || 0;
         } else if (cmd === 'stopPreBuffer') {
             this._preBuffering = false;
+            this._pendingPromote = false;
             this._ringBuf = null;
             this._ringWritePos = 0;
             this._ringWritten = 0;
@@ -152,6 +178,7 @@ class SamplerTrack {
         this.startTime = 0;
         this.startTimeout = null;
         this.stopTimeout = null;
+        this.loadRequest = 0;
     }
     play(time = 0) {
         if (!this.buffer || !state.audioContext) return;
@@ -172,7 +199,8 @@ class SamplerTrack {
             this.analyserData = new Float32Array(this.analyser.fftSize);
         }
         source.buffer = this.buffer;
-        source.playbackRate.value = this.speed;
+        const safeSpeed = (Number.isFinite(this.speed) && this.speed > 0) ? this.speed : 1.0;
+        source.playbackRate.value = safeSpeed;
         source.loop = this.isLooping;
         gain.gain.value = (this.muted || this.isMutedBySolo) ? 0 : this.volume;
         panNode.pan.value = (this.pan / 5.0) - 1.0;
@@ -224,9 +252,27 @@ class SamplerTrack {
 class SamplerManager {
     static soloId = -1;
     static init() {
-        state.samplers = [];
-        for (let i = 0; i < 10; i++) {
-            state.samplers.push(new SamplerTrack(i));
+        if (state.samplers.length === 0) {
+            for (let i = 0; i < 10; i++) {
+                state.samplers.push(new SamplerTrack(i));
+            }
+        } else {
+            // Audio setup can be changed without discarding the session. Drop
+            // nodes belonging to the old AudioContext and keep the buffers.
+            state.samplers.forEach((sampler) => {
+                if (sampler.source) { try { sampler.source.stop(); } catch (e) {} }
+                if (sampler.startTimeout) { clearTimeout(sampler.startTimeout); sampler.startTimeout = null; }
+                if (sampler.stopTimeout) { clearTimeout(sampler.stopTimeout); sampler.stopTimeout = null; }
+                sampler.source = null;
+                sampler.gain = null;
+                sampler.panNode = null;
+                sampler.analyser = null;
+                sampler.analyserData = null;
+                if (sampler.activeSources) sampler.activeSources.clear();
+                if (sampler.activeGains) sampler.activeGains.clear();
+                if (sampler.activePanNodes) sampler.activePanNodes.clear();
+                sampler.state = sampler.buffer ? 'stopped' : 'empty';
+            });
         }
         this.renderUI();
     }
@@ -237,14 +283,18 @@ class SamplerManager {
         input.onchange = async (e) => {
             const file = e.target.files[0];
             if (!file) return;
+            const sampler = state.samplers[id];
+            if (!sampler) return;
+            const request = ++sampler.loadRequest;
             try {
                 const ab = await file.arrayBuffer();
                 const buf = await state.audioContext.decodeAudioData(ab);
+                if (state.samplers[id] !== sampler || sampler.loadRequest !== request) return;
                 this._stopSampler(id);
-                state.samplers[id].buffer = buf;
-                state.samplers[id].name = file.name.substring(0, 10);
-                state.samplers[id].state = 'stopped';
-                state.samplers[id].wavePeaks = UIManager.generateWaveformPeaks(buf);
+                sampler.buffer = buf;
+                sampler.name = file.name.substring(0, 10);
+                sampler.state = 'stopped';
+                sampler.wavePeaks = UIManager.generateWaveformPeaks(buf);
                 this.renderUI();
                 if (window.MasterMixManager) MasterMixManager.render();
             } catch(err) {
@@ -335,7 +385,7 @@ class SamplerManager {
         const sampler = state.samplers[id];
         if (!sampler) return;
         const parsed = parseFloat(val);
-        sampler.speed = Number.isFinite(parsed) ? parsed : 1.0;
+        sampler.speed = Number.isFinite(parsed) ? Math.max(0.01, Math.min(8, parsed)) : 1.0;
         const disp = document.getElementById(`samp_spd_${id}`);
         if (disp) disp.textContent = sampler.speed.toFixed(2);
         if (state.audioContext) {
@@ -348,7 +398,7 @@ class SamplerManager {
         const sampler = state.samplers[id];
         if (!sampler) return;
         const parsed = parseFloat(val);
-        sampler.volume = Number.isFinite(parsed) ? parsed : 1.0;
+        sampler.volume = Number.isFinite(parsed) ? Math.max(0, Math.min(2, parsed)) : 1.0;
         this.updateVolumeGraph(id);
         const disp = document.getElementById(`samp_vol_${id}`);
         if (disp) disp.textContent = sampler.volume.toFixed(2);
@@ -359,7 +409,8 @@ class SamplerManager {
     static setPan(id, val) {
         const sampler = state.samplers[id];
         if (!sampler) return;
-        sampler.pan = parseInt(val);
+        const parsed = parseInt(val);
+        sampler.pan = Number.isFinite(parsed) ? Math.max(0, Math.min(10, parsed)) : 5;
         if (state.audioContext) {
             const panPosition = (sampler.pan / 5.0) - 1.0;
             sampler.activePanNodes.forEach(panNode => {
@@ -422,6 +473,32 @@ class SamplerManager {
         } else if (sampler.state === 'stopped' || sampler.state === 'stopping' || sampler.state === 'empty') {
             this._startSampler(id, targetTime);
         }
+    }
+
+    /**
+     * Starts the sampler from the top regardless of its current state. This is
+     * the tracker's ON behaviour: a one-shot or a looping pad must retrigger on
+     * every row instead of toggling itself off.
+     */
+    static trigger(id, scheduledTime = 0) {
+        const sampler = state.samplers[id];
+        if (!sampler || !sampler.buffer) return;
+        const now = AudioEngine.currentTime;
+        const targetTime = scheduledTime > 0
+            ? Math.max(now, scheduledTime)
+            : (state.syncEnabled && window.SyncManager ? SyncManager.getNextGridTime() : now);
+        this._startSampler(id, targetTime);
+    }
+
+    /**
+     * Performance-pad action: one-shots retrigger on every hit; looping pads
+     * keep the classic start/stop toggle.
+     */
+    static pad(id, scheduledTime = 0) {
+        const sampler = state.samplers[id];
+        if (!sampler || !sampler.buffer) return;
+        if (sampler.isLooping) this.togglePlay(id, scheduledTime);
+        else this.trigger(id, scheduledTime);
     }
     static _startSampler(id, scheduledTime = 0) {
         const sampler = state.samplers[id];
@@ -1791,7 +1868,8 @@ class Loop {
         this.wavePeaks = null;
         this.duration = 0;
         this.originalBpm = null;
-        this.dynamicRecorded = false; // true when recorded in dynamic sync — buffer is already bar-aligned
+        this.dynamicRecorded = false; // true when recorded in dynamic sync - buffer is already bar-aligned
+        this._recordingTargetStartTime = 0; // quantized dynamic take start (audio time)
         
         this.stopTimeout = null; // Store stop timeout to prevent race conditions
         this.playRequest = 0;
@@ -1840,8 +1918,10 @@ class Loop {
 
     get effectivePlaybackRate() {
         let activeRate = this.playbackRate;
-        // Dynamic-recorded loops are already bar-aligned — no grid-ratio varispeed.
-        if (!this.dynamicRecorded && state.syncEnabled && this.originalBpm && this.originalBpm > 0) {
+        // Dynamic takes are bar-aligned at recording time, but the same
+        // natural-ratio formula keeps them bar-aligned when the master tempo
+        // changes later.
+        if (state.syncEnabled && this.originalBpm && this.originalBpm > 0) {
             const tempoStretch = state.bpm / this.originalBpm;
             const expectedDur = this.duration / tempoStretch;
             if (state.loopLength > 0) {
@@ -1888,6 +1968,10 @@ class Loop {
         
         this.duration = this.audioBuffer.duration;
         this.wavePeaks = window.UIManager ? UIManager.generateWaveformPeaks(this.audioBuffer) : null;
+        // Undo can restore a take with a different duration. If this loop drives
+        // the shared grid, other tracks must follow the restored length.
+        const syncSource = document.getElementById('syncSource');
+        if (syncSource && syncSource.value == this.id) SyncManager.updateSettings();
         if (this.state === 'playing') this.restart();
         if (window.UIManager) {
             UIManager.updateLoop(this.id);
@@ -1909,6 +1993,8 @@ class Loop {
         
         this.duration = this.audioBuffer.duration;
         this.wavePeaks = window.UIManager ? UIManager.generateWaveformPeaks(this.audioBuffer) : null;
+        const syncSource = document.getElementById('syncSource');
+        if (syncSource && syncSource.value == this.id) SyncManager.updateSettings();
         if (this.state === 'playing') this.restart();
         if (window.UIManager) {
             UIManager.updateLoop(this.id);
@@ -1944,12 +2030,12 @@ class Loop {
             }
             this.startDelay = Math.max(0, Math.min(1, newDelay));
             
-            UIManager.setLoopStartDelay(this.id, this.startDelay);
+            UIManager.setLoopStartDelay(this.id, this.startDelay, false);
             const slider = document.getElementById(`loop-start-slider-${this.id}`);
             if (slider) slider.value = this.startDelay;
         } else {
             this.startDelay = 0;
-            UIManager.setLoopStartDelay(this.id, 0);
+            UIManager.setLoopStartDelay(this.id, 0, false);
             const slider = document.getElementById(`loop-start-slider-${this.id}`);
             if (slider) slider.value = 0;
         }
@@ -1996,7 +2082,8 @@ class Loop {
      */
     multiplyInstant() {
         if (!this.audioBuffer) return;
-        this.saveStateForUndo();
+        if (window.LoopManager && LoopManager.pushUndoState) LoopManager.pushUndoState(this.id);
+        else this.saveStateForUndo();
         const oldLen = this.audioBuffer.length;
         const newLen = oldLen * 2;
         const newBuf = state.audioContext.createBuffer(this.audioBuffer.numberOfChannels, newLen, this.audioBuffer.sampleRate);
@@ -2023,9 +2110,25 @@ class Loop {
      * Normalizes the loop audio buffer to 0dB (peak 1.0).
      */
     normalize() {
-        if (AudioEngine.normalizeBuffer(this.audioBuffer)) {
-            if (window.UIManager) this.wavePeaks = UIManager.generateWaveformPeaks(this.audioBuffer);
+        if (!this.audioBuffer) return;
+        let peak = 0;
+        for (let c = 0; c < this.audioBuffer.numberOfChannels; c++) {
+            const data = this.audioBuffer.getChannelData(c);
+            for (let i = 0; i < data.length; i += 1) {
+                const abs = Math.abs(data[i]);
+                if (abs > peak) peak = abs;
+            }
         }
+        if (!(peak > 1e-6) || Math.abs(peak - 1) < 1e-6) return;
+        if (window.LoopManager && LoopManager.pushUndoState) LoopManager.pushUndoState(this.id);
+        else this.saveStateForUndo();
+        if (!AudioEngine.normalizeBuffer(this.audioBuffer)) return;
+        if (window.UIManager) {
+            this.wavePeaks = UIManager.generateWaveformPeaks(this.audioBuffer);
+            UIManager.updateLoop(this.id);
+            UIManager.updateLoopDisplays();
+        }
+        if (this.state === 'playing') this.restart();
     }
 
     /**
@@ -2039,6 +2142,7 @@ class Loop {
             const elapsed = now - this.graph.startTime;
             if (state.syncEnabled) {
                 const len = SyncManager.getLoopLength();
+                if (!(len > 0)) return 0;
                 if (this.state === 'armed' && elapsed < 0) return Math.max(0, 1.0 - (Math.abs(elapsed) / len)); // Arm countdown
                 if (this.state === 'recording') return Math.min(1, Math.max(0, elapsed / len));
             } else if (this.state === 'recording') {
@@ -2203,6 +2307,8 @@ class Loop {
         this.stopTimeout = null;
         if (this.queueTimeout) clearTimeout(this.queueTimeout);
         this.queueTimeout = null;
+        if (this._phaseRestartTimer) { clearTimeout(this._phaseRestartTimer); this._phaseRestartTimer = null; }
+        this._phaseRestartPending = false;
         if (this._restartCleanup) clearTimeout(this._restartCleanup);
         this._restartCleanup = null;
         const now = AudioEngine.currentTime;
@@ -2322,6 +2428,10 @@ class Loop {
         this.stopTimeout = null;
         if (this.queueTimeout) clearTimeout(this.queueTimeout);
         this.queueTimeout = null;
+        if (this._phaseRestartTimer) clearTimeout(this._phaseRestartTimer);
+        this._phaseRestartTimer = null;
+        this._phaseRestartPending = false;
+        this._driftStrikes = 0;
         this.isStuttering = false;
         // 0. Safety: If this loop is the current Sync Source, revert to Master
         const syncSrc = document.getElementById('syncSource');
@@ -2380,8 +2490,16 @@ class Loop {
             // Clear Schedulers
             if (state.recordingStartTimeout) clearTimeout(state.recordingStartTimeout);
             if (state.recordingTimeout) clearTimeout(state.recordingTimeout);
+            state.recordingStartTimeout = null;
+            state.recordingTimeout = null;
+            state.recordingActualStartTime = 0;
 
             if (window.UIManager) UIManager.updateStatus();
+            if (window.LoopManager && state.syncMode === 'dynamic') {
+                // The take recorder was just discarded with the loop; bring the
+                // idle pre-roll back for the next take.
+                try { LoopManager.ensureDynamicPreBuffer(); } catch (_) {}
+            }
         }
         this.volume = 1.0;
         this.pan = 5;
@@ -2396,8 +2514,14 @@ class Loop {
 		this.playbackRate = 1.0;
 		this.feedback = 0.80;
 		this.dynamicRecorded = false;
+		this.originalBpm = null;
+		this._recordingTargetStartTime = 0;
+		this._driftStrikes = 0;
+		this._phaseRestartPending = false;
+		this.stemChunks = [];
 		this.name = '';
         this.audioBuffer = null; // Ensure buffer is cleared for state check
+        this.duration = 0;
         this.state = 'empty'; // Explicitly set state to empty
         this.params = JSON.parse(JSON.stringify(FACTORY_EFFECTS)); // Reset Params to Factory Defaults
        
@@ -2427,6 +2551,107 @@ class Loop {
  */
 class LoopManager {
     static transportGeneration = 0;
+    static _stoppingAll = false;
+    // Idle recorder kept alive while DYNAMIC sync is selected. It constantly
+    // streams the master bus into a ring so a take can reach back before the
+    // tap and start on the bar line.
+    static _preBufferNode = null;
+    static _preBufferActive = false;
+    static _preBufferStartTime = 0;
+
+    /**
+     * Seconds of rolling history kept for dynamic pre-roll. Enough to cover a
+     * bar plus the SNAP window, bounded so memory stays modest (2–8 s).
+     */
+    static getDynamicPreBufferSeconds() {
+        const sync = (typeof SyncManager !== 'undefined')
+            ? SyncManager
+            : ((typeof window !== 'undefined') ? window.SyncManager : null);
+        const barDur = (sync && sync.getBarDuration) ? sync.getBarDuration() : 0.5;
+        const bar = (Number.isFinite(barDur) && barDur > 0) ? barDur : 0.5;
+        return Math.max(2, Math.min(8, bar * 1.5 + 0.5));
+    }
+
+    /**
+     * Ensures the idle dynamic pre-buffer exists and is streaming. Safe to
+     * call repeatedly (settings changes, master-chain rebuilds, startup).
+     */
+    static ensureDynamicPreBuffer(force = false) {
+        if (!state.audioContext || state.audioContext.state === 'closed') return null;
+        if (state.syncMode !== 'dynamic') return null;
+        if (state.isRecording && !force) return null;
+        const inputNode = (window.InputManager && InputManager.getRecordingNode)
+            ? InputManager.getRecordingNode()
+            : null;
+        if (!inputNode) return null;
+
+        let node = this._preBufferNode;
+        if (node && node.context !== state.audioContext) {
+            // The AudioContext was rebuilt; the old node is dead.
+            this.releaseDynamicPreBuffer();
+            node = null;
+        }
+
+        if (!node) {
+            try {
+                node = new AudioWorkletNode(state.audioContext, 'recorder-processor');
+                inputNode.connect(node);
+                node.connect(AudioEngine.outputNode || state.audioContext.destination);
+            } catch (e) {
+                Log.error('LoopManager', 'Dynamic pre-buffer setup failed:', e);
+                return null;
+            }
+            this._preBufferNode = node;
+            this._preBufferActive = false;
+            this._preBufferStartTime = 0;
+        }
+
+        if (!this._preBufferActive) {
+            node.port.postMessage({
+                command: 'startPreBuffer',
+                seconds: this.getDynamicPreBufferSeconds(),
+                channels: inputNode.channelCount || 2
+            });
+            this._preBufferActive = true;
+            this._preBufferStartTime = AudioEngine.currentTime;
+        }
+        return node;
+    }
+
+    /**
+     * Re-attaches the idle pre-buffer after InputManager rebuilds the master
+     * gain, which disconnects every outgoing connection.
+     */
+    static reattachDynamicPreBuffer() {
+        const node = this._preBufferNode;
+        if (!node || !state.audioContext || node.context !== state.audioContext) return;
+        const inputNode = (window.InputManager && InputManager.getRecordingNode)
+            ? InputManager.getRecordingNode()
+            : null;
+        if (!inputNode) return;
+        try { inputNode.connect(node); } catch (e) {
+            // Already connected (or the graph is mid-teardown).
+        }
+    }
+
+    /**
+     * Tears the idle pre-buffer down (sync switched away from DYNAMIC or the
+     * audio setup screen is closing). Never touches an active take.
+     */
+    static releaseDynamicPreBuffer() {
+        if (state.isRecording && this._preBufferNode === state.loopRecorder) return;
+        const node = this._preBufferNode;
+        this._preBufferNode = null;
+        this._preBufferActive = false;
+        this._preBufferStartTime = 0;
+        if (!node) return;
+        const inputNode = (window.InputManager && InputManager.getRecordingNode)
+            ? InputManager.getRecordingNode()
+            : null;
+        try { node.port.postMessage({ command: 'stopPreBuffer' }); } catch (e) {}
+        if (inputNode) { try { inputNode.disconnect(node); } catch (e) {} }
+        try { node.disconnect(); } catch (e) {}
+    }
 
     /**
      * Saves the current state of a loop to the global undo stack.
@@ -2445,11 +2670,32 @@ class LoopManager {
      * Initialize 10 empty loops.
      */
     static initialize() {
-        state.loops.length = 0;
-        for (let i = 0; i < MAX_LOOPS; i++) {
-            const loop = new Loop(i);
-            if (state.audioContext) loop.wetDestination = state.audioContext.createMediaStreamDestination();
-            state.loops.push(loop);
+        if (state.loops.length === 0) {
+            for (let i = 0; i < MAX_LOOPS; i++) {
+                const loop = new Loop(i);
+                if (state.audioContext) loop.wetDestination = state.audioContext.createMediaStreamDestination();
+                state.loops.push(loop);
+            }
+        } else {
+            // Returning to the audio setup screen closes the AudioContext. Keep
+            // the recorded buffers and per-loop settings, discard only the
+            // graph nodes that belonged to the old context.
+            state.loops.forEach((loop) => {
+                if (loop.graph && typeof loop.graph.cleanup === 'function') {
+                    try { loop.graph.cleanup(); } catch (e) {}
+                }
+                loop.graph = null;
+                if (loop.stopTimeout) { clearTimeout(loop.stopTimeout); loop.stopTimeout = null; }
+                if (loop.queueTimeout) { clearTimeout(loop.queueTimeout); loop.queueTimeout = null; }
+                if (loop._restartCleanup) { clearTimeout(loop._restartCleanup); loop._restartCleanup = null; }
+                if (loop._phaseRestartTimer) { clearTimeout(loop._phaseRestartTimer); loop._phaseRestartTimer = null; }
+                loop._phaseRestartPending = false;
+                loop.state = loop.audioBuffer ? 'stopped' : 'empty';
+                loop.wetDestination = state.audioContext
+                    ? state.audioContext.createMediaStreamDestination()
+                    : null;
+            });
+            state.playingSources = {};
         }
         this.updateSyncSourceOptions();
         if(window.SampleLab) SampleLab.renderLoopSelect();
@@ -2535,10 +2781,51 @@ class LoopManager {
     /**
      * Stops all playing loops and any active recording.
      */
+    static async waitForRecordingToFinish(timeoutMs = 3000) {
+        if (!state.isRecording && !state.isFinishingRecording) return true;
+        const deadline = Date.now() + timeoutMs;
+        while ((state.isRecording || state.isFinishingRecording) && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        return !state.isRecording && !state.isFinishingRecording;
+    }
+
+    /**
+     * Stop whichever capture is active (record/overdub/substitute/multiply) and
+     * wait for its buffer to be committed. Used before replacing or saving the
+     * session state.
+     */
+    static async finalizeRecording(timeoutMs = 3000) {
+        if (!state.isRecording) return true;
+        const loop = state.loops[state.recordingLoopId];
+        try {
+            if (loop && loop.state === 'multiplying') {
+                this.stopMultiply();
+            } else if (loop && (loop.state === 'overdubbing' || loop.state === 'substituting')) {
+                this.stopOverdub();
+            } else {
+                this.stopRecording(true);
+            }
+        } catch (_) {}
+        return this.waitForRecordingToFinish(timeoutMs);
+    }
+
     static stopAll() {
+        // TrackerManager.stop() calls back into stopAll to silence loops. The
+        // guard lets the outer call finish the whole shutdown instead of
+        // returning after the tracker and leaving loops/samplers sounding.
+        if (this._stoppingAll) return;
+        this._stoppingAll = true;
+        try {
+            this._stopAll();
+        } finally {
+            this._stoppingAll = false;
+        }
+    }
+
+    static _stopAll() {
         if (window.TrackerManager && state.tracker.isPlaying) {
             TrackerManager.stop();
-            return;
         }
         this.transportGeneration++;
         if (state.isRecording) this.stopRecording(true);
@@ -2576,9 +2863,12 @@ class LoopManager {
     /**
      * Clears all loops.
      */
-    static clearAll() {
+    static async clearAll() {
         if (confirm('Clear ALL loops and master recordings?')) {
             this.stopAll();
+            // A take that is still finalizing would land in a loop after the
+            // clear. Let it finish before wiping the buffers.
+            await this.waitForRecordingToFinish();
             state.loops.forEach(loop => loop.clear());
             
             if (state.masterRecording) {
@@ -2771,6 +3061,15 @@ class LoopManager {
         // --- 1. Select Source ---
         // Always use the Master Input Bus (Mics + System)
         let inputNode = InputManager.getRecordingNode();
+
+        // Dynamic sync keeps an idle recorder streaming the last few seconds.
+        // Make sure it exists before the take so a quantized start can reach
+        // back to the bar line.
+        const preBufferReady = (state.syncMode === 'dynamic') && !!this.ensureDynamicPreBuffer(true);
+        const preBufferSince = this._preBufferStartTime;
+        if (state.syncMode !== 'dynamic' && this._preBufferNode) {
+            this.releaseDynamicPreBuffer();
+        }
         
         // --- 2. Setup Recorder ---
         state.isRecording = true;
@@ -2780,12 +3079,24 @@ class LoopManager {
         // --- Setup Recorder (Audio Worklet) ---
         if (state.loopRecorder) { try { state.loopRecorder.disconnect(); } catch(e){} }
 
+        // In DYNAMIC mode take ownership of the running pre-buffer instead of
+        // creating a fresh ring: it already holds the audio before the tap.
+        const inheritedPreBuffer = preBufferReady ? this._preBufferNode : null;
+        const usingPreBuffer = !!inheritedPreBuffer;
         try {
-            state.loopRecorder = new AudioWorkletNode(state.audioContext, 'recorder-processor');
-            inputNode.connect(state.loopRecorder);
-            state.loopRecorder.connect(state.audioContext.destination); // Keep graph alive
+            if (usingPreBuffer) {
+                state.loopRecorder = inheritedPreBuffer;
+                this._preBufferNode = null;
+            } else {
+                state.loopRecorder = new AudioWorkletNode(state.audioContext, 'recorder-processor');
+                inputNode.connect(state.loopRecorder);
+                state.loopRecorder.connect(AudioEngine.outputNode || state.audioContext.destination); // Keep graph alive
+            }
         } catch (e) {
             Log.error('LoopManager', 'Recorder setup failed:', e);
+            this._preBufferNode = null;
+            this._preBufferActive = false;
+            this._preBufferStartTime = 0;
             state.isRecording = false;
             state.recordingLoopId = -1;
             state.loopRecordedChunks = [];
@@ -2807,20 +3118,34 @@ class LoopManager {
         // --- 3. Handle Sync & Start ---
         if (state.syncMode === 'dynamic') {
             // === DYNAMIC SYNC MODE ===
-            // Start pre-buffering immediately to capture audio before the record tap.
-            // NOTE: True bar-aligned snapping (capturing audio from before the tap)
-            // requires continuous pre-buffering while dynamic mode is active.
-            // Currently, the pre-buffer only starts at tap time, so we cannot recover
-            // audio from before the tap. The loop starts from the tap time.
-            // Future enhancement: keep the recorder alive in dynamic mode to enable
-            // true pre-buffer snapping.
-            const numCh = inputNode.channelCount || 2;
-            recorder.port.postMessage({ command: 'startPreBuffer', seconds: 2.0, channels: numCh });
+            // The idle pre-buffer (when available) already holds the audio
+            // before the tap. A fresh fallback node has to start its ring now.
+            if (!usingPreBuffer) {
+                recorder.port.postMessage({
+                    command: 'startPreBuffer',
+                    seconds: this.getDynamicPreBufferSeconds(),
+                    channels: inputNode.channelCount || 2
+                });
+            }
 
             const now = AudioEngine.currentTime;
+            // REC TIME (dynamicStartQuantize) keeps the tap moment. When it is
+            // off, start the musical take on a bar line so the loop, drones
+            // and tracker share the grid.
+            const quantizeStart = state.dynamicStartQuantize === false;
+            const snapWindow = Math.max(0.02, Math.min(0.5, state.dynamicSnapWindow || 0.1));
 
-            // Set loop start time to the tap moment
-            loop.graph = { startTime: now };
+            let preRollReady = false;
+            if (quantizeStart && usingPreBuffer && preBufferSince > 0) {
+                const intoBar = Math.max(0, now - SyncManager.getPreviousBarTime(now));
+                preRollReady = (now - preBufferSince) >= intoBar;
+            }
+            const plan = SyncManager.getDynamicRecordPlan(now, quantizeStart, preRollReady, snapWindow);
+            const targetStartTime = plan.startTime;
+
+            // Set loop start time to the commanded (quantized or tap) moment
+            loop.graph = { startTime: targetStartTime };
+            loop._recordingTargetStartTime = targetStartTime;
             loop.state = 'recording';
             state.recordingActualStartTime = now;
 
@@ -2836,8 +3161,15 @@ class LoopManager {
                 }
             }
 
-            // Promote pre-buffer to recording (no snap — pre-buffer has no pre-tap audio)
-            recorder.port.postMessage({ command: 'promoteToRecording', snapSamples: 0 });
+            // When the take starts on the previous bar, the worklet pulls the
+            // missing samples out of the ring and prepends them. The worklet
+            // computes the count from its own clock for bar-accurate pre-roll.
+            recorder.port.postMessage({
+                command: 'promoteToRecording',
+                snapToTarget: plan.usePreRoll,
+                targetStartTime,
+                snapSamples: 0
+            });
 
             // No auto-stop timeout in dynamic mode — user controls stop
 
@@ -2874,7 +3206,7 @@ class LoopManager {
                 
                 // Schedule the stop
                 const len = SyncManager.getLoopLength();
-                const latMs = Math.max(0, ((state.audioContext.baseLatency || 0) + (state.audioContext.outputLatency || 0)) * 1000 + (state.inputLatencyMs || 0));
+                const latMs = Math.max(0, (AudioEngine.getSystemLatencySeconds() + AudioEngine.getInputLatencySeconds()) * 1000 + (state.inputLatencyMs || 0));
                 state.recordingTimeout = setTimeout(() => {
                     this.stopRecording();
                 }, (len * 1000) + latMs + 200); // Account for latency tail
@@ -2919,7 +3251,7 @@ class LoopManager {
                     osc.connect(gain);
                     // Like the metronome, a cue is monitor-only: entering the bus at the
                     // limiter would print it into the Master REC tap next to the mix.
-                    gain.connect(ctx.destination);
+                    gain.connect(AudioEngine.outputNode || ctx.destination);
                     
                     // Higher pitch on the last beat (1), lower on others
                     osc.frequency.value = (i === 1) ? 880 : 440; 
@@ -3024,13 +3356,13 @@ class LoopManager {
         // (second tap = "stop now, don't wait for the bar").
         if (!forceImmediate && !pendingBarStop && state.syncMode === 'dynamic' && loop.state === 'recording') {
             const now = AudioEngine.currentTime;
-            const barDur = SyncManager.getBarDuration();
-            const timeToNextBar = SyncManager.getTimeToNextBar(now);
-            const snapThreshold = 0.05; // 50ms — if within 50ms of bar end, stop immediately
+            // SNAP is a symmetric window around the bar line: inside it the
+            // take stops now and is trimmed to the nearest bar; outside it the
+            // stop waits for the next boundary so the take stays whole bars.
+            const plan = SyncManager.getDynamicStopPlan(now, state.dynamicSnapWindow);
 
-            if (timeToNextBar > snapThreshold && barDur > 0) {
-                // Schedule stop at the next bar boundary
-                const delayMs = Math.max(0, timeToNextBar * 1000);
+            if (plan.wait) {
+                const delayMs = Math.max(0, (plan.stopTime - now) * 1000);
                 const expectedLoopId = state.recordingLoopId;
                 state.recordingTimeout = setTimeout(() => {
                     state.recordingTimeout = null;
@@ -3048,7 +3380,7 @@ class LoopManager {
                 }, delayMs);
                 return; // Don't stop yet — wait for bar boundary
             }
-            // Close enough to bar end — stop immediately (fall through)
+            // Inside SNAP — stop immediately (fall through)
         }
 
         if (state.loopRecorder) {
@@ -3082,6 +3414,8 @@ class LoopManager {
         const now = AudioEngine.currentTime;
         state.loops.forEach(loop => {
             if (loop.state !== 'playing' || !loop.graph || !loop.graph.startTime || loop.graph.isDestroyed) return;
+            if (loop.graph.startTime > now + 0.001) return; // scheduled, not audible yet
+            if (loop._phaseRestartPending) return;
             if (loop.isMutedBySolo || loop.graph.immediate) return;
             const dur = loop.duration;
             const rate = loop.effectivePlaybackRate;
@@ -3125,7 +3459,7 @@ class LoopManager {
             
             let finalBuffer = rawBuffer; 
             const ctx = state.audioContext;
-            const sysLat = (ctx.baseLatency || 0) + (ctx.outputLatency || 0);
+            const sysLat = AudioEngine.getSystemLatencySeconds() + AudioEngine.getInputLatencySeconds();
             const manualLat = (state.inputLatencyMs || 0) / 1000.0;
             const lat = Math.max(0, sysLat + manualLat);
 
@@ -3134,23 +3468,52 @@ class LoopManager {
             if (state.syncMode === 'dynamic') {
                 const barDur = SyncManager.getBarDuration();
                 if (barDur > 0) {
-                    const totalDur = rawBuffer.duration;
+                    // A quantized start discards the capture before the target
+                    // bar so the first sample is the downbeat.
+                    let sourceBuffer = rawBuffer;
+                    const targetStart = loop._recordingTargetStartTime || 0;
+                    if (targetStart > 0) {
+                        const captureStart = (startFrame >= 0)
+                            ? (startFrame / ctx.sampleRate)
+                            : (state.recordingActualStartTime || 0);
+                        const trimSeconds = Math.max(0, targetStart - captureStart);
+                        const trimSamples = Math.min(rawBuffer.length, Math.round(trimSeconds * ctx.sampleRate));
+                        if (trimSamples > 0) {
+                            if (trimSamples >= rawBuffer.length) {
+                                throw new Error('Recording ended before the quantized bar start');
+                            }
+                            sourceBuffer = ctx.createBuffer(
+                                rawBuffer.numberOfChannels,
+                                rawBuffer.length - trimSamples,
+                                ctx.sampleRate
+                            );
+                            for (let c = 0; c < rawBuffer.numberOfChannels; c++) {
+                                sourceBuffer.getChannelData(c).set(
+                                    rawBuffer.getChannelData(c).subarray(trimSamples)
+                                );
+                            }
+                        }
+                    }
+
+                    const totalDur = sourceBuffer.duration;
                     const targetBars = Math.max(1, Math.round(totalDur / barDur));
                     const exactSamples = Math.round(targetBars * barDur * ctx.sampleRate);
 
-                    if (exactSamples < rawBuffer.length) {
-                        // Trim to bar boundary
-                        const extractedBuf = ctx.createBuffer(rawBuffer.numberOfChannels, exactSamples, ctx.sampleRate);
-                        for (let c = 0; c < rawBuffer.numberOfChannels; c++) {
-                            const src = rawBuffer.getChannelData(c);
+                    if (exactSamples !== sourceBuffer.length) {
+                        // Always hand the grid an exact bar multiple: trim a long
+                        // take or pad a short one (e.g. a stop inside SNAP) with
+                        // silence instead of leaving an off-grid loop length.
+                        const extractedBuf = ctx.createBuffer(sourceBuffer.numberOfChannels, exactSamples, ctx.sampleRate);
+                        const copySamples = Math.min(exactSamples, sourceBuffer.length);
+                        for (let c = 0; c < sourceBuffer.numberOfChannels; c++) {
+                            const src = sourceBuffer.getChannelData(c);
                             const dst = extractedBuf.getChannelData(c);
-                            dst.set(src.subarray(0, exactSamples));
+                            dst.set(src.subarray(0, copySamples));
                         }
                         // Apply latency compensation if needed
                         finalBuffer = (lat > 0) ? this.compensateLatency(extractedBuf) : extractedBuf;
                     } else {
-                        // Recording is shorter than one bar — keep as-is
-                        finalBuffer = (lat > 0) ? this.compensateLatency(rawBuffer) : rawBuffer;
+                        finalBuffer = (lat > 0) ? this.compensateLatency(sourceBuffer) : sourceBuffer;
                     }
                     AudioEngine.seamlessLoopCrossfade(finalBuffer, 0.015);
                 } else {
@@ -3236,6 +3599,7 @@ class LoopManager {
             }
         
             state.recordingActualStartTime = 0; // Reset
+            loop._recordingTargetStartTime = 0;
             
             // Remove DC Offset
             for (let c = 0; c < finalBuffer.numberOfChannels; c++) {
@@ -3269,17 +3633,30 @@ class LoopManager {
         // Cleanup always runs — even after exception, recording state must be released
         if (state.loopRecorder !== recorder || state.recordingLoopId !== loopId) return;
 
-        // Disconnect input from recorder to prevent graph leaks
-        const inputNode = InputManager.getRecordingNode();
-        if (inputNode && state.loopRecorder) {
-            try { inputNode.disconnect(state.loopRecorder); } catch(e) {
-                // Ignore if already disconnected
+        const keepDynamicPreBuffer = state.syncMode === 'dynamic' &&
+            state.audioContext && state.audioContext.state !== 'closed';
+
+        if (keepDynamicPreBuffer) {
+            // Hand the still-connected node back to the idle pre-buffer. Its
+            // ring never stopped streaming, so the next take already has the
+            // audio before its tap instead of starting from silence.
+            this._preBufferNode = recorder;
+            this._preBufferActive = true;
+            if (!this._preBufferStartTime) this._preBufferStartTime = AudioEngine.currentTime;
+        } else {
+            // Disconnect input from recorder to prevent graph leaks
+            const inputNode = InputManager.getRecordingNode();
+            if (inputNode) {
+                try { inputNode.disconnect(recorder); } catch(e) {
+                    // Ignore if already disconnected
+                }
             }
-        }
-        if (state.loopRecorder) {
-            // Free pre-buffer ring buffer memory if dynamic sync was active
-            try { state.loopRecorder.port.postMessage({ command: 'stopPreBuffer' }); } catch(e) {}
-            state.loopRecorder.disconnect();
+            // Free pre-buffer ring buffer memory
+            try { recorder.port.postMessage({ command: 'stopPreBuffer' }); } catch(e) {}
+            try { recorder.disconnect(); } catch(e) {}
+            this._preBufferNode = null;
+            this._preBufferActive = false;
+            this._preBufferStartTime = 0;
         }
 
         // Clean up live recording analyser
@@ -3367,7 +3744,7 @@ class LoopManager {
         try {
             state.loopRecorder = new AudioWorkletNode(state.audioContext, 'recorder-processor');
             inputNode.connect(state.loopRecorder);
-            state.loopRecorder.connect(state.audioContext.destination); // Keep alive
+            state.loopRecorder.connect(AudioEngine.outputNode || state.audioContext.destination); // Keep alive
 
             const recorder = state.loopRecorder;
             recorder.port.onmessage = (e) => {
@@ -3441,13 +3818,19 @@ class LoopManager {
     static forceCleanupRecording(loop) {
         const recorder = state.loopRecorder;
         if (recorder) {
-            // Free pre-buffer ring buffer memory if dynamic sync was active
+            // This path means the recorder is unusable; drop it (and any idle
+            // pre-buffer reference) and rebuild a fresh one below.
             try { recorder.port.postMessage({ command: 'stopPreBuffer' }); } catch(e) {}
             recorder.port.onmessage = null;
             const inputNode = InputManager.getRecordingNode();
             if (inputNode) { try { inputNode.disconnect(recorder); } catch(e) {} }
             try { recorder.disconnect(); } catch(e) {}
         }
+        if (recorder && this._preBufferNode === recorder) {
+            this._preBufferNode = null;
+        }
+        this._preBufferActive = false;
+        this._preBufferStartTime = 0;
         clearTimeout(state.recordingStartTimeout);
         clearTimeout(state.recordingTimeout);
         state.recordingStartTimeout = null;
@@ -3460,6 +3843,7 @@ class LoopManager {
             state.liveRecordAnalyserData = null;
         }
         if (loop) {
+            loop._recordingTargetStartTime = 0;
             if (['armed', 'recording', 'overdubbing', 'substituting', 'multiplying'].includes(loop.state)) {
                 if (loop.audioBuffer && loop.graph && loop.graph.nodes) loop.state = 'playing';
                 else {
@@ -3474,7 +3858,10 @@ class LoopManager {
         state.isFinishingRecording = false;
         state.recordingStartOffset = 0;
         state.recordingActualStartTime = 0;
+        state.loopRecordedChunks = [];
         if (window.UIManager) UIManager.updateStatus();
+
+        if (state.syncMode === 'dynamic') this.ensureDynamicPreBuffer();
     }
 
     /**
@@ -3552,9 +3939,12 @@ class LoopManager {
         state.isRecording = false;
         state.recordingLoopId = -1;
         state.loopRecorder = null;
+        state.isFinishingRecording = false; // Release lock
+        state.recordingStartOffset = 0;
+        state.recordingActualStartTime = 0;
+        state.loopRecordedChunks = [];
         UIManager.updateLoop(loop.id);
         UIManager.updateStatus();
-        state.isFinishingRecording = false; // Release lock
     }
 
     /**
@@ -3598,7 +3988,7 @@ class LoopManager {
         try {
             state.loopRecorder = new AudioWorkletNode(state.audioContext, 'recorder-processor');
             inputNode.connect(state.loopRecorder);
-            state.loopRecorder.connect(state.audioContext.destination);
+            state.loopRecorder.connect(AudioEngine.outputNode || state.audioContext.destination);
             const recorder = state.loopRecorder;
             recorder.port.onmessage = (e) => {
                 if (e.data.event === 'recorded' && state.loopRecorder === recorder && state.recordingLoopId === loopId) {
@@ -3608,9 +3998,7 @@ class LoopManager {
             };
         } catch (e) {
             Log.error('LoopManager', 'Multiply recorder setup failed:', e);
-            state.isRecording = false;
-            state.recordingLoopId = -1;
-            loop.state = 'playing';
+            this.forceCleanupRecording(loop);
             return;
         }
 
@@ -3645,7 +4033,12 @@ class LoopManager {
      */
     static async processMultiplyData(chunks, loopId) {
         const loop = state.loops[loopId];
-        if (!loop) return;
+        if (!loop) {
+            // The loop vanished while the capture was in flight; release the
+            // global record lock instead of leaving it stuck.
+            this.forceCleanupRecording(null);
+            return;
+        }
         if (!loop.audioBuffer) {
             // Loop was cleared during multiply — discard captured audio
             const inputNode = InputManager.getRecordingNode();
@@ -3658,6 +4051,9 @@ class LoopManager {
             state.isRecording = false;
             state.recordingLoopId = -1;
             state.loopRecorder = null;
+            state.isFinishingRecording = false;
+            state.recordingStartOffset = 0;
+            state.recordingActualStartTime = 0;
             return;
         }
 
@@ -3680,7 +4076,7 @@ class LoopManager {
                 // Fade edges to prevent clicks at the splice point
                 AudioEngine.seamlessLoopCrossfade(capturedBuffer, 0.008);
 
-                loop.saveStateForUndo();
+                this.pushUndoState(loopId);
 
                 const oldLen = loop.audioBuffer.length;
                 const capturedLen = capturedBuffer.length;
@@ -3726,6 +4122,8 @@ class LoopManager {
         state.recordingLoopId = -1;
         state.loopRecorder = null;
         state.isFinishingRecording = false;
+        state.recordingStartOffset = 0;
+        state.recordingActualStartTime = 0;
 
         UIManager.updateLoop(loop.id);
         UIManager.updateStatus();
@@ -3740,12 +4138,14 @@ class LoopManager {
 
         loop.muted = !loop.muted;
         if (window.TrackerManager) TrackerManager.logLiveEvent(loopId, loop.muted ? 'MUT' : 'UNM');
-        const now = (time > 0) ? time : AudioEngine.currentTime;
+        const now = AudioEngine.currentTime;
 
-        // Update volume in audio graph if playing
+        // Update volume in audio graph if playing. `time` is an absolute audio
+        // timestamp (e.g. a tracker row), so compare it with the context clock
+        // rather than replacing `now` with it.
         if (loop.graph && loop.graph.nodes.volume) {
             const targetVol = loop.effectiveVolume;
-            if (time > 0 && time > now) {
+            if (time > now + 0.001) {
                  const safeStart = Math.max(now, time - 0.015);
                  AudioEngine.scheduledFade(loop.graph.nodes.volume, targetVol, safeStart, (time - safeStart) * 1000);
             } else {
@@ -3776,7 +4176,7 @@ class LoopManager {
         if (!dest.audioBuffer) {
             // Clone if empty
             dest.audioBuffer = AudioEngine.sliceBuffer(src.audioBuffer, 0, 1);
-            dest.duration = src.duration;
+            dest.duration = dest.audioBuffer.duration;
             dest.originalBpm = src.originalBpm;
             dest.dynamicRecorded = src.dynamicRecorded;
             dest.state = 'stopped';
@@ -3787,6 +4187,14 @@ class LoopManager {
         }
         dest.wavePeaks = UIManager.generateWaveformPeaks(dest.audioBuffer);
         UIManager.updateLoop(destId);
+        UIManager.updateLoopDisplays();
+
+        // An AudioBufferSourceNode keeps the buffer it was started with. A
+        // playing destination would keep sounding the pre-merge take until it
+        // restarts, so retrigger it now that the buffer content changed.
+        if (dest.state === 'playing') {
+            dest.restart();
+        }
         
         // Prompt to clear source after merge
         setTimeout(() => {
@@ -4263,7 +4671,9 @@ class UIManager {
         const loop = state.loops[loopId];
         if (!loop) return;
         
-        loop.volume = parseFloat(value);
+        const parsed = parseFloat(value);
+        if (!Number.isFinite(parsed)) return;
+        loop.volume = Math.max(0, Math.min(2, parsed));
         
         // Update volume in audio graph if playing
         if (loop.graph && loop.graph.nodes.volume) {
@@ -4321,7 +4731,7 @@ class UIManager {
         if (!loop) return;
 
         const parsed = parseFloat(value);
-        loop.feedback = Number.isFinite(parsed) ? parsed : 0.80;
+        loop.feedback = Number.isFinite(parsed) ? Math.max(0, Math.min(1, parsed)) : 0.80;
         const display = document.getElementById(`loop-fbk-display-${loopId}`);
         if (display) {
             display.textContent = `${Math.round(loop.feedback * 100)}%`;
@@ -4357,7 +4767,7 @@ class UIManager {
         speed = parseFloat(speed);
         if (isNaN(speed)) return; 
         
-        let finalSpeed = speed;
+        let finalSpeed = Math.max(0.25, Math.min(2, speed));
         
         // Quantize logic if sync is enabled
         if (state.syncEnabled) {
@@ -4379,7 +4789,8 @@ class UIManager {
         if (loop.graph && loop.graph.nodes.source) {
             const activeRate = loop.effectivePlaybackRate;
             const now = AudioEngine.currentTime;
-            if (activeRate !== previousRate && loop.state === 'playing' && loop.graph.startTime && loop.duration > 0) {
+            if (activeRate !== previousRate && loop.state === 'playing' && loop.graph.startTime &&
+                loop.graph.startTime <= now && loop.duration > 0) {
                 // The anchor describes the ramp at the old rate, so move it to where the
                 // source actually is before the new one takes over (see Loop.getProgress).
                 let position = (loop.graph.startOffset + (now - loop.graph.startTime) * previousRate) % loop.duration;
@@ -4414,14 +4825,29 @@ class UIManager {
     /**
      * Set loop start delay (Phase Shift)
      */
-    static setLoopStartDelay(loopId, value) {
+    static setLoopStartDelay(loopId, value, restart = true) {
         const loop = state.loops[loopId];
         if (!loop) return;
         
-        loop.startDelay = parseFloat(value);
+        const previous = loop.startDelay;
+        loop.startDelay = Math.max(0, Math.min(1, parseFloat(value) || 0));
         const durMs = loop.duration * 1000;
         const el = document.getElementById(`loop-delay-display-${loopId}`);
         if(el) el.textContent = `${Math.floor(loop.startDelay * durMs)}ms`;
+
+        // A BufferSource cannot be seeked once started. Debounce slider drags
+        // and re-phase the audio at the next grid boundary; callers that
+        // restart themselves pass restart=false.
+        if (restart && loop.state === 'playing' && previous !== loop.startDelay) {
+            if (loop._phaseRestartTimer) clearTimeout(loop._phaseRestartTimer);
+            loop._phaseRestartPending = true;
+            loop._driftStrikes = 0;
+            loop._phaseRestartTimer = setTimeout(() => {
+                loop._phaseRestartTimer = null;
+                loop._phaseRestartPending = false;
+                if (loop.state === 'playing') loop.restart(SyncManager.getNextGridTime());
+            }, 80);
+        }
     }
 
     static quantizeLoopStart(loopId) {
@@ -4438,7 +4864,7 @@ class UIManager {
             
             const slider = document.getElementById(`loop-start-slider-${loopId}`);
             if (slider) slider.value = loop.startDelay;
-            this.setLoopStartDelay(loopId, loop.startDelay);
+            this.setLoopStartDelay(loopId, loop.startDelay, false);
             
             if (loop.state === 'playing') loop.restart(AudioEngine.currentTime + 0.05);
         }
@@ -4459,7 +4885,7 @@ class UIManager {
         
         const slider = document.getElementById(`loop-start-slider-${loopId}`);
         if (slider) slider.value = loop.startDelay;
-        this.setLoopStartDelay(loopId, loop.startDelay);
+        this.setLoopStartDelay(loopId, loop.startDelay, false);
         
         if (loop.state === 'playing') loop.restart(AudioEngine.currentTime + 0.05);
     }
@@ -5177,7 +5603,7 @@ class UIManager {
         <div class="synth-instance-wrapper" data-state="${sampler.state}" id="live-sampler-inst-${index}" style="border: 1px solid ${stateColor}; margin-bottom: 5px; height: 120px; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden;">
             <div style="display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0;">
                 <div class="loop-header" 
-                     onclick="SamplerManager.togglePlay(${index})"
+                     onclick="SamplerManager.pad(${index})"
                      style="display:flex; justify-content:space-between; align-items:center; padding: 8px; min-height: 44px; background: rgba(0,20,20,0.6); border-bottom: 1px dashed ${stateColor}; cursor: pointer;">
                     <div style="display:flex; align-items:center; gap: 8px; overflow: hidden; flex: 1;">
                         <strong style="color:${stateColor}; font-size:12px; pointer-events:none;">[S${index+1}]</strong>

@@ -11,14 +11,280 @@ class ProjectManager {
     static getSafeProjectName() {
         const nameEl = document.getElementById('projectName');
         const raw = (nameEl ? nameEl.value.trim() : '') || 'MyProject';
-        // Replace invalid chars and spaces with underscores for file safety
-        return raw.replace(/[<>:"/\\|?*\x00-\x1F]/g, '').replace(/\s+/g, '_');
+        return this._safePart(raw, 'MyProject');
+    }
+
+    /**
+     * Project folder state (File System Access API).
+     *
+     * `_projectParentDir` is the location the user picked; `_projectDir` is the
+     * project-named folder created inside it. The layout is always:
+     *
+     *   <chosen location>/<Project Name>/<Project_Name>.alp
+     *   <chosen location>/<Project Name>/media/
+     *   <chosen location>/<Project Name>/export/
+     */
+    static _projectParentDir = null;
+    static _projectDir = null;
+    static _projectFolderName = null;
+    static _projectNameAtLoad = null;
+    static _projectMediaDir = null;
+    static _projectExportDir = null;
+    static _projectFileName = null;
+    static _folderApiBroken = false;
+    static _saving = false;
+
+    static get folderApiAvailable() {
+        return !this._folderApiBroken &&
+            typeof window !== 'undefined' &&
+            typeof window.showDirectoryPicker === 'function';
+    }
+
+    /** Filesystem-safe fragment, keeping dots/hyphens/underscores. */
+    static _safePart(value, fallback) {
+        let text = String(value == null ? '' : value)
+            .normalize('NFKD')
+            .replace(/[^\w.\- ]+/g, '')
+            .trim()
+            .replace(/\s+/g, '_')
+            .replace(/^\.+|\.+$/g, '');
+        // Windows refuses these device names as files or folders.
+        if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(text)) text = `_${text}`;
+        return text.slice(0, 120) || fallback;
+    }
+
+    static _mediaName(kind, id, name, projectName) {
+        return `${this._safePart(projectName, 'project')}_${kind}_${id}_${this._safePart(name, kind)}.wav`;
+    }
+
+    static _setStatus(text) {
+        const element = document.getElementById('projectStatus');
+        if (element) element.textContent = text || '';
+    }
+
+    static _exportName(filename) {
+        const text = String(filename || 'export');
+        const extMatch = /\.[A-Za-z0-9]+$/.exec(text);
+        const ext = extMatch ? extMatch[0] : '';
+        const base = text.slice(0, text.length - ext.length)
+            .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+            .replace(/\s+/g, '_');
+        return (base || 'export') + ext;
+    }
+
+    static async _writeFile(dir, name, data) {
+        const handle = await dir.getFileHandle(name, { create: true });
+        const writable = await handle.createWritable();
+        try {
+            await writable.write(data);
+        } finally {
+            await writable.close();
+        }
+    }
+
+    /** Ask the user where the project folder should be created. */
+    static async _pickParentDirectory(mode = 'readwrite') {
+        return window.showDirectoryPicker({
+            id: 'ascii-looper-project',
+            mode,
+            startIn: 'documents'
+        });
+    }
+
+    static async _listProjectFiles(dir) {
+        const names = [];
+        for await (const [name, handle] of dir.entries()) {
+            if (!handle || handle.kind !== 'file') continue;
+            if (/\.alp$/i.test(name)) {
+                names.push(name);
+            } else if (/\.json$/i.test(name) && await this._isProjectJson(dir, name)) {
+                // Old projects can be JSON files even when the extension is not
+                // .alp. Do not mistake unrelated JSON (package.json, presets)
+                // for a project.
+                names.push(name);
+            }
+        }
+        return names.sort((a, b) => a.localeCompare(b));
+    }
+
+    static async _isProjectJson(dir, name) {
+        try {
+            const handle = await dir.getFileHandle(name);
+            const file = await handle.getFile();
+            const data = JSON.parse((await file.text()).replace(/^\uFEFF/, ''));
+            return !!data && typeof data === 'object' && (
+                Array.isArray(data.loops) ||
+                typeof data.projectName === 'string' ||
+                data.bpm !== undefined
+            );
+        } catch (_) {
+            return false;
+        }
+    }
+
+    /**
+     * Accept both layouts: a project folder (contains `.alp`/legacy `.json` +
+     * `media/`) or a location containing project-named folders. Returns the
+     * project folder, its name and the project files it holds, or null.
+     */
+    static async _resolveProjectFolder(root) {
+        const direct = await this._listProjectFiles(root);
+        if (direct.length) {
+            return { dir: root, folderName: root.name || null, alpNames: direct };
+        }
+
+        const candidates = [];
+        for await (const [name, handle] of root.entries()) {
+            if (!handle || handle.kind !== 'directory') continue;
+            const alpNames = await this._listProjectFiles(handle).catch(() => []);
+            if (alpNames.length) candidates.push({ dir: handle, folderName: name, alpNames });
+        }
+        if (!candidates.length) return null;
+
+        candidates.sort((a, b) => a.folderName.localeCompare(b.folderName));
+        if (candidates.length === 1) return candidates[0];
+
+        const list = candidates.map((c) => `${c.folderName}  (${c.alpNames.join(', ')})`);
+        const answer = prompt(`Choose the project folder:\n${list.join('\n')}`, candidates[0].folderName);
+        if (!answer) return null;
+        return candidates.find((c) => c.folderName === answer) ||
+            candidates.find((c) => c.alpNames.includes(answer)) ||
+            candidates[0];
+    }
+
+    /**
+     * Open (or create) `<parent>/<folderName>/` and point the media/export
+     * handles at the folders inside it.
+     */
+    static async _openProjectFolder(parent, folderName, mode = 'readwrite') {
+        const dir = await parent.getDirectoryHandle(folderName, { create: mode === 'readwrite' });
+        this._projectParentDir = parent;
+        this._projectDir = dir;
+        this._projectFolderName = folderName;
+        this._projectMediaDir = mode === 'readwrite'
+            ? await dir.getDirectoryHandle('media', { create: true })
+            : await dir.getDirectoryHandle('media').catch(() => null);
+        this._projectExportDir = mode === 'readwrite'
+            ? await dir.getDirectoryHandle('export', { create: true })
+            : null;
+        return dir;
+    }
+
+    /** Forget the current project folder so the next save asks for a location. */
+    static _clearProjectFolder() {
+        this._projectParentDir = null;
+        this._projectDir = null;
+        this._projectFolderName = null;
+        this._projectNameAtLoad = null;
+        this._projectMediaDir = null;
+        this._projectExportDir = null;
+        this._projectFileName = null;
+    }
+
+    static async _exportDirectory() {
+        if (!this._projectDir) return null;
+        if (!this._projectExportDir) {
+            this._projectExportDir = await this._projectDir.getDirectoryHandle('export', { create: true });
+        }
+        return this._projectExportDir;
+    }
+
+    static _downloadBlob(blob, filename) {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        if (link.style) link.style.display = 'none';
+        if (document.body && document.body.appendChild) document.body.appendChild(link);
+        link.click();
+        setTimeout(() => {
+            URL.revokeObjectURL(url);
+            link.remove();
+        }, 100);
+    }
+
+    static _blobToBase64(blob) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result.split(',')[1]);
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(blob);
+        });
+    }
+
+    /**
+     * Decode an inline project WAV without `fetch(data:...)`: the packaged
+     * app's CSP has no `data:` in `connect-src`, so the fetch was rejected and
+     * old single-file projects loaded with silent loops. `atob` is available in
+     * every supported webview and avoids the network path entirely.
+     */
+    static _base64ToArrayBuffer(base64) {
+        const raw = String(base64 || '').replace(/^data:[^,]*,/, '');
+        let binary;
+        if (typeof atob === 'function') {
+            binary = atob(raw);
+        } else {
+            // Fallback for test VMs and webviews without atob.
+            const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+            let out = '';
+            let buffer = 0;
+            let bits = 0;
+            for (let i = 0; i < raw.length; i += 1) {
+                const char = raw[i];
+                if (char === '=') break;
+                const value = alphabet.indexOf(char);
+                if (value < 0) continue;
+                buffer = (buffer << 6) | value;
+                bits += 6;
+                if (bits >= 8) {
+                    bits -= 8;
+                    out += String.fromCharCode((buffer >> bits) & 0xFF);
+                }
+            }
+            binary = out;
+        }
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i += 1) {
+            bytes[i] = binary.charCodeAt(i);
+        }
+        return bytes.buffer;
+    }
+
+    /**
+     * Write an export next to the project (`<project>/export/`), or fall back
+     * to a browser download when no project folder is active.
+     */
+    static async saveBlobToExport(blob, filename) {
+        const name = this._exportName(filename);
+        try {
+            const dir = await this._exportDirectory();
+            if (dir) {
+                await this._writeFile(dir, name, blob);
+                this._setStatus(`Export → ${name}`);
+                return true;
+            }
+        } catch (error) {
+            console.warn('ProjectManager: export folder write failed, downloading instead.', error);
+        }
+        this._downloadBlob(blob, filename);
+        this._setStatus(`Downloaded ${filename}`);
+        return false;
+    }
+
+    static async readMediaFile(relPath) {
+        if (!this._projectMediaDir) throw new Error('Project media folder is not available');
+        const name = String(relPath || '').replace(/^media[\\/]/, '');
+        const handle = await this._projectMediaDir.getFileHandle(name);
+        const file = await handle.getFile();
+        return file.arrayBuffer();
     }
 
     /**
      * Saves the entire project state, including audio, to a JSON file.
      */
-    static async save() {
+    static async save(saveAs = false) {
+        if (this._saving || this._loading) return;
+        this._saving = true;
         let saveBtns = [];
         try {
             const safeName = this.getSafeProjectName();
@@ -27,6 +293,46 @@ class ProjectManager {
             const projectName = userInput.trim() || safeName;
             const nameInput = document.getElementById('projectName');
             if (nameInput) nameInput.value = projectName;
+            const fileBase = this._safePart(projectName, 'MyProject');
+
+            let dir = null;
+            let mediaDir = null;
+            if (this.folderApiAvailable) {
+                const loadedBase = this._projectNameAtLoad;
+                const folderChanged = loadedBase != null
+                    ? fileBase !== loadedBase
+                    : this._projectFolderName !== fileBase;
+                // Only ask for a location when there is no project folder yet,
+                // on Save As, or when a rename needs a sibling folder.
+                const needParent = !this._projectDir || saveAs ||
+                    (folderChanged && !this._projectParentDir);
+                try {
+                    if (needParent) {
+                        this._projectParentDir = await this._pickParentDirectory('readwrite');
+                    }
+                    if (!this._projectDir || saveAs || folderChanged) {
+                        dir = await this._openProjectFolder(this._projectParentDir, fileBase, 'readwrite');
+                    } else {
+                        dir = this._projectDir;
+                        // A project folder loaded from disk may predate media/.
+                        if (!this._projectMediaDir) {
+                            this._projectMediaDir = await dir
+                                .getDirectoryHandle('media', { create: true })
+                                .catch(() => null);
+                        }
+                    }
+                    mediaDir = this._projectMediaDir;
+                    this._projectNameAtLoad = fileBase;
+                } catch (error) {
+                    if (error && error.name === 'AbortError') return;
+                    // Some webviews expose the API but block it. Fall back to
+                    // the single-file download instead of failing the save.
+                    this._folderApiBroken = true;
+                    dir = null;
+                    mediaDir = null;
+                    console.warn('ProjectManager: folder picker unavailable, saving a single .alp file.', error);
+                }
+            }
             
             saveBtns = document.querySelectorAll('#btnSaveProj');
             saveBtns.forEach(btn => {
@@ -36,21 +342,19 @@ class ProjectManager {
                 btn.setAttribute('aria-busy', 'true');
             });
 
+            // A take that is still recording would not be in loop.audioBuffer
+            // yet. Commit it before serializing so the saved project can
+            // recreate every loop.
+            if (typeof LoopManager !== 'undefined' && state.isRecording &&
+                typeof LoopManager.finalizeRecording === 'function') {
+                await LoopManager.finalizeRecording();
+            }
+
             const loopsData = await Promise.all(state.loops.map(async loop => {
-                let wavBase64 = null;
-                if (loop.audioBuffer) {
-                    const wavBuffer = AudioEngine.bufferToWAV(loop.audioBuffer);
-                    wavBase64 = await new Promise((resolve, reject) => {
-                        const reader = new FileReader();
-                        reader.onload = () => resolve(reader.result.split(',')[1]);
-                        reader.onerror = () => reject(reader.error);
-                        reader.readAsDataURL(new Blob([wavBuffer]));
-                    });
-                }
-                return {
+                const entry = {
                     id: loop.id,
                     name: loop.name,
-                    state: (loop.audioBuffer ? 'stopped' : 'empty'), 
+                    state: (loop.audioBuffer ? 'stopped' : 'empty'),
                     duration: loop.duration,
                     volume: loop.volume,
                     muted: loop.muted,
@@ -64,24 +368,26 @@ class ProjectManager {
                     originalBpm: loop.originalBpm,
                     dynamicRecorded: loop.dynamicRecorded,
                     params: loop.params, // Include loop specific effect params
-                    audioWavBase64: wavBase64
+                    audioFile: null,
+                    audioWavBase64: null
                 };
+                if (loop.audioBuffer) {
+                    const wavBuffer = AudioEngine.bufferToWAV(loop.audioBuffer);
+                    if (mediaDir) {
+                        const fileName = this._mediaName('loop', loop.id, loop.name, fileBase);
+                        await this._writeFile(mediaDir, fileName, new Blob([wavBuffer], { type: 'audio/wav' }));
+                        entry.audioFile = `media/${fileName}`;
+                    } else {
+                        entry.audioWavBase64 = await this._blobToBase64(new Blob([wavBuffer]));
+                    }
+                }
+                return entry;
             }));
 
             // The tracker's S columns and the mixer both address these pads, so their audio
             // has to travel with the project or a reload sequences one-shots that are gone.
             const samplersData = await Promise.all(state.samplers.map(async sampler => {
-                let wavBase64 = null;
-                if (sampler.buffer) {
-                    const wavBuffer = AudioEngine.bufferToWAV(sampler.buffer);
-                    wavBase64 = await new Promise((resolve, reject) => {
-                        const reader = new FileReader();
-                        reader.onload = () => resolve(reader.result.split(',')[1]);
-                        reader.onerror = () => reject(reader.error);
-                        reader.readAsDataURL(new Blob([wavBuffer]));
-                    });
-                }
-                return {
+                const entry = {
                     id: sampler.id,
                     name: sampler.name,
                     speed: sampler.speed,
@@ -89,8 +395,20 @@ class ProjectManager {
                     pan: sampler.pan,
                     muted: sampler.muted,
                     isLooping: sampler.isLooping,
-                    audioWavBase64: wavBase64
+                    audioFile: null,
+                    audioWavBase64: null
                 };
+                if (sampler.buffer) {
+                    const wavBuffer = AudioEngine.bufferToWAV(sampler.buffer);
+                    if (mediaDir) {
+                        const fileName = this._mediaName('sampler', sampler.id, sampler.name, fileBase);
+                        await this._writeFile(mediaDir, fileName, new Blob([wavBuffer], { type: 'audio/wav' }));
+                        entry.audioFile = `media/${fileName}`;
+                    } else {
+                        entry.audioWavBase64 = await this._blobToBase64(new Blob([wavBuffer]));
+                    }
+                }
+                return entry;
             }));
 
             const projectData = {
@@ -189,19 +507,30 @@ class ProjectManager {
                     eq: EffectManager.EQ_PRESETS
                 }
             };
+            projectData.mediaMode = mediaDir ? 'folder' : 'inline';
             const jsonString = JSON.stringify(projectData);
-            const blob = new Blob([jsonString], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            
-            link.href = url;
-            link.download = `${this.getSafeProjectName()}.alp`;
-            link.click();
-            
-            setTimeout(() => URL.revokeObjectURL(url), 100);
+            if (dir) {
+                const fileName = `${fileBase}.alp`;
+                await this._writeFile(dir, fileName, jsonString);
+                this._projectFileName = fileName;
+                const folderName = this._projectFolderName || fileBase;
+                this._setStatus(`Saved ${folderName}/${fileName} + media/`);
+                console.info(`Project saved: ${folderName}/${fileName}${mediaDir ? ' (+ media/)' : ''}`);
+            } else {
+                this._downloadBlob(
+                    new Blob([jsonString], { type: 'application/json' }),
+                    `${safeName}.alp`
+                );
+                this._setStatus('Downloaded .alp (folder API unavailable)');
+            }
         } catch (error) {
             Log.error('ProjectManager', 'Error saving project:', error);
+            this._setStatus('Save failed');
+            if (this.folderApiAvailable) {
+                alert(`Could not save the project folder:\n${error && error.message ? error.message : error}`);
+            }
         } finally {
+            this._saving = false;
             saveBtns.forEach(btn => {
                 btn.textContent = btn.dataset.origText;
                 btn.disabled = false;
@@ -211,16 +540,133 @@ class ProjectManager {
     }
 
     /**
-     * Loads a project from a JSON file event.
+     * Loads a project from a JSON file event (single-file fallback).
      */
     static _loading = false;
 
     static async load(event) {
-        const file = event.target.files[0];
+        const file = event && event.target && event.target.files ? event.target.files[0] : null;
         if (!file) return;
+        await this.loadSingleFile(file);
+        if (event && event.target) event.target.value = '';
+    }
+
+    /**
+     * Load one project file (old single `.alp`, legacy `.json`, or a folder
+     * project's `.alp`) and forget any previously used project folder.
+     */
+    static async loadSingleFile(file) {
+        if (!file || this._loading) return;
+        // Loading a single file must not silently route later exports into a
+        // previously used project folder.
+        this._clearProjectFolder();
+        await this.loadFile(file);
+    }
+
+    /**
+     * Opens the single-file picker directly. This is the path for old projects
+     * that predate the folder layout (audio embedded as base64 in a `.alp`, or
+     * legacy `.json` files). Falls back to the hidden <input> when the File
+     * System Access file picker is unavailable.
+     */
+    static async loadFileDialog() {
+        if (this._loading) return;
+        if (typeof window !== 'undefined' && typeof window.showOpenFilePicker === 'function') {
+            try {
+                const handles = await window.showOpenFilePicker({
+                    id: 'ascii-looper-project-file',
+                    multiple: false,
+                    types: [{
+                        description: 'ASCII Looper project',
+                        accept: { 'application/json': ['.alp', '.json'] }
+                    }]
+                });
+                const handle = handles && handles[0];
+                if (handle) await this.loadSingleFile(await handle.getFile());
+                return;
+            } catch (error) {
+                if (error && error.name === 'AbortError') return;
+                Log.warn('ProjectManager', 'File picker failed, using the file input:', error);
+            }
+        }
+        const input = document.getElementById('loadFile');
+        if (input) input.click();
+    }
+
+    /**
+     * Loads a project folder (project `.alp` + `media/`) when the File System
+     * Access API is available; otherwise opens the single-file input. The user
+     * may select either the project folder itself or the location that holds
+     * project-named folders.
+     */
+    static async loadDialog() {
+        if (this._loading) return;
+        if (!this.folderApiAvailable) {
+            const input = document.getElementById('loadFile');
+            if (input) input.click();
+            return;
+        }
+        let dir;
+        try {
+            dir = await window.showDirectoryPicker({
+                id: 'ascii-looper-project',
+                mode: 'readwrite',
+                startIn: 'documents'
+            });
+        } catch (error) {
+            if (error && error.name === 'AbortError') return;
+            Log.error('ProjectManager', 'Folder picker failed:', error);
+            return;
+        }
+
+        let resolved;
+        try {
+            resolved = await this._resolveProjectFolder(dir);
+        } catch (error) {
+            Log.error('ProjectManager', 'Could not read project folder:', error);
+            return;
+        }
+        if (!resolved) {
+            this._setStatus('No project file in that folder — opening the file picker');
+            alert('No .alp or .json project file found in the selected folder. Opening the file picker instead.');
+            await this.loadFileDialog();
+            return;
+        }
+
+        const base = (resolved.folderName || '').toLowerCase();
+        let chosen = resolved.alpNames.find(
+            (name) => base && name.toLowerCase() === `${base}.alp`
+        ) || resolved.alpNames.find(
+            (name) => base && name.toLowerCase() === `${base}.json`
+        ) || resolved.alpNames[0];
+        if (resolved.alpNames.length > 1) {
+            const answer = prompt(`Choose the project file:\n${resolved.alpNames.join('\n')}`, chosen);
+            if (!answer) return;
+            chosen = resolved.alpNames.includes(answer)
+                ? answer
+                : resolved.alpNames.find((name) => name === `${answer}.alp`) ||
+                  resolved.alpNames.find((name) => name === `${answer}.json`) || chosen;
+        }
+
+        try {
+            const handle = await resolved.dir.getFileHandle(chosen);
+            const file = await handle.getFile();
+            this._projectDir = resolved.dir;
+            this._projectParentDir = resolved.dir === dir ? null : dir;
+            this._projectFolderName = resolved.folderName;
+            this._projectFileName = chosen;
+            this._projectMediaDir = await resolved.dir.getDirectoryHandle('media').catch(() => null);
+            this._projectExportDir = null;
+            await this.loadFile(file);
+        } catch (error) {
+            Log.error('ProjectManager', 'Error loading project folder:', error);
+            alert(`Could not load the project:\n${error && error.message ? error.message : error}`);
+        }
+    }
+
+    static async loadFile(file) {
         if (this._loading) {
             Log.warn('ProjectManager', 'Load already in progress, ignoring.');
-            if (event.target) event.target.value = '';
             return;
         }
         this._loading = true;
@@ -229,13 +675,44 @@ class ProjectManager {
 
         try {
             const text = await file.text();
-            const data = JSON.parse(text);
+            const data = JSON.parse(text.replace(/^\uFEFF/, ''));
             
             if (!data || typeof data !== 'object') {
                 throw new Error("Invalid project file");
             }
+            // Remember the saved name so an unchanged SAVE overwrites the file
+            // in the folder it came from, even when that folder was named
+            // differently by an older build.
+            this._projectNameAtLoad = this._safePart(data.projectName || '', 'MyProject');
             if (data.tracker && data.tracker.patterns !== undefined) {
                 TrackerManager.validatePatterns(data.tracker.patterns);
+            }
+
+            // Projects saved in folder mode reference media/<file>.wav.
+            const needsMedia = (Array.isArray(data.loops) && data.loops.some((loop) => loop.audioFile)) ||
+                (Array.isArray(data.samplers) && data.samplers.some((sampler) => sampler.audioFile));
+            if (needsMedia && !this._projectMediaDir) {
+                if (this.folderApiAvailable) {
+                    try {
+                        const picked = await window.showDirectoryPicker({
+                            id: 'ascii-looper-project',
+                            mode: 'readwrite',
+                            startIn: 'documents'
+                        });
+                        const resolved = await this._resolveProjectFolder(picked);
+                        if (!resolved) {
+                            throw new Error('No .alp project found in the selected folder.');
+                        }
+                        this._projectDir = resolved.dir;
+                        this._projectParentDir = resolved.dir === picked ? null : picked;
+                        this._projectFolderName = resolved.folderName;
+                        this._projectMediaDir = await resolved.dir.getDirectoryHandle('media');
+                    } catch (error) {
+                        throw new Error('This project stores audio in a media/ folder. Load the project folder so the media can be read.');
+                    }
+                } else {
+                    throw new Error('This project stores audio in a media/ folder; loading it needs a Chromium-based browser.');
+                }
             }
 
             // Ensure AudioContext is ready before restoring buffers
@@ -247,6 +724,7 @@ class ProjectManager {
             }
 
             // Stop all current playback and recording
+            try { if (window.SampleLab && SampleLab.stopPreview) SampleLab.stopPreview(); } catch (_) {}
             if (window.DroneSynth) DroneSynth.stopAll();
             LoopManager.stopAll();
             if (window.TrackerManager && state.tracker.isPlaying) {
@@ -254,6 +732,11 @@ class ProjectManager {
             }
             if (state.masterRecording) {
                 await App.toggleMasterRecording(); // Stop master recording safely
+            }
+            // Loading a new project must not let the previous session's take
+            // finalize into a loop after the new state is installed.
+            if (window.LoopManager && LoopManager.waitForRecordingToFinish) {
+                await LoopManager.waitForRecordingToFinish();
             }
 
             // Clean up existing custom effects to avoid dirty state conflicts
@@ -583,13 +1066,17 @@ class ProjectManager {
 			
             UIManager.updateExportButtons();
             
+            this._setStatus(`Loaded ${data.projectName || 'project'}`);
             alert('Project loaded successfully!');
             
         } catch (error) {
             Log.error('ProjectManager', 'Error loading project:', error);
+            this._setStatus('Load failed');
+            if (typeof alert === 'function') {
+                alert(`Could not load the project:\n${error && error.message ? error.message : error}`);
+            }
         } finally {
             this._loading = false;
-            if (event.target) event.target.value = ''; // Clear file input
             document.body.style.cursor = 'default';
         }
     }
@@ -601,11 +1088,15 @@ class ProjectManager {
             if (!loop || !loopData) return;
             
             // Restore audio data
-            if (loopData.audioWavBase64) {
+            if (loopData.audioFile || loopData.audioWavBase64) {
                 try {
                     if (!state.audioContext) throw new Error('AudioContext not available');
-                    const res = await fetch(`data:audio/wav;base64,${loopData.audioWavBase64}`);
-                    const arrayBuffer = await res.arrayBuffer();
+                    let arrayBuffer;
+                    if (loopData.audioFile) {
+                        arrayBuffer = await this.readMediaFile(loopData.audioFile);
+                    } else {
+                        arrayBuffer = this._base64ToArrayBuffer(loopData.audioWavBase64);
+                    }
                     loop.audioBuffer = await state.audioContext.decodeAudioData(arrayBuffer);
                     // No seam pass here: the WAV was encoded from a take that was already
                     // faded when it was recorded or imported, and this fade only attenuates,
@@ -617,8 +1108,8 @@ class ProjectManager {
                     Log.error('ProjectManager', `Failed to restore loop ${loopData.id} WAV audio:`, error);
                     // Leave loop.audioBuffer null so the UI shows it as empty rather than
                     // silently presenting a loaded project with phantom audio.
-        }
-        }
+                }
+            }
             
             // Restore parameters
             loop.name = loopData.name || '';
@@ -664,11 +1155,16 @@ class ProjectManager {
         SamplerManager.stop(sampler.id);
 
         let buffer = null;
-        if (samplerData && samplerData.audioWavBase64) {
+        if (samplerData && (samplerData.audioFile || samplerData.audioWavBase64)) {
             try {
                 if (!state.audioContext) throw new Error('AudioContext not available');
-                const res = await fetch(`data:audio/wav;base64,${samplerData.audioWavBase64}`);
-                buffer = await state.audioContext.decodeAudioData(await res.arrayBuffer());
+                let arrayBuffer;
+                if (samplerData.audioFile) {
+                    arrayBuffer = await this.readMediaFile(samplerData.audioFile);
+                } else {
+                    arrayBuffer = this._base64ToArrayBuffer(samplerData.audioWavBase64);
+                }
+                buffer = await state.audioContext.decodeAudioData(arrayBuffer);
             } catch (error) {
                 console.error(`Error restoring sampler ${sampler.id} WAV audio:`, error);
             }
@@ -951,27 +1447,20 @@ class ProjectManager {
     /**
      * Helper to trigger a download for a WAV ArrayBuffer.
      */
-    static downloadWAV(wavBuffer, filename) {
+    /**
+     * Route a WAV export to `<project>/export/` when a project folder is
+     * active, otherwise trigger a browser download.
+     */
+    static async downloadWAV(wavBuffer, filename) {
         if (!wavBuffer || wavBuffer.byteLength < 44) {
             console.error("Invalid WAV data for", filename);
             return;
         }
-        
         try {
-            const blob = new Blob([wavBuffer], { type: 'audio/wav' });
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = filename;
-            link.style.display = 'none';
-            document.body.appendChild(link);
-            link.click();
-            
-            setTimeout(() => {
-                URL.revokeObjectURL(url);
-                link.remove();
-            }, 100);
-			    
+            await this.saveBlobToExport(
+                new Blob([wavBuffer], { type: 'audio/wav' }),
+                filename
+            );
         } catch (error) {
             console.error("Download error:", error);
         }

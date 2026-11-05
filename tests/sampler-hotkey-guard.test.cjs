@@ -31,7 +31,7 @@ function createHarness() {
         MetronomeScheduler: { toggle() {} },
         ProjectManager: { save() {} },
         SampleLab: {}, SoloManager: {}, SyncManager: {},
-        SamplerManager: { togglePlay: id => fired.push(id) },
+        SamplerManager: { pad: id => fired.push(id), togglePlay: id => fired.push(id) },
         TrackerManager: { logLiveEvent() {} },
         UIManager: { updateStatus() {}, updateLoop() {}, generateWaveformPeaks: () => [] },
         DRONE_PRESETS: {}, DRONE_SCALES: {}, DRONE_SCALE_NAMES: {}, DRONE_SCALE_TUNING: {}, DRONE_SCALE_GROUPS: {},
