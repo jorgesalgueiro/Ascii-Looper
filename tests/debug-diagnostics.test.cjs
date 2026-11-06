@@ -16,7 +16,7 @@ function load(extra = {}) {
         performance: { now: () => clock },
         localStorage: { getItem: () => '0', setItem: noop },
         state: {
-            VERSION: '0.76.17',
+            VERSION: '0.76.18',
             audioContext: null,
             loops: [],
             inputs: [],

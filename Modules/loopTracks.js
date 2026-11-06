@@ -563,7 +563,6 @@ class SamplerManager {
         if (!cvs || !s.wavePeaks) return;
         const ctx = cvs.getContext('2d');
         const w = cvs.width, h = cvs.height;
-        ctx.clearRect(0, 0, w, h);
 
         let waveColor = '#08f';
         if (s.state === 'playing' || s.state === 'stopping') waveColor = '#0f0';
@@ -582,23 +581,40 @@ class SamplerManager {
             }
         }
 
-        if (peaks.length > 0) {
-            // Draw dim waveform (full width)
-            ctx.globalAlpha = 0.35;
+        const same = cvs._lastPlayhead === playheadX && cvs._lastState === s.state &&
+            cvs._lastPeaks === peaks && cvs._lastColor === waveColor &&
+            cvs._lastW === w && cvs._lastH === h;
+        if (same) return;
+
+        // Same incremental rule as loop waveforms: keep the static/dim pixels
+        // and paint only the newly played bars.
+        const canIncremental = peaks.length > 0 &&
+            cvs._lastPeaks === peaks && cvs._lastState === s.state &&
+            cvs._lastColor === waveColor && cvs._lastW === w && cvs._lastH === h &&
+            Number.isFinite(cvs._lastPlayhead) && playheadX > cvs._lastPlayhead;
+
+        if (canIncremental) {
+            ctx.globalAlpha = 1.0;
             ctx.fillStyle = waveColor;
-            for (let i = 0; i < w; i++) {
+            for (let i = cvs._lastPlayhead; i < playheadX && i < w; i++) {
                 const peakIdx = Math.floor(i / w * peaks.length);
                 if (peakIdx >= peaks.length) break;
                 const mag = peaks[peakIdx];
                 const hBar = Math.max(1, mag * h);
-                const y = (h - hBar) / 2;
-                ctx.fillRect(i, y, 1, hBar);
+                ctx.fillRect(i, (h - hBar) / 2, 1, hBar);
             }
-
-            // Draw bright waveform up to playhead
-            if (playheadX > 0) {
-                ctx.globalAlpha = 1.0;
-                for (let i = 0; i < playheadX && i < w; i++) {
+            ctx.globalAlpha = 1.0;
+            if (playheadX >= 0) {
+                ctx.fillStyle = '#fff';
+                ctx.fillRect(playheadX, 0, 1, h);
+            }
+        } else {
+            ctx.clearRect(0, 0, w, h);
+            if (peaks.length > 0) {
+                // Draw dim waveform (full width)
+                ctx.globalAlpha = 0.35;
+                ctx.fillStyle = waveColor;
+                for (let i = 0; i < w; i++) {
                     const peakIdx = Math.floor(i / w * peaks.length);
                     if (peakIdx >= peaks.length) break;
                     const mag = peaks[peakIdx];
@@ -606,23 +622,42 @@ class SamplerManager {
                     const y = (h - hBar) / 2;
                     ctx.fillRect(i, y, 1, hBar);
                 }
-            }
-            ctx.globalAlpha = 1.0;
 
-            // Draw playhead line
-            if (playheadX >= 0) {
-                ctx.fillStyle = '#fff';
-                ctx.fillRect(playheadX, 0, 1, h);
-            }
-        } else {
-            // No peaks — fall back to overlay + playhead
-            if (playheadX >= 0) {
-                ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
-                ctx.fillRect(0, 0, playheadX, h);
-                ctx.fillStyle = '#fff';
-                ctx.fillRect(playheadX, 0, 2, h);
+                // Draw bright waveform up to playhead
+                if (playheadX > 0) {
+                    ctx.globalAlpha = 1.0;
+                    for (let i = 0; i < playheadX && i < w; i++) {
+                        const peakIdx = Math.floor(i / w * peaks.length);
+                        if (peakIdx >= peaks.length) break;
+                        const mag = peaks[peakIdx];
+                        const hBar = Math.max(1, mag * h);
+                        const y = (h - hBar) / 2;
+                        ctx.fillRect(i, y, 1, hBar);
+                    }
+                }
+                ctx.globalAlpha = 1.0;
+
+                // Draw playhead line
+                if (playheadX >= 0) {
+                    ctx.fillStyle = '#fff';
+                    ctx.fillRect(playheadX, 0, 1, h);
+                }
+            } else {
+                // No peaks — fall back to overlay + playhead
+                if (playheadX >= 0) {
+                    ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+                    ctx.fillRect(0, 0, playheadX, h);
+                    ctx.fillStyle = '#fff';
+                    ctx.fillRect(playheadX, 0, 2, h);
+                }
             }
         }
+        cvs._lastPlayhead = playheadX;
+        cvs._lastState = s.state;
+        cvs._lastPeaks = peaks;
+        cvs._lastColor = waveColor;
+        cvs._lastW = w;
+        cvs._lastH = h;
     }
 
     static updateVisuals(now = AudioEngine.playbackTime) {
@@ -4609,27 +4644,31 @@ class UIManager {
             el.title = 'RMS level / held sample peak · dBFS';
         }
         const ui = el._vu;
-        const text = this.formatMeterLevel(meter);
-        const rms = meter.rmsPercent.toFixed(1);
-        const peak = meter.peakPercent.toFixed(1);
-        if (ui.rms !== rms) { el.style.setProperty('--vu-rms', `${rms}%`); ui.rms = rms; }
+        const rms = Math.round(meter.rmsPercent * 10) / 10;
+        const peak = Math.round(meter.peakPercent * 10) / 10;
+        // Only format/write when the displayed tenth actually changes.
+        const level = meter.clipped ? 1 : (meter.peak > 0.001 ? Math.round(meter.peakDb * 10) / 10 : 0);
+        if (ui.rms !== rms) { el.style.setProperty('--vu-rms', `${rms.toFixed(1)}%`); ui.rms = rms; }
         if (ui.peakValue !== peak) {
-            el.style.setProperty('--vu-peak', `${peak}%`);
+            el.style.setProperty('--vu-peak', `${peak.toFixed(1)}%`);
             ui.peak.hidden = meter.peakPercent === 0;
             ui.peakValue = peak;
         }
-        if (ui.text !== text) {
+        if (ui.level !== level || ui.clipped !== meter.clipped) {
+            ui.level = level;
+            ui.clipped = meter.clipped;
+            const text = this.formatMeterLevel(meter);
             ui.readout.textContent = text;
             el.setAttribute('aria-valuenow', Math.max(-60, Math.min(0, meter.peakDb)).toFixed(1));
             el.setAttribute('aria-valuetext', text);
             ui.text = text;
+            el.classList.toggle('vu-clipped', meter.clipped);
         }
         if (ui.labelText !== label) {
             ui.label.textContent = label;
             el.classList.toggle('vu-detailed', !!label);
             ui.labelText = label;
         }
-        el.classList.toggle('vu-clipped', meter.clipped);
     }
 
     /**
@@ -5126,131 +5165,145 @@ class UIManager {
             const p = loop.state !== 'empty' ? loop.getProgress(now) : 0;
             const playheadX = Math.floor(p * cssWidth);
             
+            const recordingStates = loop.state === 'recording' || loop.state === 'overdubbing' ||
+                loop.state === 'substituting' || loop.state === 'multiplying';
             const isRedundant = cvs._lastPlayhead === playheadX &&
                                 cvs._lastState === loop.state &&
                                 cvs._lastPeaks === loop.wavePeaks &&
                                 cvs.width === pixelWidth && cvs.height === pixelHeight &&
-                                loop.state !== 'recording' &&
-                                loop.state !== 'overdubbing' &&
-                                loop.state !== 'substituting' &&
-                                loop.state !== 'multiplying';
-                                
-            if (!isRedundant) {
-                cvs._lastPlayhead = playheadX;
-                cvs._lastState = loop.state;
-                cvs._lastPeaks = loop.wavePeaks;
+                                !recordingStates;
 
+            if (!isRedundant) {
                 if (cvs.width !== pixelWidth || cvs.height !== pixelHeight) {
                     cvs.width = pixelWidth;
                     cvs.height = pixelHeight;
                 }
 
                 const ctx = cvs.getContext('2d');
-                ctx.resetTransform(); // Clear previous scale
-                ctx.scale(dpr, dpr);
-    
                 const w = cssWidth;
                 const h = cssHeight;
-                ctx.clearRect(0, 0, w, h);
-                
-                // Draw Waveform
-                if (loop.wavePeaks) {
+                let waveColor = '#666';
+                if (loop.state === 'recording') waveColor = '#f00';
+                else if (loop.state === 'overdubbing') waveColor = '#f0f';
+                else if (loop.state === 'armed') waveColor = '#ff0';
+                else if (loop.state === 'substituting') waveColor = '#00cccc';
+                else if (loop.state === 'multiplying') waveColor = '#ffaa00';
+                else if (loop.state === 'queued') waveColor = '#0088aa';
+                else if (loop.state === 'playing') waveColor = '#0f0';
+                else if (loop.state === 'stopped') waveColor = '#888';
+                else if (loop.state === 'stopping') waveColor = '#0a0';
+
+                // Playing waveforms only grow: keep the previous dim/bright
+                // pixels and paint just the newly played bars. This turns a
+                // full clear + two full waveform passes into a couple of
+                // fillRects per frame.
+                const canIncremental = loop.wavePeaks && !recordingStates &&
+                    cvs._lastPeaks === loop.wavePeaks &&
+                    cvs._lastState === loop.state &&
+                    Number.isFinite(cvs._lastPlayhead) &&
+                    playheadX > cvs._lastPlayhead;
+
+                if (canIncremental) {
                     const peaks = loop.wavePeaks;
                     const amp = h;
-
-                    let waveColor = '#666';
-                    if (loop.state === 'recording') waveColor = '#f00';
-                    else if (loop.state === 'overdubbing') waveColor = '#f0f';
-                    else if (loop.state === 'armed') waveColor = '#ff0';
-                    else if (loop.state === 'substituting') waveColor = '#00cccc';
-                    else if (loop.state === 'multiplying') waveColor = '#ffaa00';
-                    else if (loop.state === 'queued') waveColor = '#0088aa';
-                    else if (loop.state === 'playing') waveColor = '#0f0';
-                    else if (loop.state === 'stopped') waveColor = '#888';
-                    else if (loop.state === 'stopping') waveColor = '#0a0';
-
-                    // Draw dim waveform for full width (unplayed portion)
-                    ctx.globalAlpha = 0.35;
+                    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                    ctx.globalAlpha = 1.0;
                     ctx.fillStyle = waveColor;
-                    for (let i = 0; i < w && peaks.length; i++) {
+                    for (let i = cvs._lastPlayhead; i < playheadX && i < w; i++) {
                         const peakIdx = Math.floor(i / w * peaks.length);
-                        const mag = peaks[peakIdx];
+                        const mag = peaks[peakIdx] || 0;
                         const hBar = Math.max(1, mag * amp);
-                        const y = (h - hBar) / 2;
-                        ctx.fillRect(i, y, 1, hBar);
+                        ctx.fillRect(i, (h - hBar) / 2, 1, hBar);
                     }
+                    ctx.globalAlpha = 1.0;
+                } else {
+                    ctx.resetTransform(); // Clear previous scale
+                    ctx.scale(dpr, dpr);
+                    ctx.clearRect(0, 0, w, h);
 
-                    // Draw bright waveform for played portion (up to playhead)
-                    ctx.globalAlpha = 1.0;
-                    for (let i = 0; i < playheadX && i < w && peaks.length; i++) {
-                        const peakIdx = Math.floor(i / w * peaks.length);
-                        const mag = peaks[peakIdx];
-                        const hBar = Math.max(1, mag * amp);
-                        const y = (h - hBar) / 2;
-                        ctx.fillRect(i, y, 1, hBar);
-                    }
-                    ctx.globalAlpha = 1.0;
-                } else if ((loop.state === 'recording' || loop.state === 'overdubbing' || loop.state === 'substituting' || loop.state === 'multiplying') && state.liveRecordAnalyser) {
-                    // Live input waveform — oscilloscope-style trace
-                    const analyser = state.liveRecordAnalyser;
-                    const data = state.liveRecordAnalyserData;
-                    analyser.getFloatTimeDomainData(data);
-                    const mid = h / 2;
-                    const step = data.length / w;
+                    // Draw Waveform
+                    if (loop.wavePeaks) {
+                        const peaks = loop.wavePeaks;
+                        const amp = h;
 
-                    // Draw filled waveform shape (symmetric around center)
-                    let waveColor = '#f00';
-                    if (loop.state === 'overdubbing') waveColor = '#f0f';
-                    else if (loop.state === 'substituting') waveColor = '#00cccc';
-                    else if (loop.state === 'multiplying') waveColor = '#ffaa00';
-                    ctx.fillStyle = waveColor;
-                    ctx.globalAlpha = 0.6;
-                    for (let i = 0; i < w; i++) {
-                        const idx = Math.floor(i * step);
-                        const v = data[idx] || 0;
-                        const barH = Math.max(1, Math.abs(v) * h);
-                        ctx.fillRect(i, mid - barH / 2, 1, barH);
-                    }
-                    // Draw center line trace on top
-                    ctx.globalAlpha = 1.0;
-                    ctx.strokeStyle = waveColor;
-                    ctx.lineWidth = 1;
-                    ctx.beginPath();
-                    for (let i = 0; i < w; i++) {
-                        const idx = Math.floor(i * step);
-                        const v = data[idx] || 0;
-                        const y = mid - v * (h * 0.5);
-                        if (i === 0) ctx.moveTo(i, y);
-                        else ctx.lineTo(i, y);
-                    }
-                    ctx.stroke();
-                    // Bar boundary markers — rolling window so user sees approaching bar lines
-                    if (state.syncMode === 'dynamic' && loop.graph && loop.graph.startTime) {
-                        const barDur = SyncManager.getBarDuration();
-                        if (barDur > 0) {
-                            const elapsed = now - loop.graph.startTime;
-                            const visibleBars = 4;
-                            const windowDur = visibleBars * barDur;
-                            // Align window start to bar boundary, keep playhead in right half
-                            const windowStart = Math.max(0, Math.floor(elapsed / windowDur) * windowDur);
-                            const windowEnd = windowStart + windowDur;
-                            ctx.strokeStyle = 'rgba(255, 255, 0, 0.45)';
-                            ctx.lineWidth = 1;
-                            for (let b = 1; b < visibleBars; b++) {
-                                const barTime = windowStart + b * barDur;
-                                const barX = ((barTime - windowStart) / windowDur) * w;
-                                ctx.beginPath();
-                                ctx.moveTo(barX, 0);
-                                ctx.lineTo(barX, h);
-                                ctx.stroke();
-                            }
-                            // Bar count labels at top
-                            ctx.fillStyle = 'rgba(255, 255, 0, 0.6)';
-                            ctx.font = '8px monospace';
-                            const startBar = Math.round(windowStart / barDur);
-                            for (let b = 0; b <= visibleBars; b++) {
-                                const barX = (b / visibleBars) * w;
-                                ctx.fillText(`${startBar + b}`, barX + 2, 8);
+                        // Draw dim waveform for full width (unplayed portion)
+                        ctx.globalAlpha = 0.35;
+                        ctx.fillStyle = waveColor;
+                        for (let i = 0; i < w && peaks.length; i++) {
+                            const peakIdx = Math.floor(i / w * peaks.length);
+                            const mag = peaks[peakIdx];
+                            const hBar = Math.max(1, mag * amp);
+                            const y = (h - hBar) / 2;
+                            ctx.fillRect(i, y, 1, hBar);
+                        }
+
+                        // Draw bright waveform for played portion (up to playhead)
+                        ctx.globalAlpha = 1.0;
+                        for (let i = 0; i < playheadX && i < w && peaks.length; i++) {
+                            const peakIdx = Math.floor(i / w * peaks.length);
+                            const mag = peaks[peakIdx];
+                            const hBar = Math.max(1, mag * amp);
+                            const y = (h - hBar) / 2;
+                            ctx.fillRect(i, y, 1, hBar);
+                        }
+                        ctx.globalAlpha = 1.0;
+                    } else if (recordingStates && state.liveRecordAnalyser) {
+                        // Live input waveform — oscilloscope-style trace
+                        const analyser = state.liveRecordAnalyser;
+                        const data = state.liveRecordAnalyserData;
+                        analyser.getFloatTimeDomainData(data);
+                        const mid = h / 2;
+                        const step = data.length / w;
+
+                        // Draw filled waveform shape (symmetric around center)
+                        ctx.fillStyle = waveColor;
+                        ctx.globalAlpha = 0.6;
+                        for (let i = 0; i < w; i++) {
+                            const idx = Math.floor(i * step);
+                            const v = data[idx] || 0;
+                            const barH = Math.max(1, Math.abs(v) * h);
+                            ctx.fillRect(i, mid - barH / 2, 1, barH);
+                        }
+                        // Draw center line trace on top
+                        ctx.globalAlpha = 1.0;
+                        ctx.strokeStyle = waveColor;
+                        ctx.lineWidth = 1;
+                        ctx.beginPath();
+                        for (let i = 0; i < w; i++) {
+                            const idx = Math.floor(i * step);
+                            const v = data[idx] || 0;
+                            const y = mid - v * (h * 0.5);
+                            if (i === 0) ctx.moveTo(i, y);
+                            else ctx.lineTo(i, y);
+                        }
+                        ctx.stroke();
+                        // Bar boundary markers — rolling window so user sees approaching bar lines
+                        if (state.syncMode === 'dynamic' && loop.graph && loop.graph.startTime) {
+                            const barDur = SyncManager.getBarDuration();
+                            if (barDur > 0) {
+                                const elapsed = now - loop.graph.startTime;
+                                const visibleBars = 4;
+                                const windowDur = visibleBars * barDur;
+                                // Align window start to bar boundary, keep playhead in right half
+                                const windowStart = Math.max(0, Math.floor(elapsed / windowDur) * windowDur);
+                                ctx.strokeStyle = 'rgba(255, 255, 0, 0.45)';
+                                ctx.lineWidth = 1;
+                                for (let b = 1; b < visibleBars; b++) {
+                                    const barTime = windowStart + b * barDur;
+                                    const barX = ((barTime - windowStart) / windowDur) * w;
+                                    ctx.beginPath();
+                                    ctx.moveTo(barX, 0);
+                                    ctx.lineTo(barX, h);
+                                    ctx.stroke();
+                                }
+                                // Bar count labels at top
+                                ctx.fillStyle = 'rgba(255, 255, 0, 0.6)';
+                                ctx.font = '8px monospace';
+                                const startBar = Math.round(windowStart / barDur);
+                                for (let b = 0; b <= visibleBars; b++) {
+                                    const barX = (b / visibleBars) * w;
+                                    ctx.fillText(`${startBar + b}`, barX + 2, 8);
+                                }
                             }
                         }
                     }
@@ -5260,6 +5313,9 @@ class UIManager {
                 ctx.fillStyle = '#fff';
                 ctx.fillRect(playheadX, 0, 1, h);
             }
+                cvs._lastPlayhead = playheadX;
+                cvs._lastState = loop.state;
+                cvs._lastPeaks = loop.wavePeaks;
             }
         }
             

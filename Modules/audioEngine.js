@@ -442,7 +442,19 @@ class AudioEngine {
             now < meter._sampleTime ||
             (analyser && (meter._analyser !== analyser || (data && meter._data !== data)));
         if (reset) {
-            meter._history = [];
+            // Fixed-size typed ring: one object per meter instead of an array of
+            // per-frame {time, rms, peak} objects (meters update 60x/second).
+            const size = 128;
+            meter._history = {
+                time: new Float64Array(size),
+                rms: new Float64Array(size),
+                peak: new Float64Array(size),
+                head: 0,
+                count: 0,
+                // Compatibility with callers/tests that inspect the queued frame count.
+                get length() { return this.count; },
+            };
+            meter._historyTime = -1;
             meter.rms = 0;
             meter.peak = 0;
             meter._time = playbackTime;
@@ -470,17 +482,26 @@ class AudioEngine {
         // Missing analysers enqueue silence, rather than discarding their audible tail.
         const history = meter._history;
         // A stalled clock must not evict pending audio or overwrite a disconnected tail.
-        if (!history.length || history[history.length - 1].time !== now) {
-            history.push({ time: now, rms, peak });
-            if (history.length > 128) history.shift();
+        if (history && meter._historyTime !== now) {
+            const index = history.head;
+            history.time[index] = now;
+            history.rms[index] = rms;
+            history.peak[index] = peak;
+            history.head = (index + 1) % history.time.length;
+            if (history.count < history.time.length) history.count += 1;
+            meter._historyTime = now;
         }
         rms = 0;
         peak = 0;
-        for (let i = history.length - 1; i >= 0; i--) {
-            if (history[i].time <= playbackTime) {
-                rms = history[i].rms;
-                peak = history[i].peak;
-                break;
+        if (history && history.count) {
+            const length = history.time.length;
+            for (let n = 0; n < history.count; n++) {
+                const index = (history.head - 1 - n + length) % length;
+                if (history.time[index] <= playbackTime) {
+                    rms = history.rms[index];
+                    peak = history.peak[index];
+                    break;
+                }
             }
         }
 

@@ -1,6 +1,6 @@
 [package]
 name = "ascii-looper-native"
-version = "0.76.17"
+version = "0.76.18"
 description = "Native ASIO / PipeWire / JACK / ALSA sink and source for ASCII Looper"
 authors = ["ASCII Looper contributors"]
 edition = "2021"

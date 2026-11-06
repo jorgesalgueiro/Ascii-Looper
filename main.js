@@ -6,7 +6,7 @@
 // MODULE 1: CONSTANTS & GLOBALS
 // =============================================
 
-const VERSION = "v0.76.17"; // Version aligned with blueprint
+const VERSION = "v0.76.18"; // Version aligned with blueprint
 let MAX_LOOPS = 10;
 const SAMPLER_HOTKEYS = ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'ç']; // Specific to Sampler Tracks
 const AUDIO_FORMATS= {
@@ -2065,7 +2065,7 @@ class App {
         if (this._animationLoopRunning) return;
         this._animationLoopRunning = true;
         
-        let last30FpsTime = 0;
+        let last30FpsTime = -Infinity;
         let last10FpsTime = 0;
 
         const animate = (timestamp) => {
@@ -2083,15 +2083,17 @@ class App {
             const playbackTime = AudioEngine.playbackTime;
             const elapsed = Math.max(0, playbackTime - state.masterStartTime);
             
-            // 60 FPS (Every frame) - High priority visual updates (Meters, Playhead)
+            // 60 FPS (Every frame) - High priority visual updates (Playhead)
             this.updatePlayhead(elapsed);
-            this.updateMeters(playbackTime);
-            if(window.DroneSynth) DroneSynth.updateVisuals(playbackTime);
-            SamplerManager.updateVisuals(playbackTime);
 
-            // 30 FPS - Medium priority (Waveforms, UI States)
+            // 30 FPS - Medium priority (Meters, Waveforms, UI States)
+            // Meters are sample/hold displays; 30 fps cuts the readMeter and
+            // DOM work in half without a visible difference.
             if (timestamp - last30FpsTime >= 33.3) {
                 last30FpsTime = timestamp;
+                this.updateMeters(playbackTime);
+                if(window.DroneSynth) DroneSynth.updateVisuals(playbackTime);
+                SamplerManager.updateVisuals(playbackTime);
                 UIManager.updateLoopDisplays(playbackTime);
                 if (window.LoopManager && state.syncEnabled) LoopManager.realignDriftedLoops();
             }
@@ -2156,8 +2158,24 @@ class App {
         const timeline = document.getElementById('timeline');
         const ph = document.getElementById('playhead');
         if (!timeline || !ph) return;
-        
-        const tw = timeline.offsetWidth - 20; 
+
+        // Reading offsetWidth every frame forces layout. Cache it and refresh
+        // on resize (plus once a second as a layout-change safety net).
+        if (!this._timelineResizeHooked) {
+            this._timelineResizeHooked = true;
+            try {
+                if (typeof window.addEventListener === 'function') {
+                    window.addEventListener('resize', () => { this._timelineWidth = 0; });
+                }
+            } catch (e) {}
+        }
+        this._timelineFrames = (this._timelineFrames || 0) + 1;
+        const refresh = this._timelineEl !== timeline || !this._timelineWidth || (this._timelineFrames % 60 === 0);
+        if (refresh) {
+            this._timelineEl = timeline;
+            this._timelineWidth = Math.max(0, timeline.offsetWidth - 20);
+        }
+        const tw = this._timelineWidth;
         let pos = 0;
         
         if (tw > 0) {
